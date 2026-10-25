@@ -1,0 +1,1602 @@
+[
+  {
+    "name": "FLAC 24/96 passed through on Wi-Fi",
+    "input": {
+      "player": {
+        "kind": "local"
+      },
+      "file": {
+        "kind": "flc",
+        "rate": 96000,
+        "bits": 24,
+        "kbps": 3021
+      },
+      "served": {
+        "codec": "flac",
+        "rate": 96000,
+        "bits": 24,
+        "channels": 2
+      },
+      "sent": {
+        "mode": "passthrough"
+      },
+      "decoded": {
+        "codec": "FLAC",
+        "rate": 96000,
+        "bits": 24,
+        "channels": 2,
+        "lossless": true
+      },
+      "device": {
+        "name": "USB DAC",
+        "rate": 96000,
+        "bit_perfect": true,
+        "engine_bit_perfect": true
+      },
+      "origin": {
+        "kind": "setting",
+        "network": "wifi",
+        "level": "original"
+      },
+      "seekable": true
+    },
+    "expect": {
+      "badge": {
+        "verdict": "hi_res",
+        "stream": "FLAC 24/96",
+        "text": "Hi-Res · FLAC 24/96"
+      },
+      "blocks": [
+        {
+          "kind": "file",
+          "title": "File",
+          "format": "FLAC 24/96",
+          "note": "Hi-Res lossless",
+          "lowers": false
+        },
+        {
+          "kind": "gateway",
+          "title": "Lyrion gateway",
+          "format": "FLAC 24/96",
+          "note": "Passed through unchanged",
+          "lowers": false
+        },
+        {
+          "kind": "device",
+          "title": "This device",
+          "format": "FLAC 24/96",
+          "note": "USB DAC, bit-perfect",
+          "lowers": false
+        }
+      ],
+      "switch": {
+        "levels": [
+          "original",
+          "high",
+          "low"
+        ],
+        "in_force": "original",
+        "origin_text": "Original, on Wi-Fi",
+        "overridden": false,
+        "seekable": true
+      }
+    }
+  },
+  {
+    "name": "FLAC 24/96 re-encoded, High on mobile data",
+    "input": {
+      "player": {
+        "kind": "local"
+      },
+      "file": {
+        "kind": "flc",
+        "rate": 96000,
+        "bits": 24,
+        "kbps": 3021
+      },
+      "served": {
+        "codec": "flac",
+        "rate": 96000,
+        "bits": 24,
+        "channels": 2
+      },
+      "sent": {
+        "mode": "opus",
+        "kbps": 160,
+        "level": "high"
+      },
+      "decoded": {
+        "codec": "Opus",
+        "rate": 48000,
+        "channels": 2,
+        "lossless": false
+      },
+      "device": {
+        "name": "Phone speaker",
+        "rate": 48000,
+        "engine_bit_perfect": true
+      },
+      "origin": {
+        "kind": "setting",
+        "network": "mobile",
+        "level": "high"
+      },
+      "seekable": true
+    },
+    "expect": {
+      "badge": {
+        "verdict": "transcoded",
+        "stream": "Opus 160",
+        "text": "Transcoded · Opus 160"
+      },
+      "blocks": [
+        {
+          "kind": "file",
+          "title": "File",
+          "format": "FLAC 24/96",
+          "note": "Hi-Res lossless",
+          "lowers": false
+        },
+        {
+          "kind": "gateway",
+          "title": "Lyrion gateway",
+          "format": "Opus 160",
+          "note": "Re-encoded to Opus 160 kb/s (High, on mobile data)",
+          "lowers": true
+        },
+        {
+          "kind": "device",
+          "title": "This device",
+          "format": "Opus 48 kHz",
+          "note": "Phone speaker",
+          "lowers": false
+        }
+      ],
+      "switch": {
+        "levels": [
+          "original",
+          "high",
+          "low"
+        ],
+        "in_force": "high",
+        "origin_text": "High, on mobile data",
+        "overridden": false,
+        "seekable": true
+      }
+    }
+  },
+  {
+    "name": "FLAC 24/96 re-encoded, Data saver by setting",
+    "input": {
+      "player": {
+        "kind": "local"
+      },
+      "file": {
+        "kind": "flc",
+        "rate": 96000,
+        "bits": 24,
+        "kbps": 3021
+      },
+      "served": {
+        "codec": "flac",
+        "rate": 96000,
+        "bits": 24,
+        "channels": 2
+      },
+      "sent": {
+        "mode": "opus",
+        "kbps": 96,
+        "level": "low"
+      },
+      "decoded": {
+        "codec": "Opus",
+        "rate": 48000,
+        "channels": 2,
+        "lossless": false
+      },
+      "device": {
+        "rate": 48000
+      },
+      "origin": {
+        "kind": "setting",
+        "level": "low"
+      },
+      "seekable": true
+    },
+    "expect": {
+      "badge": {
+        "verdict": "transcoded",
+        "stream": "Opus 96",
+        "text": "Transcoded · Opus 96"
+      },
+      "blocks": [
+        {
+          "kind": "file",
+          "title": "File",
+          "format": "FLAC 24/96",
+          "note": "Hi-Res lossless",
+          "lowers": false
+        },
+        {
+          "kind": "gateway",
+          "title": "Lyrion gateway",
+          "format": "Opus 96",
+          "note": "Re-encoded to Opus 96 kb/s (Data saver, chosen in Settings)",
+          "lowers": true
+        },
+        {
+          "kind": "device",
+          "title": "This device",
+          "format": "Opus 48 kHz",
+          "note": "",
+          "lowers": false
+        }
+      ],
+      "switch": {
+        "levels": [
+          "original",
+          "high",
+          "low"
+        ],
+        "in_force": "low",
+        "origin_text": "Data saver, chosen in Settings",
+        "overridden": false,
+        "seekable": true
+      }
+    }
+  },
+  {
+    "name": "FLAC 24/96 re-encoded, overridden here",
+    "input": {
+      "player": {
+        "kind": "local"
+      },
+      "file": {
+        "kind": "flc",
+        "rate": 96000,
+        "bits": 24,
+        "kbps": 3021
+      },
+      "served": {
+        "codec": "flac",
+        "rate": 96000,
+        "bits": 24,
+        "channels": 2
+      },
+      "sent": {
+        "mode": "opus",
+        "kbps": 160,
+        "level": "high"
+      },
+      "decoded": {
+        "codec": "Opus",
+        "rate": 48000,
+        "channels": 2,
+        "lossless": false
+      },
+      "device": {
+        "name": "Phone speaker",
+        "rate": 48000,
+        "engine_bit_perfect": true
+      },
+      "origin": {
+        "kind": "override",
+        "level": "high"
+      },
+      "seekable": true
+    },
+    "expect": {
+      "badge": {
+        "verdict": "transcoded",
+        "stream": "Opus 160",
+        "text": "Transcoded · Opus 160"
+      },
+      "blocks": [
+        {
+          "kind": "file",
+          "title": "File",
+          "format": "FLAC 24/96",
+          "note": "Hi-Res lossless",
+          "lowers": false
+        },
+        {
+          "kind": "gateway",
+          "title": "Lyrion gateway",
+          "format": "Opus 160",
+          "note": "Re-encoded to Opus 160 kb/s (High, overridden here)",
+          "lowers": true
+        },
+        {
+          "kind": "device",
+          "title": "This device",
+          "format": "Opus 48 kHz",
+          "note": "Phone speaker",
+          "lowers": false
+        }
+      ],
+      "switch": {
+        "levels": [
+          "original",
+          "high",
+          "low"
+        ],
+        "in_force": "high",
+        "origin_text": "High, overridden here",
+        "overridden": true,
+        "seekable": true
+      }
+    }
+  },
+  {
+    "name": "FLAC 24/96 back to Original, overridden here",
+    "input": {
+      "player": {
+        "kind": "local"
+      },
+      "file": {
+        "kind": "flc",
+        "rate": 96000,
+        "bits": 24,
+        "kbps": 3021
+      },
+      "served": {
+        "codec": "flac",
+        "rate": 96000,
+        "bits": 24,
+        "channels": 2
+      },
+      "sent": {
+        "mode": "passthrough"
+      },
+      "decoded": {
+        "codec": "FLAC",
+        "rate": 96000,
+        "bits": 24,
+        "channels": 2,
+        "lossless": true
+      },
+      "device": {
+        "name": "Phone speaker",
+        "rate": 48000,
+        "resampled": true
+      },
+      "origin": {
+        "kind": "override",
+        "level": "original"
+      },
+      "seekable": true
+    },
+    "expect": {
+      "badge": {
+        "verdict": "hi_res",
+        "stream": "FLAC 24/96",
+        "text": "Hi-Res · FLAC 24/96"
+      },
+      "blocks": [
+        {
+          "kind": "file",
+          "title": "File",
+          "format": "FLAC 24/96",
+          "note": "Hi-Res lossless",
+          "lowers": false
+        },
+        {
+          "kind": "gateway",
+          "title": "Lyrion gateway",
+          "format": "FLAC 24/96",
+          "note": "Passed through unchanged",
+          "lowers": false
+        },
+        {
+          "kind": "device",
+          "title": "This device",
+          "format": "FLAC 24/96",
+          "note": "Phone speaker, resampled to 48 kHz",
+          "lowers": false
+        }
+      ],
+      "switch": {
+        "levels": [
+          "original",
+          "high",
+          "low"
+        ],
+        "in_force": "original",
+        "origin_text": "Original, overridden here",
+        "overridden": true,
+        "seekable": true
+      }
+    }
+  },
+  {
+    "name": "FLAC 16/44.1 passed through",
+    "input": {
+      "player": {
+        "kind": "local"
+      },
+      "file": {
+        "kind": "flc",
+        "rate": 44100,
+        "bits": 16,
+        "kbps": 912
+      },
+      "served": {
+        "codec": "flac",
+        "rate": 44100,
+        "bits": 16,
+        "channels": 2
+      },
+      "sent": {
+        "mode": "passthrough"
+      },
+      "decoded": {
+        "codec": "FLAC",
+        "rate": 44100,
+        "bits": 16,
+        "channels": 2,
+        "lossless": true
+      },
+      "device": {
+        "name": "Phone speaker",
+        "rate": 48000,
+        "resampled": true
+      },
+      "origin": {
+        "kind": "setting",
+        "network": "wifi",
+        "level": "original"
+      },
+      "seekable": true
+    },
+    "expect": {
+      "badge": {
+        "verdict": "lossless",
+        "stream": "FLAC 16/44.1",
+        "text": "Lossless · FLAC 16/44.1"
+      },
+      "blocks": [
+        {
+          "kind": "file",
+          "title": "File",
+          "format": "FLAC 16/44.1",
+          "note": "Lossless",
+          "lowers": false
+        },
+        {
+          "kind": "gateway",
+          "title": "Lyrion gateway",
+          "format": "FLAC 16/44.1",
+          "note": "Passed through unchanged",
+          "lowers": false
+        },
+        {
+          "kind": "device",
+          "title": "This device",
+          "format": "FLAC 16/44.1",
+          "note": "Phone speaker, resampled to 48 kHz",
+          "lowers": false
+        }
+      ],
+      "switch": {
+        "levels": [
+          "original",
+          "high",
+          "low"
+        ],
+        "in_force": "original",
+        "origin_text": "Original, on Wi-Fi",
+        "overridden": false,
+        "seekable": true
+      }
+    }
+  },
+  {
+    "name": "ALAC file served as FLAC",
+    "input": {
+      "player": {
+        "kind": "local"
+      },
+      "file": {
+        "kind": "alc",
+        "rate": 44100,
+        "bits": 16,
+        "kbps": 870
+      },
+      "served": {
+        "codec": "flac",
+        "rate": 44100,
+        "bits": 16,
+        "channels": 2
+      },
+      "sent": {
+        "mode": "passthrough"
+      },
+      "decoded": {
+        "codec": "FLAC",
+        "rate": 44100,
+        "bits": 16,
+        "channels": 2,
+        "lossless": true
+      },
+      "device": {
+        "name": "USB DAC",
+        "rate": 44100,
+        "bit_perfect": true,
+        "engine_bit_perfect": true
+      },
+      "origin": {
+        "kind": "setting",
+        "network": "wifi",
+        "level": "original"
+      },
+      "seekable": true
+    },
+    "expect": {
+      "badge": {
+        "verdict": "lossless",
+        "stream": "FLAC 16/44.1",
+        "text": "Lossless · FLAC 16/44.1"
+      },
+      "blocks": [
+        {
+          "kind": "file",
+          "title": "File",
+          "format": "ALAC 16/44.1",
+          "note": "Lossless",
+          "lowers": false
+        },
+        {
+          "kind": "lms",
+          "title": "LMS",
+          "format": "FLAC 16/44.1",
+          "note": "Converted from ALAC",
+          "lowers": false
+        },
+        {
+          "kind": "gateway",
+          "title": "Lyrion gateway",
+          "format": "FLAC 16/44.1",
+          "note": "Passed through unchanged",
+          "lowers": false
+        },
+        {
+          "kind": "device",
+          "title": "This device",
+          "format": "FLAC 16/44.1",
+          "note": "USB DAC, bit-perfect",
+          "lowers": false
+        }
+      ],
+      "switch": {
+        "levels": [
+          "original",
+          "high",
+          "low"
+        ],
+        "in_force": "original",
+        "origin_text": "Original, on Wi-Fi",
+        "overridden": false,
+        "seekable": true
+      }
+    }
+  },
+  {
+    "name": "FLAC 24/96 lowered by LMS to 16/44.1",
+    "input": {
+      "player": {
+        "kind": "local"
+      },
+      "file": {
+        "kind": "flc",
+        "rate": 96000,
+        "bits": 24,
+        "kbps": 3021
+      },
+      "served": {
+        "codec": "flac",
+        "rate": 44100,
+        "bits": 16,
+        "channels": 2
+      },
+      "sent": {
+        "mode": "passthrough"
+      },
+      "decoded": {
+        "codec": "FLAC",
+        "rate": 44100,
+        "bits": 16,
+        "channels": 2,
+        "lossless": true
+      },
+      "device": {
+        "name": "Phone speaker",
+        "rate": 44100,
+        "engine_bit_perfect": true
+      },
+      "origin": {
+        "kind": "setting",
+        "network": "wifi",
+        "level": "original"
+      },
+      "seekable": true
+    },
+    "expect": {
+      "badge": {
+        "verdict": "lossless",
+        "stream": "FLAC 16/44.1",
+        "text": "Lossless · FLAC 16/44.1"
+      },
+      "blocks": [
+        {
+          "kind": "file",
+          "title": "File",
+          "format": "FLAC 24/96",
+          "note": "Hi-Res lossless",
+          "lowers": false
+        },
+        {
+          "kind": "lms",
+          "title": "LMS",
+          "format": "FLAC 16/44.1",
+          "note": "Lowered to 16-bit, 44.1 kHz",
+          "lowers": true
+        },
+        {
+          "kind": "gateway",
+          "title": "Lyrion gateway",
+          "format": "FLAC 16/44.1",
+          "note": "Passed through unchanged",
+          "lowers": false
+        },
+        {
+          "kind": "device",
+          "title": "This device",
+          "format": "FLAC 16/44.1",
+          "note": "Phone speaker",
+          "lowers": false
+        }
+      ],
+      "switch": {
+        "levels": [
+          "original",
+          "high",
+          "low"
+        ],
+        "in_force": "original",
+        "origin_text": "Original, on Wi-Fi",
+        "overridden": false,
+        "seekable": true
+      }
+    }
+  },
+  {
+    "name": "MP3 320 as sent",
+    "input": {
+      "player": {
+        "kind": "local"
+      },
+      "file": {
+        "kind": "mp3",
+        "rate": 44100,
+        "kbps": 320
+      },
+      "served": {
+        "codec": "mp3"
+      },
+      "sent": {
+        "mode": "passthrough"
+      },
+      "decoded": {
+        "codec": "MP3",
+        "rate": 44100,
+        "channels": 2,
+        "lossless": false
+      },
+      "device": {
+        "name": "Phone speaker",
+        "rate": 48000,
+        "resampled": true
+      },
+      "origin": {
+        "kind": "setting",
+        "network": "mobile",
+        "level": "high"
+      },
+      "seekable": true
+    },
+    "expect": {
+      "badge": {
+        "verdict": "lossy",
+        "stream": "MP3 320",
+        "text": "Lossy · MP3 320"
+      },
+      "blocks": [
+        {
+          "kind": "file",
+          "title": "File",
+          "format": "MP3 320",
+          "note": "Lossy",
+          "lowers": true
+        },
+        {
+          "kind": "gateway",
+          "title": "Lyrion gateway",
+          "format": "MP3 320",
+          "note": "Passed through unchanged",
+          "lowers": false
+        },
+        {
+          "kind": "device",
+          "title": "This device",
+          "format": "MP3 44.1 kHz",
+          "note": "Phone speaker, resampled to 48 kHz",
+          "lowers": false
+        }
+      ],
+      "switch": {
+        "levels": [
+          "original",
+          "high",
+          "low"
+        ],
+        "in_force": "high",
+        "origin_text": "High, on mobile data",
+        "overridden": false,
+        "seekable": true
+      }
+    }
+  },
+  {
+    "name": "Opus radio stream",
+    "input": {
+      "player": {
+        "kind": "local"
+      },
+      "file": {
+        "kind": "ops",
+        "rate": 48000,
+        "kbps": 128
+      },
+      "served": {
+        "codec": "ogg"
+      },
+      "sent": {
+        "mode": "passthrough"
+      },
+      "decoded": {
+        "codec": "Opus",
+        "rate": 48000,
+        "channels": 2,
+        "lossless": false
+      },
+      "device": {
+        "name": "Phone speaker",
+        "rate": 48000,
+        "engine_bit_perfect": true
+      },
+      "origin": {
+        "kind": "setting",
+        "network": "wifi",
+        "level": "original"
+      },
+      "seekable": false
+    },
+    "expect": {
+      "badge": {
+        "verdict": "lossy",
+        "stream": "Opus 128",
+        "text": "Lossy · Opus 128"
+      },
+      "blocks": [
+        {
+          "kind": "file",
+          "title": "File",
+          "format": "Opus 128",
+          "note": "Lossy",
+          "lowers": true
+        },
+        {
+          "kind": "gateway",
+          "title": "Lyrion gateway",
+          "format": "Opus 128",
+          "note": "Passed through unchanged",
+          "lowers": false
+        },
+        {
+          "kind": "device",
+          "title": "This device",
+          "format": "Opus 48 kHz",
+          "note": "Phone speaker",
+          "lowers": false
+        }
+      ],
+      "switch": {
+        "levels": [
+          "original",
+          "high",
+          "low"
+        ],
+        "in_force": "original",
+        "origin_text": "Original, on Wi-Fi",
+        "overridden": false,
+        "seekable": false
+      }
+    }
+  },
+  {
+    "name": "Server ReplayGain only",
+    "input": {
+      "player": {
+        "kind": "local"
+      },
+      "file": {
+        "kind": "flc",
+        "rate": 44100,
+        "bits": 16,
+        "kbps": 912
+      },
+      "served": {
+        "codec": "flac",
+        "rate": 44100,
+        "bits": 16,
+        "channels": 2,
+        "gain_db": -6.5
+      },
+      "sent": {
+        "mode": "passthrough"
+      },
+      "decoded": {
+        "codec": "FLAC",
+        "rate": 44100,
+        "bits": 16,
+        "channels": 2,
+        "lossless": true
+      },
+      "device": {
+        "name": "Phone speaker",
+        "rate": 48000,
+        "resampled": true
+      },
+      "origin": {
+        "kind": "setting",
+        "network": "wifi",
+        "level": "original"
+      },
+      "seekable": true
+    },
+    "expect": {
+      "badge": {
+        "verdict": "lossless",
+        "stream": "FLAC 16/44.1",
+        "text": "Lossless · FLAC 16/44.1"
+      },
+      "blocks": [
+        {
+          "kind": "file",
+          "title": "File",
+          "format": "FLAC 16/44.1",
+          "note": "Lossless",
+          "lowers": false
+        },
+        {
+          "kind": "lms",
+          "title": "LMS",
+          "format": "FLAC 16/44.1",
+          "note": "ReplayGain −6.5 dB",
+          "lowers": false
+        },
+        {
+          "kind": "gateway",
+          "title": "Lyrion gateway",
+          "format": "FLAC 16/44.1",
+          "note": "Passed through unchanged",
+          "lowers": false
+        },
+        {
+          "kind": "device",
+          "title": "This device",
+          "format": "FLAC 16/44.1",
+          "note": "Phone speaker, resampled to 48 kHz",
+          "lowers": false
+        }
+      ],
+      "switch": {
+        "levels": [
+          "original",
+          "high",
+          "low"
+        ],
+        "in_force": "original",
+        "origin_text": "Original, on Wi-Fi",
+        "overridden": false,
+        "seekable": true
+      }
+    }
+  },
+  {
+    "name": "DSP turned on, still Lossless",
+    "input": {
+      "player": {
+        "kind": "local"
+      },
+      "file": {
+        "kind": "flc",
+        "rate": 44100,
+        "bits": 16,
+        "kbps": 912
+      },
+      "served": {
+        "codec": "flac",
+        "rate": 44100,
+        "bits": 16,
+        "channels": 2
+      },
+      "sent": {
+        "mode": "passthrough"
+      },
+      "decoded": {
+        "codec": "FLAC",
+        "rate": 44100,
+        "bits": 16,
+        "channels": 2,
+        "lossless": true
+      },
+      "device": {
+        "name": "Headphones",
+        "rate": 44100,
+        "dsp_active": true
+      },
+      "origin": {
+        "kind": "automatic",
+        "level": "original"
+      },
+      "seekable": true
+    },
+    "expect": {
+      "badge": {
+        "verdict": "lossless",
+        "stream": "FLAC 16/44.1",
+        "text": "Lossless · FLAC 16/44.1"
+      },
+      "blocks": [
+        {
+          "kind": "file",
+          "title": "File",
+          "format": "FLAC 16/44.1",
+          "note": "Lossless",
+          "lowers": false
+        },
+        {
+          "kind": "gateway",
+          "title": "Lyrion gateway",
+          "format": "FLAC 16/44.1",
+          "note": "Passed through unchanged",
+          "lowers": false
+        },
+        {
+          "kind": "device",
+          "title": "This device",
+          "format": "FLAC 16/44.1",
+          "note": "Headphones, processed by DSP you turned on",
+          "lowers": false
+        }
+      ],
+      "switch": {
+        "levels": [
+          "original",
+          "high",
+          "low"
+        ],
+        "in_force": "original",
+        "origin_text": "Original, chosen automatically",
+        "overridden": false,
+        "seekable": true
+      }
+    }
+  },
+  {
+    "name": "Remote player, FLAC 24/96",
+    "input": {
+      "player": {
+        "kind": "remote",
+        "name": "Kitchen"
+      },
+      "file": {
+        "kind": "flc",
+        "rate": 96000,
+        "bits": 24,
+        "kbps": 3021
+      }
+    },
+    "expect": {
+      "badge": {
+        "verdict": "hi_res",
+        "stream": "FLAC 24/96",
+        "text": "Hi-Res · FLAC 24/96"
+      },
+      "blocks": [
+        {
+          "kind": "file",
+          "title": "File",
+          "format": "FLAC 24/96",
+          "note": "Hi-Res lossless",
+          "lowers": false
+        },
+        {
+          "kind": "player",
+          "title": "Kitchen",
+          "format": "",
+          "note": "Plays the stream from LMS",
+          "lowers": false
+        }
+      ],
+      "switch": null
+    }
+  },
+  {
+    "name": "Remote player, MP3",
+    "input": {
+      "player": {
+        "kind": "remote",
+        "name": "Living room"
+      },
+      "file": {
+        "kind": "mp3",
+        "rate": 44100,
+        "kbps": 256
+      }
+    },
+    "expect": {
+      "badge": {
+        "verdict": "lossy",
+        "stream": "MP3 256",
+        "text": "Lossy · MP3 256"
+      },
+      "blocks": [
+        {
+          "kind": "file",
+          "title": "File",
+          "format": "MP3 256",
+          "note": "Lossy",
+          "lowers": true
+        },
+        {
+          "kind": "player",
+          "title": "Living room",
+          "format": "",
+          "note": "Plays the stream from LMS",
+          "lowers": false
+        }
+      ],
+      "switch": null
+    }
+  },
+  {
+    "name": "Offline, FLAC original",
+    "input": {
+      "player": {
+        "kind": "offline",
+        "format": "FLAC 24/96"
+      },
+      "file": {
+        "kind": "flc",
+        "rate": 96000,
+        "bits": 24,
+        "kbps": 3021
+      },
+      "decoded": {
+        "codec": "FLAC",
+        "rate": 96000,
+        "bits": 24,
+        "channels": 2,
+        "lossless": true
+      },
+      "device": {
+        "name": "USB DAC",
+        "rate": 96000,
+        "bit_perfect": true,
+        "engine_bit_perfect": true
+      }
+    },
+    "expect": {
+      "badge": {
+        "verdict": "hi_res",
+        "stream": "FLAC 24/96",
+        "text": "Hi-Res · FLAC 24/96"
+      },
+      "blocks": [
+        {
+          "kind": "download",
+          "title": "Download",
+          "format": "FLAC 24/96",
+          "note": "Saved on this device",
+          "lowers": false
+        },
+        {
+          "kind": "device",
+          "title": "This device",
+          "format": "FLAC 24/96",
+          "note": "USB DAC, bit-perfect",
+          "lowers": false
+        }
+      ],
+      "switch": null
+    }
+  },
+  {
+    "name": "Offline, Opus download",
+    "input": {
+      "player": {
+        "kind": "offline",
+        "format": "Opus 160"
+      },
+      "file": {
+        "kind": "flc",
+        "rate": 44100,
+        "bits": 16,
+        "kbps": 912
+      },
+      "decoded": {
+        "codec": "Opus",
+        "rate": 48000,
+        "channels": 2,
+        "lossless": false
+      },
+      "device": {
+        "name": "Phone speaker",
+        "rate": 48000,
+        "engine_bit_perfect": true
+      }
+    },
+    "expect": {
+      "badge": {
+        "verdict": "transcoded",
+        "stream": "Opus 160",
+        "text": "Transcoded · Opus 160"
+      },
+      "blocks": [
+        {
+          "kind": "download",
+          "title": "Download",
+          "format": "Opus 160",
+          "note": "Saved on this device",
+          "lowers": true
+        },
+        {
+          "kind": "device",
+          "title": "This device",
+          "format": "Opus 48 kHz",
+          "note": "Phone speaker",
+          "lowers": false
+        }
+      ],
+      "switch": null
+    }
+  },
+  {
+    "name": "No file type and no decoded stream",
+    "input": {
+      "player": {
+        "kind": "local"
+      },
+      "file": {
+        "rate": 44100,
+        "bits": 16
+      },
+      "device": {
+        "name": "Phone speaker"
+      },
+      "origin": {
+        "kind": "setting",
+        "network": "wifi",
+        "level": "original"
+      },
+      "seekable": true
+    },
+    "expect": {
+      "badge": null,
+      "blocks": [
+        {
+          "kind": "file",
+          "title": "File",
+          "format": "",
+          "note": "Format not reported",
+          "lowers": false
+        },
+        {
+          "kind": "gateway",
+          "title": "Lyrion gateway",
+          "format": "",
+          "note": "",
+          "lowers": false
+        },
+        {
+          "kind": "device",
+          "title": "This device",
+          "format": "",
+          "note": "Phone speaker",
+          "lowers": false
+        }
+      ],
+      "switch": {
+        "levels": [
+          "original",
+          "high",
+          "low"
+        ],
+        "in_force": "original",
+        "origin_text": "Original, on Wi-Fi",
+        "overridden": false,
+        "seekable": true
+      }
+    }
+  },
+  {
+    "name": "Mono file",
+    "input": {
+      "player": {
+        "kind": "local"
+      },
+      "file": {
+        "kind": "flc",
+        "rate": 44100,
+        "bits": 16,
+        "kbps": 912,
+        "channels": 1
+      },
+      "served": {
+        "codec": "flac",
+        "rate": 44100,
+        "bits": 16,
+        "channels": 1
+      },
+      "sent": {
+        "mode": "passthrough"
+      },
+      "decoded": {
+        "codec": "FLAC",
+        "rate": 44100,
+        "bits": 16,
+        "channels": 1,
+        "lossless": true
+      },
+      "device": {
+        "name": "Phone speaker",
+        "rate": 44100,
+        "engine_bit_perfect": true
+      },
+      "origin": {
+        "kind": "setting",
+        "network": "wifi",
+        "level": "original"
+      },
+      "seekable": true
+    },
+    "expect": {
+      "badge": {
+        "verdict": "lossless",
+        "stream": "FLAC 16/44.1",
+        "text": "Lossless · FLAC 16/44.1"
+      },
+      "blocks": [
+        {
+          "kind": "file",
+          "title": "File",
+          "format": "FLAC 16/44.1, mono",
+          "note": "Lossless",
+          "lowers": false
+        },
+        {
+          "kind": "gateway",
+          "title": "Lyrion gateway",
+          "format": "FLAC 16/44.1, mono",
+          "note": "Passed through unchanged",
+          "lowers": false
+        },
+        {
+          "kind": "device",
+          "title": "This device",
+          "format": "FLAC 16/44.1, mono",
+          "note": "Phone speaker",
+          "lowers": false
+        }
+      ],
+      "switch": {
+        "levels": [
+          "original",
+          "high",
+          "low"
+        ],
+        "in_force": "original",
+        "origin_text": "Original, on Wi-Fi",
+        "overridden": false,
+        "seekable": true
+      }
+    }
+  },
+  {
+    "name": "DSD64 converted by LMS to FLAC 24/88.2",
+    "input": {
+      "player": {
+        "kind": "local"
+      },
+      "file": {
+        "kind": "dsf",
+        "rate": 2822400,
+        "bits": 1
+      },
+      "served": {
+        "codec": "flac",
+        "rate": 88200,
+        "bits": 24,
+        "channels": 2
+      },
+      "sent": {
+        "mode": "passthrough"
+      },
+      "decoded": {
+        "codec": "FLAC",
+        "rate": 88200,
+        "bits": 24,
+        "channels": 2,
+        "lossless": true
+      },
+      "device": {
+        "name": "USB DAC",
+        "rate": 88200,
+        "bit_perfect": true,
+        "engine_bit_perfect": true
+      },
+      "origin": {
+        "kind": "setting",
+        "network": "wifi",
+        "level": "original"
+      },
+      "seekable": true
+    },
+    "expect": {
+      "badge": {
+        "verdict": "hi_res",
+        "stream": "FLAC 24/88.2",
+        "text": "Hi-Res · FLAC 24/88.2"
+      },
+      "blocks": [
+        {
+          "kind": "file",
+          "title": "File",
+          "format": "DSD64",
+          "note": "Hi-Res lossless",
+          "lowers": false
+        },
+        {
+          "kind": "lms",
+          "title": "LMS",
+          "format": "FLAC 24/88.2",
+          "note": "Converted from DSD",
+          "lowers": false
+        },
+        {
+          "kind": "gateway",
+          "title": "Lyrion gateway",
+          "format": "FLAC 24/88.2",
+          "note": "Passed through unchanged",
+          "lowers": false
+        },
+        {
+          "kind": "device",
+          "title": "This device",
+          "format": "FLAC 24/88.2",
+          "note": "USB DAC, bit-perfect",
+          "lowers": false
+        }
+      ],
+      "switch": {
+        "levels": [
+          "original",
+          "high",
+          "low"
+        ],
+        "in_force": "original",
+        "origin_text": "Original, on Wi-Fi",
+        "overridden": false,
+        "seekable": true
+      }
+    }
+  },
+  {
+    "name": "Remote player, DSD64",
+    "input": {
+      "player": {
+        "kind": "remote",
+        "name": "Study"
+      },
+      "file": {
+        "kind": "dsf",
+        "rate": 2822400,
+        "bits": 1
+      }
+    },
+    "expect": {
+      "badge": {
+        "verdict": "hi_res",
+        "stream": "DSD64",
+        "text": "Hi-Res · DSD64"
+      },
+      "blocks": [
+        {
+          "kind": "file",
+          "title": "File",
+          "format": "DSD64",
+          "note": "Hi-Res lossless",
+          "lowers": false
+        },
+        {
+          "kind": "player",
+          "title": "Study",
+          "format": "",
+          "note": "Plays the stream from LMS",
+          "lowers": false
+        }
+      ],
+      "switch": null
+    }
+  },
+  {
+    "name": "Lossless file transcoded to MP3 by LMS",
+    "input": {
+      "player": {
+        "kind": "local"
+      },
+      "file": {
+        "kind": "flc",
+        "rate": 44100,
+        "bits": 16,
+        "kbps": 912
+      },
+      "served": {
+        "codec": "mp3",
+        "rate": 44100,
+        "channels": 2
+      },
+      "sent": {
+        "mode": "passthrough"
+      },
+      "decoded": {
+        "codec": "MP3",
+        "rate": 44100,
+        "channels": 2,
+        "lossless": false
+      },
+      "device": {
+        "name": "Phone speaker",
+        "rate": 44100
+      },
+      "origin": {
+        "kind": "setting",
+        "network": "wifi",
+        "level": "original"
+      },
+      "seekable": true
+    },
+    "expect": {
+      "badge": {
+        "verdict": "transcoded",
+        "stream": "MP3",
+        "text": "Transcoded · MP3"
+      },
+      "blocks": [
+        {
+          "kind": "file",
+          "title": "File",
+          "format": "FLAC 16/44.1",
+          "note": "Lossless",
+          "lowers": false
+        },
+        {
+          "kind": "lms",
+          "title": "LMS",
+          "format": "MP3",
+          "note": "Converted from FLAC",
+          "lowers": true
+        },
+        {
+          "kind": "gateway",
+          "title": "Lyrion gateway",
+          "format": "MP3",
+          "note": "Passed through unchanged",
+          "lowers": false
+        },
+        {
+          "kind": "device",
+          "title": "This device",
+          "format": "MP3 44.1 kHz",
+          "note": "Phone speaker",
+          "lowers": false
+        }
+      ],
+      "switch": {
+        "levels": [
+          "original",
+          "high",
+          "low"
+        ],
+        "in_force": "original",
+        "origin_text": "Original, on Wi-Fi",
+        "overridden": false,
+        "seekable": true
+      }
+    }
+  },
+  {
+    "name": "Before the stream message: re-encode seen by the decoder only",
+    "input": {
+      "player": {
+        "kind": "local"
+      },
+      "file": {
+        "kind": "flc",
+        "rate": 96000,
+        "bits": 24,
+        "kbps": 3021
+      },
+      "decoded": {
+        "codec": "Opus",
+        "rate": 48000,
+        "channels": 2,
+        "lossless": false
+      },
+      "device": {
+        "name": "Phone speaker",
+        "rate": 48000,
+        "engine_bit_perfect": true
+      },
+      "origin": {
+        "kind": "setting",
+        "network": "mobile",
+        "level": "high"
+      },
+      "seekable": true
+    },
+    "expect": {
+      "badge": {
+        "verdict": "transcoded",
+        "stream": "Opus",
+        "text": "Transcoded · Opus"
+      },
+      "blocks": [
+        {
+          "kind": "file",
+          "title": "File",
+          "format": "FLAC 24/96",
+          "note": "Hi-Res lossless",
+          "lowers": false
+        },
+        {
+          "kind": "gateway",
+          "title": "Lyrion gateway",
+          "format": "",
+          "note": "",
+          "lowers": false
+        },
+        {
+          "kind": "device",
+          "title": "This device",
+          "format": "Opus 48 kHz",
+          "note": "Phone speaker",
+          "lowers": false
+        }
+      ],
+      "switch": {
+        "levels": [
+          "original",
+          "high",
+          "low"
+        ],
+        "in_force": "high",
+        "origin_text": "High, on mobile data",
+        "overridden": false,
+        "seekable": true
+      }
+    }
+  }
+]
