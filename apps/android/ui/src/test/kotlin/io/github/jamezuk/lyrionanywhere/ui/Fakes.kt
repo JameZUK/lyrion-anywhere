@@ -667,6 +667,14 @@ class FakeLocalPlayer : LocalPlayerRepository {
 
     override fun setOutputRoute(route: OutputRoute) {}
 
+    /** The stream-level overrides asked for, in order (null: back to automatic). */
+    val overrides = mutableListOf<io.github.jamezuk.lyrionanywhere.core.StreamQuality?>()
+
+    override suspend fun setQualityOverride(level: io.github.jamezuk.lyrionanywhere.core.StreamQuality?) {
+        overrides += level
+        state.update { it.copy(qualityOverride = level, streamQuality = level ?: it.streamSetting) }
+    }
+
     val sounds = mutableListOf<SoundSettings>()
 
     override suspend fun setSound(sound: SoundSettings) {

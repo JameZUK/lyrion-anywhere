@@ -91,6 +91,8 @@ object DownloadsPlayer {
             downloaded = emptySet(),
             onDevice = emptySet(),
             downloads = true,
+            diagram = ui.diagram,
+            downloadsPath = s.signalPath,
         )
     }
 

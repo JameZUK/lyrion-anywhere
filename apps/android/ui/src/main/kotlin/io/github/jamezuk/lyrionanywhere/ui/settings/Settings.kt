@@ -332,6 +332,14 @@ data class SettingsSummaries(
     val history: String? = null,
 )
 
+/** About's line for the server's player protocol, with the plugin versions it means. */
+@Composable
+internal fun serverProtocolText(protocol: UInt?): String = when {
+    protocol == null -> stringResource(R.string.about_server_protocol_none)
+    protocol >= io.github.jamezuk.lyrionanywhere.data.MIN_PLAYER_PROTOCOL -> stringResource(R.string.about_server_protocol, protocol.toInt())
+    else -> stringResource(R.string.about_server_protocol_old, protocol.toInt())
+}
+
 /**
  * Settings: with no [section], the index (Account, Playback, Now playing, Downloads,
  * Listening history, This device, About), each row opening its page through [onSection];
@@ -389,6 +397,9 @@ fun SettingsScreen(
      * newest first (empty: none yet; null: the row isn't shown).
      */
     carConnections: List<String>? = null,
+    /** About: the server's player protocol (null: not given), once read ([serverProtocolChecked]). */
+    serverProtocol: UInt? = null,
+    serverProtocolChecked: Boolean = false,
 ) {
     var confirm by rememberSaveable { mutableStateOf(false) }
     var renaming by rememberSaveable { mutableStateOf(false) }
@@ -639,6 +650,15 @@ fun SettingsScreen(
                         headlineContent = { Text(stringResource(R.string.app_name_full)) },
                         supportingContent = { Text(stringResource(R.string.version_line, appVersion, libraryVersion)) },
                     )
+                }
+                if (serverProtocolChecked) {
+                    item {
+                        ListItem(
+                            leadingContent = { Icon(Icons.Outlined.Dns, contentDescription = null) },
+                            headlineContent = { Text(serverProtocolText(serverProtocol)) },
+                            modifier = Modifier.testTag("about-server-protocol"),
+                        )
+                    }
                 }
                 item {
                     ListItem(

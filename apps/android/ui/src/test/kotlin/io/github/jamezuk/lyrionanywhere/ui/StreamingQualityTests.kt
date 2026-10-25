@@ -14,7 +14,7 @@ import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.github.jamezuk.lyrionanywhere.core.StreamQuality
 import io.github.jamezuk.lyrionanywhere.data.StreamingSettings
-import io.github.jamezuk.lyrionanywhere.ui.player.SignalPathPanel
+
 import io.github.jamezuk.lyrionanywhere.ui.settings.StreamingQualitySetting
 import io.github.jamezuk.lyrionanywhere.ui.theme.LyrionTheme
 import org.junit.Assert.assertEquals
@@ -69,16 +69,19 @@ class StreamingQualitySettingTest {
         compose.onNodeWithTag("stream-quality-mobile").assertTextContains("Data saver")
     }
 
+    /** An override chosen in the signal path is noted here, and these settings are left as they are. */
     @Test
-    fun theSignalPathSaysWhenTheStreamIsReEncoded() {
-        var quality by mutableStateOf(StreamQuality.HIGH)
+    fun anOverrideInForceIsNoted() {
+        var override by mutableStateOf<StreamQuality?>(StreamQuality.ORIGINAL)
         compose.setContent {
             LyrionTheme(dynamicColour = false) {
-                SignalPathPanel(signalPath(), quality = quality, metered = true)
+                StreamingQualitySetting(StreamingSettings(), override = override) {}
             }
         }
-        compose.onNodeWithText("High on mobile data (lossless tracks re-encoded to Opus by the server)").assertExists()
-        quality = StreamQuality.ORIGINAL
-        compose.onNodeWithText("Streaming").assertDoesNotExist()
+        compose.onNodeWithTag("stream-quality-override")
+            .assertTextContains("For now: Original, chosen in the signal path", substring = true)
+        compose.onNodeWithTag("stream-quality-mobile").assertTextContains("High")
+        override = null
+        compose.onNodeWithTag("stream-quality-override").assertDoesNotExist()
     }
 }

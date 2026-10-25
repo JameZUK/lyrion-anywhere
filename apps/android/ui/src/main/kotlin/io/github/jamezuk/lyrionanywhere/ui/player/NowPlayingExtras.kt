@@ -76,7 +76,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import io.github.jamezuk.lyrionanywhere.core.Quality
+import io.github.jamezuk.lyrionanywhere.core.StreamQuality
 import io.github.jamezuk.lyrionanywhere.core.SleepEnd
 import io.github.jamezuk.lyrionanywhere.core.Track
 import io.github.jamezuk.lyrionanywhere.ui.R
@@ -96,30 +96,6 @@ fun sleepLeftText(seconds: Int): String {
     return if (r == 0) stringResource(R.string.sleep_left_whole_hours, h) else stringResource(R.string.sleep_left_hours, h, r)
 }
 
-/** The quality badge's text: "FLAC 24/96 · Hi-Res", "MP3 320". */
-@Composable
-fun qualityText(q: Quality): String = if (q.hiRes) stringResource(R.string.quality_hi_res, q.label) else q.label
-
-/** The quality badge (Wave 1 §5); a tap opens the signal path. [compact]: the small form beside the artist. */
-@Composable
-fun QualityBadge(quality: Quality, onClick: () -> Unit, modifier: Modifier = Modifier, compact: Boolean = false) {
-    val text = qualityText(quality)
-    val label = stringResource(R.string.quality_show_path, text)
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(50),
-        color = if (quality.hiRes) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-        contentColor = if (quality.hiRes) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = modifier.testTag("quality-badge").semantics { contentDescription = label },
-    ) {
-        Text(
-            text,
-            style = if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelLarge,
-            maxLines = 1,
-            modifier = Modifier.padding(horizontal = if (compact) 8.dp else 12.dp, vertical = if (compact) 3.dp else 6.dp),
-        )
-    }
-}
 
 /**
  * The sleep timer's choices: fixed lengths, a custom length, or the end of this track, album
@@ -343,41 +319,57 @@ fun UpNextLine(title: String, artist: String?, onOpenQueue: () -> Unit, onRemove
 }
 
 /**
- * The signal path, opened from the quality badge: this phone's full path when it is the
- * player, otherwise the source (all that is known about another player's path).
+ * The signal path, opened from the quality badge, as a block diagram (docs/plans/signal-path-redesign.md):
+ * this phone's File → (LMS) → Lyrion gateway → This device, with the quality switch under
+ * the gateway ([onLevel]) and today's stage list under *Details*; another player's File →
+ * Player; the downloads' Download → This device (no switch for either).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SignalPathSheet(state: PlayerUiState, onDismiss: () -> Unit) {
+fun SignalPathSheet(state: PlayerUiState, onDismiss: () -> Unit, onLevel: ((StreamQuality?) -> Unit)? = null) {
     ModalBottomSheet(onDismissRequest = onDismiss, modifier = Modifier.testTag("signal-path-sheet")) {
-        Column(
-            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 24.dp).navigationBarsPadding(),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            if (state.localSelected) {
-                SignalPathPanel(state.local.signalPath, quality = state.local.streamQuality, metered = state.local.metered, eq = state.local.eqInUse?.name, cushionMs = state.local.cushionMs, outputTiming = state.local.outputTiming)
-            } else {
-                val q = state.status?.current?.quality
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(stringResource(R.string.signal_path), style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
-                        if (q != null) {
-                            Column(Modifier.semantics(mergeDescendants = true) {}) {
-                                Text(stringResource(R.string.signal_source), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                                Text(
-                                    listOf(qualityText(q), stringResource(if (q.lossless) R.string.signal_source_lossless else R.string.signal_source_lossy)).joinToString(" · "),
-                                    style = MaterialTheme.typography.bodyMedium,
-                                )
-                            }
-                        }
-                        Text(
-                            stringResource(R.string.signal_path_other, state.selected?.name.orEmpty()),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
+        SignalPathContent(state, onLevel)
+    }
+}
+
+/** What the signal-path sheet holds (apart from the sheet, for tests and wide layouts). */
+@Composable
+fun SignalPathContent(state: PlayerUiState, onLevel: ((StreamQuality?) -> Unit)? = null) {
+    Column(
+        Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 24.dp).navigationBarsPadding(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(stringResource(R.string.signal_path), style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
+        val diagram = state.diagram
+        // This phone's path (streamed or downloads): the stages, cushion, clock and EQ go under Details.
+        val path = if (state.downloads) state.downloadsPath else state.local.signalPath
+        val details: (@Composable () -> Unit)? = if (state.localSelected) {
+            {
+                SignalPathDetails(
+                    path,
+                    eq = state.local.eqInUse?.name.takeUnless { state.downloads },
+                    cushionMs = state.local.cushionMs.takeUnless { state.downloads },
+                    outputTiming = state.local.outputTiming.takeUnless { state.downloads },
+                )
             }
+        } else {
+            null
+        }
+        if (diagram != null) {
+            QualityDiagramView(
+                diagram,
+                onLevel = onLevel.takeIf { state.localSelected && !state.downloads },
+                details = details,
+            )
+        } else if (details != null) {
+            details()
+        }
+        if (!state.localSelected) {
+            Text(
+                stringResource(R.string.signal_path_other, state.selected?.name.orEmpty()),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

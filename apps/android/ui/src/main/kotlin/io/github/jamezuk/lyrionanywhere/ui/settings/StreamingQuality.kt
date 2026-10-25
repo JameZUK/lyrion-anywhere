@@ -64,11 +64,24 @@ private fun qualityDetail(q: StreamQuality): String = stringResource(
  * Lower levels need a server that offers them.
  */
 @Composable
-fun StreamingQualitySetting(streaming: StreamingSettings, onChange: (StreamingSettings) -> Unit) {
+fun StreamingQualitySetting(
+    streaming: StreamingSettings,
+    /** A level chosen in the signal path for now (null: none), which these settings give way to. */
+    override: StreamQuality? = null,
+    onChange: (StreamingSettings) -> Unit,
+) {
     val explain = stringResource(R.string.stream_quality_explain)
     @Composable
     fun choices(tag: String) = LEVELS.map { q -> Choice(q, qualityName(q), qualityDetail(q), tag = "stream-quality-$tag-${q.name.lowercase()}") }
     Column(Modifier.testTag("stream-quality-setting")) {
+        if (override != null) {
+            Text(
+                stringResource(R.string.stream_quality_override_note, qualityName(override)),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp).testTag("stream-quality-override"),
+            )
+        }
         ChoiceRow(
             title = stringResource(R.string.stream_quality_wifi_row),
             choices = choices("wifi"),

@@ -99,7 +99,7 @@ import io.github.jamezuk.lyrionanywhere.ui.player.QueueActions
 import io.github.jamezuk.lyrionanywhere.ui.player.QueueEntry
 import io.github.jamezuk.lyrionanywhere.ui.player.QueueScreen
 import io.github.jamezuk.lyrionanywhere.ui.player.QueueScreenActions
-import io.github.jamezuk.lyrionanywhere.ui.player.SignalPathPanel
+import io.github.jamezuk.lyrionanywhere.ui.player.SignalPathContent
 import io.github.jamezuk.lyrionanywhere.ui.settings.ReadAheadSetting
 import io.github.jamezuk.lyrionanywhere.ui.settings.ReplayCacheSetting
 import io.github.jamezuk.lyrionanywhere.ui.settings.SettingsScreen
@@ -303,6 +303,10 @@ object DocStates {
             lyrics = DocLibrary.LYRICS,
             lyricsTrackId = current.id,
             nowPlaying = prefs,
+            // The badge and the diagram, as the shared rules draw them (core/tests/fixtures).
+            diagram = io.github.jamezuk.lyrionanywhere.ui.QualityVectors.expected(
+                if (phone) io.github.jamezuk.lyrionanywhere.ui.QualityVectors.PASSED_THROUGH else io.github.jamezuk.lyrionanywhere.ui.QualityVectors.REMOTE,
+            ),
         )
     }
 
@@ -498,9 +502,7 @@ class DocScreenshotsPhone : DocShots() {
                 }
             },
         ) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp)) {
-                SignalPathPanel(phone.local.signalPath, cushionMs = phone.local.cushionMs)
-            }
+            SignalPathContent(phone, onLevel = {})
         }
     }
 

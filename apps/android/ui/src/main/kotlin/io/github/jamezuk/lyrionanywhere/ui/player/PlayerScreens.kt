@@ -107,6 +107,9 @@ import io.github.jamezuk.lyrionanywhere.data.NowPlayingLayout
 import io.github.jamezuk.lyrionanywhere.data.VisualStyle
 import io.github.jamezuk.lyrionanywhere.data.Waveform
 import io.github.jamezuk.lyrionanywhere.ui.R
+import io.github.jamezuk.lyrionanywhere.core.DiagramBadge
+import io.github.jamezuk.lyrionanywhere.data.PhoneBlock
+import io.github.jamezuk.lyrionanywhere.core.StreamQuality
 import io.github.jamezuk.lyrionanywhere.ui.components.ArtworkImage
 import io.github.jamezuk.lyrionanywhere.ui.components.ErrorState
 import io.github.jamezuk.lyrionanywhere.ui.components.HapticSteps
@@ -252,6 +255,7 @@ fun MiniPlayer(
                     MiniPlayerLine(
                         listOfNotNull(track.artist, stringResource(R.string.playing_downloads).takeIf { state.downloads }).joinToString(" · ").ifEmpty { null },
                         state.selected?.name?.takeIf { state.controllingOther },
+                        quality = state.diagram?.badge,
                     )
                 }
             }
@@ -269,10 +273,11 @@ fun MiniPlayer(
 /**
  * The mini player's second line: the artist, and, while another player is controlled, its
  * name ("on Lounge", with a speaker). This phone's own name is left out (it would say
- * nothing new).
+ * nothing new). Then the quality badge's text, as on Now playing (what is heard exists
+ * only for the playing track).
  */
 @Composable
-internal fun MiniPlayerLine(artist: String?, otherPlayer: String?) {
+internal fun MiniPlayerLine(artist: String?, otherPlayer: String?, quality: DiagramBadge? = null) {
     val colour = MaterialTheme.colorScheme.onSurfaceVariant
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.testTag("mini-player-line")) {
         if (otherPlayer != null) {
@@ -292,8 +297,11 @@ internal fun MiniPlayerLine(artist: String?, otherPlayer: String?) {
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodySmall,
                 color = colour,
-                modifier = if (otherPlayer != null) Modifier.testTag("mini-player-on") else Modifier,
+                modifier = (if (otherPlayer != null) Modifier.testTag("mini-player-on") else Modifier).weight(1f, fill = false),
             )
+        }
+        if (quality != null) {
+            QualityChip(quality, Modifier.padding(start = if (line.isNotEmpty()) 6.dp else 0.dp))
         }
     }
 }
@@ -401,6 +409,8 @@ private fun NowPlayingPlaceholder(state: PlayerUiState, actions: NowPlayingActio
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
             ) {
+                // Where this phone's player would be: why it isn't.
+                state.local.phoneBlocked?.let { PhoneBlockedText(it) }
                 Text(
                     stringResource(R.string.choose_player_first),
                     style = MaterialTheme.typography.bodyLarge,
@@ -418,6 +428,30 @@ private fun NowPlayingPlaceholder(state: PlayerUiState, actions: NowPlayingActio
         if (state.error != null) ErrorState(state.error, actions.onRetry, modifier) else LoadingState(modifier)
     }
 }
+
+/**
+ * Why this phone can't play from this server (a protocol mismatch): update the app, or the
+ * server's plugin. Remote control of other players carries on.
+ */
+@Composable
+fun PhoneBlockedText(block: PhoneBlock, modifier: Modifier = Modifier) {
+    Text(
+        phoneBlockedMessage(block),
+        style = MaterialTheme.typography.bodyLarge,
+        color = MaterialTheme.colorScheme.error,
+        textAlign = TextAlign.Center,
+        modifier = modifier.testTag("phone-blocked"),
+    )
+}
+
+/** The message for [block] (the gateway's own reason is never shown). */
+@Composable
+fun phoneBlockedMessage(block: PhoneBlock): String = stringResource(
+    when (block) {
+        PhoneBlock.UPDATE_APP -> R.string.player_update_app
+        PhoneBlock.UPDATE_PLUGIN -> R.string.player_update_plugin
+    },
+)
 
 /** Which of Now playing's sheets (or the volume popover) is open. */
 private enum class NowPlayingPanel { NONE, MORE, STYLES, PATH, QUEUE, SLEEP, VOLUME, RATE }
@@ -687,7 +721,7 @@ private fun NowPlayingContent(
             onOff = { setVisual(false) },
             onDismiss = close,
         )
-        NowPlayingPanel.PATH -> SignalPathSheet(state, onDismiss = close)
+        NowPlayingPanel.PATH -> SignalPathSheet(state, onDismiss = close, onLevel = actions.onOverrideQuality)
         NowPlayingPanel.QUEUE -> QueuePeekSheet(state, actions, onDismiss = close)
         NowPlayingPanel.SLEEP -> {
             val selected = state.selectedId
@@ -833,7 +867,7 @@ private fun NowPlayingControls(
             } else {
                 null
             },
-            badge = track?.quality?.let { q -> { QualityBadge(q, onClick = onShowPath, compact = true) } },
+            badge = state.diagram?.badge?.let { b -> { QualityBadge(b, onClick = onShowPath, compact = true) } },
             below = if (roomy && state.lyricsPeek && lyrics?.synced == true && !lyricsShown) {
                 lyrics.lines.getOrNull(lyricLine)?.text?.takeIf { it.isNotEmpty() }?.let { line ->
                     { LyricsPeek(line, onOpen = onLyrics, maxLines = 1) }
@@ -1014,7 +1048,7 @@ private fun MoreSheet(
                 tag = "more-visualiser-style",
             )
         }
-        if (track?.quality == null && !state.downloads) {
+        if (state.diagram?.badge == null) {
             SheetRow(Icons.Outlined.GraphicEq, stringResource(R.string.signal_path), stringResource(R.string.signal_path_detail), onPath, tag = "more-signal-path")
         }
         val more = actions.onMore
@@ -1129,6 +1163,11 @@ data class NowPlayingActions(
     val onClearUpcoming: () -> Unit = {},
     /** Open "Save as playlist" (offered only when [PlayerUiState.canSaveQueue]). */
     val onSaveQueue: () -> Unit = {},
+    /**
+     * The signal-path sheet's quality switch: override this phone's stream level for now
+     * (null: back to automatic). Null: no switch (another player, or the downloads).
+     */
+    val onOverrideQuality: ((StreamQuality?) -> Unit)? = null,
     /** One shuffle mode (the shuffle button's long-press choice). */
     val onShuffleMode: (ShuffleMode) -> Unit = {},
     /** Now playing's page, visualiser and queue panel were changed (to remember them). */

@@ -233,6 +233,8 @@ data class OfflinePlayerUi(
     val at: Long = 0,
     /** Now playing's choices on this device: the visualiser and its style (Wave 2 §5.7). */
     val nowPlaying: NowPlayingPrefs = NowPlayingPrefs(),
+    /** The quality badge and Download → This device diagram of the track playing (null: none). */
+    val diagram: io.github.jamezuk.lyrionanywhere.core.QualityDiagram? = null,
 ) {
     /** The position now (ms), extrapolated while playing. */
     fun positionAt(now: Long): Long {
@@ -249,13 +251,31 @@ class OfflinePlayerViewModel(
     private val clock: () -> Long,
     /** Where the visualiser's choices are kept (none: not remembered). */
     private val settings: SettingsStore? = null,
+    /** The quality badge's and signal path's rules (none: no badge). */
+    private val quality: io.github.jamezuk.lyrionanywhere.data.QualityDescriber? = null,
 ) : ViewModel(), VisualSource {
     private val _state = MutableStateFlow(OfflinePlayerUi(player.state.value, clock()))
     val state: StateFlow<OfflinePlayerUi> = _state.asStateFlow()
 
+    /** What the diagram was last built from, and the diagram. */
+    private var diagramOf: Triple<io.github.jamezuk.lyrionanywhere.core.SignalPathInfo?, io.github.jamezuk.lyrionanywhere.core.DownloadFormat, String>? = null
+    private var diagram: io.github.jamezuk.lyrionanywhere.core.QualityDiagram? = null
+
+    /** The download's diagram: its format (the original, or what it was saved as) and the engine's path. */
+    private fun diagramFor(s: OfflinePlayerState): io.github.jamezuk.lyrionanywhere.core.QualityDiagram? {
+        val describer = quality ?: return null
+        val t = s.current ?: return null
+        val key = Triple(s.signalPath, t.format, t.codec)
+        if (key != diagramOf) {
+            diagramOf = key
+            diagram = runCatching { describer.offline(s.signalPath, t.format, t.codec) }.getOrNull()
+        }
+        return diagram
+    }
+
     init {
         viewModelScope.launch {
-            player.state.collect { s -> _state.update { it.copy(state = s, at = clock()) } }
+            player.state.collect { s -> _state.update { it.copy(state = s, at = clock(), diagram = diagramFor(s)) } }
         }
         settings?.let { store ->
             viewModelScope.launch {

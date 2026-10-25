@@ -54,6 +54,8 @@ private fun wave1State(
     sleepSecs: Double? = null,
     next: Boolean = true,
     quality: Quality? = HI_RES,
+    /** Another player's diagram: the file only (the shared vectors). */
+    diagram: io.github.jamezuk.lyrionanywhere.core.QualityDiagram? = QualityVectors.expected(QualityVectors.REMOTE),
 ) = PlayerUiState(
     players = listOf(samplePlayer(ME), samplePlayer(OTHER)),
     selectedId = ME,
@@ -64,6 +66,7 @@ private fun wave1State(
     ),
     loading = false,
     local = LocalPlayerState(),
+    diagram = diagram,
 )
 
 /** The mini player's gestures (Wave 1 §4) and their accessibility actions. */
@@ -162,20 +165,25 @@ class NowPlayingWave1Test {
     }
 
     @Test
-    fun theBadgeShowsFormatAndHiResAndOpensTheSignalPath() {
+    fun theBadgeShowsTheVerdictAndTheStreamAndOpensTheSignalPath() {
         nowPlaying()
-        compose.onNodeWithText("FLAC 24/96 · Hi-Res").assertIsDisplayed()
-        compose.onNodeWithContentDescription("FLAC 24/96 · Hi-Res. Show the signal path").performClick()
+        compose.onNodeWithText("Hi-Res · FLAC 24/96").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Hi-Res · FLAC 24/96. Show the signal path").performClick()
         compose.waitForIdle()
-        // Another player: only the source is known.
-        compose.onNodeWithText("FLAC 24/96 · Hi-Res · lossless").assertIsDisplayed()
+        // Another player: File → Player, from the file only.
+        compose.onNodeWithContentDescription("File: FLAC 24/96, Hi-Res lossless").assertExists()
     }
 
     @Test
-    fun aLossyTrackShowsCodecAndBitRateOnly() {
-        nowPlaying(wave1State(quality = Quality("MP3", "MP3 320", false, false, 44_100u, null, 320u)))
-        compose.onNodeWithText("MP3 320").assertIsDisplayed()
-        compose.onNodeWithText("MP3 320 · Hi-Res").assertDoesNotExist()
+    fun aLossyTrackIsLossyWithItsBitRate() {
+        nowPlaying(
+            wave1State(
+                quality = Quality("MP3", "MP3 256", false, false, 44_100u, null, 256u),
+                diagram = QualityVectors.expected("Remote player, MP3"),
+            ),
+        )
+        compose.onNodeWithText("Lossy · MP3 256").assertIsDisplayed()
+        compose.onNodeWithText("Hi-Res", substring = true).assertDoesNotExist()
     }
 
     @Test

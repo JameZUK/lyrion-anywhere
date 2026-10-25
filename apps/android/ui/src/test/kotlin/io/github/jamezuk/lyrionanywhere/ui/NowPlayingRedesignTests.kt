@@ -97,6 +97,7 @@ internal fun busyState(selected: String = KITCHEN_PLAYER, prefs: NowPlayingPrefs
             sleepSecs = 1620.0,
         ),
         nowPlaying = prefs,
+        diagram = QualityVectors.expected(QualityVectors.PASSED_THROUGH),
         lyrics = TrackLyrics(false, true, listOf(LyricLine(0u, "First line"), LyricLine(5_000u, "Second line"))),
         lyricsTrackId = 1,
         credits = listOf(Credit(ArtistRole.COMPOSER, "Ada Placeholder", 42L)),

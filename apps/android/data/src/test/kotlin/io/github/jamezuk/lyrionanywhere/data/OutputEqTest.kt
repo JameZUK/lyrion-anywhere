@@ -213,6 +213,7 @@ class OutputEqRepositoryTest {
             scope,
             d,
             factory = { Handle().also { handles += it } },
+            serverProtocol = { 2u },
         )
     }
 

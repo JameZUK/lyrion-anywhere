@@ -424,6 +424,7 @@ fun MainScreen(
             clock = clock,
             library = container.library,
             downloaded = container.offline.state.map { it.downloadedIds },
+            quality = io.github.jamezuk.lyrionanywhere.data.RustQualityDescriber,
         )
     }
     // Which controls work follows the link to the server (offline controls).
@@ -438,7 +439,9 @@ fun MainScreen(
         if (playerState.local.enabled) startPlaybackService(context)
     }
     // Downloads playing on this phone (they can be played online too).
-    val offlineVm = viewModel(key = "offline-player") { OfflinePlayerViewModel(container.offlinePlayer, offlineClock, container.settings) }
+    val offlineVm = viewModel(key = "offline-player") {
+        OfflinePlayerViewModel(container.offlinePlayer, offlineClock, container.settings, io.github.jamezuk.lyrionanywhere.data.RustQualityDescriber)
+    }
     val offlineUi by offlineVm.state.collectAsStateWithLifecycle()
     LaunchedEffect(offlineUi.state.active) {
         if (offlineUi.state.active) startPlaybackService(context)
@@ -705,6 +708,8 @@ fun MainScreen(
         SettingsScreen(
             state = ui,
             carConnections = carLog?.let { carEntries.map { it.describe(carLabels) } },
+            serverProtocol = playerState.local.serverProtocol,
+            serverProtocolChecked = playerState.local.protocolChecked,
             appVersion = BuildConfig.VERSION_NAME,
             libraryVersion = remember { libraryVersion() },
             section = section,
@@ -745,7 +750,11 @@ fun MainScreen(
                 RatingsSetting(playerState.ratingStyle, player::setRatingStyle, player::clearRatings)
             },
             streaming = {
-                StreamingQualitySetting(app.streaming) { s -> scope.launch { container.settings.setStreaming(s) } }
+                StreamingQualitySetting(
+                    app.streaming,
+                    onChange = { s -> scope.launch { container.settings.setStreaming(s) } },
+                    override = playerState.local.qualityOverride,
+                )
             },
             device = { DeviceSettings(container, scope) },
             backgroundPrompt = if (BackgroundPlayback.shouldPrompt(playOnPhone, unrestricted, app.backgroundPromptDismissed)) {
@@ -1564,6 +1573,7 @@ fun MainScreen(
                             onClearUpcoming = player::clearUpcoming,
                             onSaveQueue = { player.openSaveQueue(saveQueueToday()) },
                             onShuffleMode = player::setShuffle,
+                            onOverrideQuality = player::overrideQuality,
                             onLayout = player::setLayout,
                             onVisualiser = player::setVisualiser,
                             onVisualStyle = player::setVisualStyle,

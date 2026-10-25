@@ -146,9 +146,6 @@ private fun verdictText(v: SignalVerdict): String = stringResource(
 fun SignalPathPanel(
     path: SignalPathInfo?,
     modifier: Modifier = Modifier,
-    /** The stream level asked for, and whether on mobile data (Streaming quality). */
-    quality: StreamQuality = StreamQuality.ORIGINAL,
-    metered: Boolean = false,
     /** The EQ profile in use on this output (Wave 2 §5.3; null: none). */
     eq: String? = null,
     /** Listening held ahead while reading ahead (ms; null: none to show). */
@@ -165,93 +162,100 @@ fun SignalPathPanel(
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.padding(start = 8.dp).weight(1f).semantics { heading() },
                 )
-                if (path != null) {
-                    Surface(
-                        shape = MaterialTheme.shapes.small,
-                        color = if (path.verdict == SignalVerdict.BIT_PERFECT) {
-                            MaterialTheme.colorScheme.primaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.secondaryContainer
-                        },
-                    ) {
-                        Text(
-                            verdictText(path.verdict),
-                            style = MaterialTheme.typography.labelLarge,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                        )
-                    }
-                }
             }
-            if (path == null) {
-                Text(stringResource(R.string.signal_path_none), style = MaterialTheme.typography.bodyMedium)
-                return@Column
-            }
-            val source = buildList {
-                add(path.sourceCodec)
-                add(formatRate(path.sourceRate, LocalResources.current))
-                path.sourceBits?.let { add(stringResource(R.string.bits_format, it.toInt())) }
-            }.joinToString(" · ")
-            LabelledLine(stringResource(R.string.signal_source), source)
-            if (quality != StreamQuality.ORIGINAL) {
-                // Lossless tracks arrive re-encoded; others as they are.
-                LabelledLine(
-                    stringResource(R.string.signal_streaming),
-                    stringResource(
-                        if (metered) R.string.signal_streaming_mobile else R.string.signal_streaming_wifi,
-                        io.github.jamezuk.lyrionanywhere.ui.settings.qualityName(quality),
-                    ),
-                )
-            }
-            CushionLine(cushionMs, Modifier.testTag("signal-cushion"))
-            if (path.fromCache) {
-                // The replay cache: its first bytes came from the network, the rest from the
-                // phone, checked by its hash, so the audio is the same.
-                Box(Modifier.testTag("signal-from-cache")) {
-                    StageRow(SignalStage(stringResource(R.string.stage_from_cache), bitTransparent = true, resamples = false))
-                }
-            }
-            if (path.fromDownloads) {
-                // A downloaded original: its first bytes came from the network, the rest from
-                // the download, whose audio was checked to be the same.
-                Box(Modifier.testTag("signal-from-downloads")) {
-                    StageRow(SignalStage(stringResource(R.string.stage_from_downloads), bitTransparent = true, resamples = false))
-                }
-            }
-            path.stages.forEach { StageRow(it) }
-            if (eq != null) EqChip(eq)
-            LabelledLine(
-                stringResource(R.string.signal_output),
-                listOf(path.outputDevice, formatRate(path.outputRate, LocalResources.current), path.outputFormat).joinToString(" · "),
+            SignalPathDetails(path, eq = eq, cushionMs = cushionMs, outputTiming = outputTiming)
+        }
+    }
+}
+
+/**
+ * The signal path's details, the device block's *Details* in the diagram: the verdict, the
+ * decoder's source, every stage in order (ReplayGain, volume, DSP, resampling, dither), the
+ * cushion, the output and its clock, the EQ in use and why it isn't bit-perfect. Nothing of
+ * the panel before the diagram is lost.
+ */
+@Composable
+fun SignalPathDetails(
+    path: SignalPathInfo?,
+    modifier: Modifier = Modifier,
+    eq: String? = null,
+    cushionMs: Long? = null,
+    outputTiming: OutputTiming? = null,
+) {
+    Column(modifier.fillMaxWidth().testTag("signal-path-details"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (path == null) {
+            Text(stringResource(R.string.signal_path_none), style = MaterialTheme.typography.bodyMedium)
+            return@Column
+        }
+        Surface(
+            shape = MaterialTheme.shapes.small,
+            color = if (path.verdict == SignalVerdict.BIT_PERFECT) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                MaterialTheme.colorScheme.secondaryContainer
+            },
+        ) {
+            Text(
+                verdictText(path.verdict),
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
             )
-            OutputClockLine(outputTiming, Modifier.testTag("signal-output-clock"))
-            val note = when {
-                path.bitPerfect -> R.string.signal_note_bit_perfect
-                path.engineBitPerfect -> R.string.signal_note_mixer
-                path.resampled -> R.string.signal_note_resampled
-                path.dspActive -> R.string.signal_note_dsp
-                else -> null
+        }
+        val source = buildList {
+            add(path.sourceCodec)
+            add(formatRate(path.sourceRate, LocalResources.current))
+            path.sourceBits?.let { add(stringResource(R.string.bits_format, it.toInt())) }
+        }.joinToString(" · ")
+        LabelledLine(stringResource(R.string.signal_source), source)
+        CushionLine(cushionMs, Modifier.testTag("signal-cushion"))
+        if (path.fromCache) {
+            // The replay cache: its first bytes came from the network, the rest from the
+            // phone, checked by its hash, so the audio is the same.
+            Box(Modifier.testTag("signal-from-cache")) {
+                StageRow(SignalStage(stringResource(R.string.stage_from_cache), bitTransparent = true, resamples = false))
             }
-            note?.let {
+        }
+        if (path.fromDownloads) {
+            // A downloaded original: its first bytes came from the network, the rest from
+            // the download, whose audio was checked to be the same.
+            Box(Modifier.testTag("signal-from-downloads")) {
+                StageRow(SignalStage(stringResource(R.string.stage_from_downloads), bitTransparent = true, resamples = false))
+            }
+        }
+        path.stages.forEach { StageRow(it) }
+        if (eq != null) EqChip(eq)
+        LabelledLine(
+            stringResource(R.string.signal_output),
+            listOf(path.outputDevice, formatRate(path.outputRate, LocalResources.current), path.outputFormat).joinToString(" · "),
+        )
+        OutputClockLine(outputTiming, Modifier.testTag("signal-output-clock"))
+        val note = when {
+            path.bitPerfect -> R.string.signal_note_bit_perfect
+            path.engineBitPerfect -> R.string.signal_note_mixer
+            path.resampled -> R.string.signal_note_resampled
+            path.dspActive -> R.string.signal_note_dsp
+            else -> null
+        }
+        note?.let {
+            Text(
+                stringResource(it),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (path.fixedVolume) {
+            Text(stringResource(R.string.signal_volume_on_dac), style = MaterialTheme.typography.bodySmall)
+        }
+        if (!path.bitPerfect && path.notBitPerfect.isNotEmpty()) {
+            val reasons = path.notBitPerfect.map { stringResource(reasonText(it)) }
+            Column(Modifier.semantics(mergeDescendants = true) {}) {
                 Text(
-                    stringResource(it),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    stringResource(R.string.signal_why_not),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
                 )
-            }
-            if (path.fixedVolume) {
-                Text(stringResource(R.string.signal_volume_on_dac), style = MaterialTheme.typography.bodySmall)
-            }
-            if (!path.bitPerfect && path.notBitPerfect.isNotEmpty()) {
-                val reasons = path.notBitPerfect.map { stringResource(reasonText(it)) }
-                Column(Modifier.semantics(mergeDescendants = true) {}) {
-                    Text(
-                        stringResource(R.string.signal_why_not),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    reasons.forEach {
-                        Text("• $it", style = MaterialTheme.typography.bodySmall)
-                    }
+                reasons.forEach {
+                    Text("• $it", style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
@@ -327,6 +331,8 @@ internal fun playOnPhoneDetail(local: LocalPlayerState): String {
     val status: LocalPlayerStatus? = local.status
     return when {
         !local.enabled -> stringResource(R.string.play_on_phone_off)
+        // A protocol mismatch: the app says what to update (never the gateway's reason).
+        local.phoneBlocked != null -> phoneBlockedMessage(local.phoneBlocked!!)
         local.error != null -> stringResource(R.string.play_on_phone_failed)
         status == null -> stringResource(R.string.play_on_phone_starting)
         else -> when (val c = status.connection) {
@@ -334,6 +340,8 @@ internal fun playOnPhoneDetail(local: LocalPlayerState): String {
             PlayerConnection.Connected -> stringResource(R.string.play_on_phone_ready, status.name)
             is PlayerConnection.Reconnecting -> stringResource(R.string.play_on_phone_reconnecting)
             is PlayerConnection.Stopped -> stringResource(R.string.play_on_phone_stopped, c.reason)
+            // The gateway's reason is never shown: the app says what to do.
+            PlayerConnection.UpdateApp -> stringResource(R.string.player_update_app)
         }
     }
 }

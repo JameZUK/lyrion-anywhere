@@ -10,6 +10,7 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 
 // The brand palette, used where dynamic colour isn't available (Android 10 and 11). A deep
@@ -55,6 +56,21 @@ internal val BrandDark = darkColorScheme(
     error = Color(0xFFFFB4AB),
     onError = Color(0xFF690005),
 )
+
+/**
+ * The quality badge's and signal-path diagram's amber (docs/plans/signal-path-redesign.md,
+ * decision 2): a subtle tint for Transcoded and Lossy, and for the block that lowers the
+ * verdict. The word always carries the meaning; the colour only echoes it. The same in
+ * every scheme (wallpaper colours have no amber of their own), a light and a dark pair.
+ */
+data class AmberTint(val container: Color, val onContainer: Color)
+
+internal val AmberLight = AmberTint(container = Color(0xFFFFE2B8), onContainer = Color(0xFF3A2400))
+internal val AmberDark = AmberTint(container = Color(0xFF5A3F12), onContainer = Color(0xFFFFDDAF))
+
+/** The amber for the scheme in use: the dark pair on a dark surface. */
+@Composable
+fun amberTint(): AmberTint = if (MaterialTheme.colorScheme.surface.luminance() < 0.5f) AmberDark else AmberLight
 
 /** The colour scheme: the wallpaper's (Android 12+) when [dynamicColour] is on, else ours. */
 @Composable
