@@ -16,6 +16,7 @@
 	import { controls } from '#lib/player/controls.svelte';
 	import { now } from '#lib/player/now.svelte';
 	import { amber, qualityNow } from '#lib/player/quality-now.svelte';
+	import { verdictWord } from '#lib/player/quality-path';
 
 	let seeking = $state<number | null>(null);
 	let volume = $state<number | null>(null);
@@ -36,7 +37,11 @@
 				? [textOf(track?.artist), textOf(track?.album)].filter(Boolean).join(' · ')
 				: 'Choose a player',
 	);
-	/** What is heard, as Now playing's badge says it (only for the playing track). */
+	/**
+	 * What is heard, as Now playing's badge says it (only for the playing track): the verdict
+	 * word alone ("Hi-Res", "Transcoded"), a compact chip after the artist; the full badge text
+	 * ("Hi-Res · FLAC 24/96") is on Now playing, so the artist keeps its space on a phone.
+	 */
 	const diagram = $derived(track ? qualityNow.diagram : null);
 	const heard = $derived(diagram?.badge ?? null);
 	/** Which player is in use, when it isn't this device (Wave 3.5: no separate strip for it). */
@@ -169,8 +174,8 @@
 		<div class="thumb"><Art path={thumb} local={now.localCover} alt="" label={title} /></div>
 		<div class="meta">
 			<div class="title ellipsis">{title}</div>
-			<div class="sub ellipsis muted">
-				{#if sleepIn !== null}<span class="moon" title={`Sleep timer: ${formatLeft(sleepIn)}`}><Icon name="moon" size={13} /></span>{/if}{#if on}<span class="on" data-mini-on>on {on}</span>{#if sub}{' · '}{/if}{/if}<span class:pick={!app.current && !now.downloads}>{sub}</span>{#if heard}{' · '}<span class="heard" class:amber={!!diagram && amber(diagram)} data-mini-quality data-verdict={heard.verdict}>{heard.text}</span>{/if}
+			<div class="sub muted">
+				<span class="line ellipsis" data-mini-sub>{#if sleepIn !== null}<span class="moon" title={`Sleep timer: ${formatLeft(sleepIn)}`}><Icon name="moon" size={13} /></span>{/if}{#if on}<span class="on" data-mini-on>on {on}</span>{#if sub}{' · '}{/if}{/if}<span class:pick={!app.current && !now.downloads}>{sub}</span></span>{#if heard}<span class="heard" class:hires={heard.verdict === 'hi_res'} class:amber={!!diagram && amber(diagram)} title={heard.text} data-mini-quality data-verdict={heard.verdict}>{verdictWord(heard.verdict)}</span>{/if}
 			</div>
 		</div>
 	</a>
@@ -287,11 +292,37 @@
 		font-weight: 600;
 	}
 	.sub {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		min-width: 0;
 		font-size: 0.85rem;
 	}
-	/* What is heard (the badge's text); Transcoded and Lossy in the amber tint. */
+	/* The artist and album take the room there is; only they are cut short. */
+	.line {
+		flex: 0 1 auto;
+		min-width: 0;
+	}
+	/* What is heard: the verdict word as a compact chip that never shrinks; Transcoded and
+	   Lossy in the amber tint, as Now playing's badge. */
+	.heard {
+		flex: none;
+		padding: 0 0.35rem;
+		border: 1px solid var(--line);
+		border-radius: 5px;
+		font-family: var(--mono);
+		font-size: 0.68rem;
+		line-height: 1.5;
+		color: var(--fg);
+		white-space: nowrap;
+	}
+	.heard.hires {
+		border-color: var(--accent);
+	}
 	.heard.amber {
-		color: var(--amber);
+		border-color: var(--amber);
+		background: var(--amber-soft);
+		color: var(--amber-fg);
 	}
 	/* The player in use, first so it is never cut off: "on Lounge · Artist · Album". */
 	.on,
