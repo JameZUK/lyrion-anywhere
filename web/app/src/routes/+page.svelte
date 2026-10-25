@@ -21,7 +21,7 @@
 	import { controls } from '#lib/player/controls.svelte';
 	import { now } from '#lib/player/now.svelte';
 	import { offlinePlayer } from '#lib/offline/index.svelte';
-	import { DEVICE_BUTTONS_NOTE } from '#lib/player/volume';
+	import { DEVICE_BUTTONS_NOTE, FIXED_LEVEL_NOTE, levelFixed } from '#lib/player/volume';
 	import Ambient from '#lib/components/Ambient.svelte';
 	import SleepSheet from '#lib/components/SleepSheet.svelte';
 	import SignalPath from '#lib/components/SignalPath.svelte';
@@ -378,7 +378,9 @@
 		{#if sleepError}<p class="muted" role="alert">{sleepError}</p>{/if}
 
 		<div class="volrow">
-			{#if device.buttonsOnly(app.playerId)}
+			{#if levelFixed(app.now)}
+				<p class="volume muted" data-volume-note data-fixed-level-note><Icon name="volume" size={20} /><span>{FIXED_LEVEL_NOTE}</span></p>
+			{:else if device.buttonsOnly(app.playerId)}
 				<p class="volume muted" data-volume-note><Icon name="volume" size={20} /><span>{DEVICE_BUTTONS_NOTE}</span></p>
 			{:else}
 				<label class="volume">

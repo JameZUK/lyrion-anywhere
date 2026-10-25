@@ -165,6 +165,15 @@ test('paging is clamped to what the gateway allows', () => {
 	expect(c.seek(-10)).toEqual(['time', 0]);
 });
 
+// Sent only for this device's own player (the gateway allows nothing else of it), so it is
+// not in the shared fixture of commands for any player.
+test('this player’s Volume Control: exactly the three values the gateway allows', () => {
+	expect(c.volumeControl('0')).toEqual(['playerpref', 'digitalVolumeControl', '0']);
+	expect(c.volumeControl('1')).toEqual(['playerpref', 'digitalVolumeControl', '1']);
+	expect(c.volumeControl('?')).toEqual(['playerpref', 'digitalVolumeControl', '?']);
+	for (const bad of ['2', '', '0; rescan', 0, 1, null]) expect(c.volumeControl(bad as '0')).toEqual(['playerpref', 'digitalVolumeControl', '?']);
+});
+
 test('enqueue never produces a URL or path form', () => {
 	for (const e of examples) {
 		for (const arg of e.cmd) expect(String(arg)).not.toMatch(/url:|:\/\/|^\/|file:/);

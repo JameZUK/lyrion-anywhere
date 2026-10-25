@@ -10,6 +10,7 @@ import { PlayheadSmoother, outputClock } from './output-clock';
 import { MEDIA_TYPE, MODE_LABELS, chooseMode, detectEnvironment, loadPreference, type ModeChoice } from './mode';
 import { LogLimiter, Reporter, buildReport, describePageCommand, diagnosticsSender } from './diagnostics';
 import { fadeGain } from '#lib/lms/sleep';
+import { nowPlaying as briefStatus, volumeControl } from '#lib/lms/commands';
 import { mayResumeMedia } from './local-plan';
 import { needsGesture, rememberAutoplay } from './autoplay';
 import {
@@ -28,7 +29,10 @@ import {
 	cleanGains,
 	detectMediaVolume,
 	elementVolume,
+	fixedLevelChange,
+	loadFixedLevel,
 	loadVolumeSetting,
+	saveFixedLevel,
 	outputGains,
 	planVolume,
 	saveVolumeSetting,
@@ -42,6 +46,8 @@ const DEVICE_LOCK = 'anywhere-device-player';
 
 /** While LMS's volume is held at 100% here, ask again at most this often. */
 const HOLD_FULL_EVERY_MS = 3000;
+/** While a controller has changed this player's Volume Control against the setting, set it back at most this often. */
+export const FIXED_LEVEL_EVERY_MS = 30_000;
 /** Web Audio: tell the worker when the output is heard this often (for sync). */
 const CLOCK_EVERY_MS = 250;
 /** Media element: read the play head this often (the background may slow it to 1 s). */
@@ -111,6 +117,14 @@ class DevicePlayer {
 	#holding = false;
 	/** "Volume on this device" in Settings. */
 	volumeSetting = $state<VolumeSetting>(loadVolumeSetting());
+	/** "Fix this player's output level at 100%" in Settings (on by default; see volume.ts). */
+	fixedLevel = $state(loadFixedLevel());
+	/** Called after this player's Volume Control was changed in LMS (the app refreshes its status). */
+	onLevelChanged: (() => void) | null = null;
+	/** When this player's Volume Control was last set (performance.now()). */
+	#fixedAt = -Infinity;
+	/** A read-and-set of the Volume Control is under way. */
+	#fixedBusy = false;
 	/** "Streaming quality in this browser" in Settings, and the level it means now. */
 	qualityPreference = $state<QualityPreference>(loadQualityPreference());
 	quality = $state<StreamQuality>('original');
@@ -355,6 +369,65 @@ class DevicePlayer {
 		this.#applyVolume();
 	}
 
+	/**
+	 * Change "Fix this player's output level at 100%": kept per browser, and set on this
+	 * device's player in LMS at once if it is connected.
+	 */
+	setFixedLevel(on: boolean) {
+		this.fixedLevel = on;
+		saveFixedLevel(on);
+		if (this.state === 'connected' && this.mac) void this.#syncFixedLevel('the setting changed');
+	}
+
+	/**
+	 * Bring LMS's Volume Control for this player in step with the setting: read it, and set it
+	 * if they disagree. One attempt per call: a failure is noted, never retried here.
+	 */
+	async #syncFixedLevel(why: string) {
+		const mac = this.mac;
+		const gen = this.#gen;
+		if (!mac || this.#fixedBusy) return;
+		this.#fixedBusy = true;
+		try {
+			let reported: unknown;
+			try {
+				reported = (await api.rpc<{ digital_volume_control?: unknown }>(mac, briefStatus()))?.digital_volume_control;
+			} catch (e) {
+				this.#note(`could not read this player’s Volume Control: ${(e as Error).message}`);
+				return;
+			}
+			if (gen !== this.#gen || mac !== this.mac) return;
+			const v = fixedLevelChange(this.fixedLevel, reported);
+			if (v) await this.#setVolumeControl(mac, v, why);
+		} finally {
+			this.#fixedBusy = false;
+		}
+	}
+
+	async #setVolumeControl(mac: string, v: '0' | '1', why: string) {
+		this.#fixedAt = performance.now();
+		const c = volumeControl(v);
+		this.#note(describePageCommand(c, why), 'page:volume-control');
+		try {
+			await api.rpc(mac, c);
+			this.onLevelChanged?.();
+		} catch (e) {
+			this.#note(`could not set this player’s Volume Control: ${(e as Error).message}`);
+		}
+	}
+
+	/**
+	 * The app's status for the player it controls. When that is this device's and a
+	 * controller has changed its Volume Control against the setting, set it back (at most
+	 * every {@link FIXED_LEVEL_EVERY_MS}).
+	 */
+	observeStatus(playerId: string | null | undefined, status: { digital_volume_control?: unknown } | null | undefined) {
+		if (!playerId || playerId !== this.mac || this.state !== 'connected' || this.#fixedBusy) return;
+		const v = fixedLevelChange(this.fixedLevel, status?.digital_volume_control);
+		if (!v || performance.now() - this.#fixedAt < FIXED_LEVEL_EVERY_MS) return;
+		void this.#setVolumeControl(this.mac, v, `a controller changed it; the setting ${v === '0' ? 'fixes the output level' : 'lets LMS set the volume'}`);
+	}
+
 	/** True when `playerId` is this device and its own volume buttons set the level. */
 	buttonsOnly(playerId: string | null | undefined): boolean {
 		return !!playerId && playerId === this.mac && !!this.volumePlan && !this.volumePlan.follow;
@@ -518,6 +591,7 @@ class DevicePlayer {
 			this.#note(`playback: ${MODE_LABELS[choice.mode]}. ${choice.reason}`);
 			this.#lmsGains = [1, 1];
 			this.#heldFullAt = -Infinity;
+			this.#fixedAt = -Infinity;
 			this.#planVolume(choice.mode);
 			this.#configureAudioSession();
 			let port: MessagePort | undefined;
@@ -957,6 +1031,7 @@ class DevicePlayer {
 				this.onConnected?.(p.mac);
 			}
 			this.#applyVolume();
+			void this.#syncFixedLevel('this player connected');
 		} else if (m.connection === 'reconnecting' || m.connection === 'restarting' || m.connection === 'reauthenticating') {
 			this.state = 'reconnecting';
 		} else if (m.connection === 'closed') {

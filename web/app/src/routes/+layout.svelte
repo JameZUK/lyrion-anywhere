@@ -185,6 +185,15 @@
 	// A sleep timer on this device fades its own output before the end.
 	app.onDeviceSleep = (endsAt, fadeS) => device.setSleepFade(endsAt, fadeS);
 
+	// "Fix this player's output level at 100%": the status of the player in use tells the
+	// device when a controller has changed its Volume Control, and a change it makes shows at once.
+	$effect(() => {
+		const id = app.playerId;
+		const s = app.now;
+		untrack(() => device.observeStatus(id, s));
+	});
+	device.onLevelChanged = () => app.soon();
+
 	// When this browser becomes a player, control it.
 	device.onConnected = async (mac) => {
 		const point = loadResume();

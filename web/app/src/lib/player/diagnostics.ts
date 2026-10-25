@@ -180,6 +180,11 @@ export function describeCommand(c: Command): string {
 	if (a === 'time' && num(b) !== null) return `seek to ${num(b)} s`;
 	if (a === 'playlist' && b === 'index' && num(d) !== null) return `play queue entry ${num(d)}`;
 	if (a === 'mixer' && b === 'volume' && num(d) !== null) return `set the volume to ${num(d)}%`;
+	if (a === 'playerpref' && b === 'digitalVolumeControl') {
+		if (d === '0' || d === 0) return 'fix the output level at 100%';
+		if (d === '1' || d === 1) return 'let LMS set the volume';
+		if (d === '?') return 'report its Volume Control';
+	}
 	return typeof a === 'string' && /^[a-z]{1,20}$/.test(a) ? `run '${a}'` : 'run a command';
 }
 

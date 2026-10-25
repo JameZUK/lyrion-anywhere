@@ -82,6 +82,17 @@ describe('page commands', () => {
 		expect(describeCommand(['status'])).toBe("run 'status'");
 	});
 
+	test('this player’s Volume Control (fixed output level) is described in words', () => {
+		expect(describePageCommand(['playerpref', 'digitalVolumeControl', '0'], 'this player connected')).toBe(
+			'page: asked LMS to fix the output level at 100% (this player connected)',
+		);
+		expect(describeCommand(['playerpref', 'digitalVolumeControl', '1'])).toBe('let LMS set the volume');
+		expect(describeCommand(['playerpref', 'digitalVolumeControl', '?'])).toBe('report its Volume Control');
+		// Anything else of playerpref says only its name, never its values.
+		expect(describeCommand(['playerpref', 'digitalVolumeControl', '/srv/music'])).toBe("run 'playerpref'");
+		expect(describeCommand(['playerpref', 'password', 'secret'])).toBe("run 'playerpref'");
+	});
+
 	test('free text in a command never reaches the log', () => {
 		for (const c of [['playlist', 'play', '/srv/music/a.flac'], ['time', 'abc'], ['mixer', 'volume', '+5; rm'], ['Search Me'], [42], []]) {
 			const d = describeCommand(c as (string | number)[]);

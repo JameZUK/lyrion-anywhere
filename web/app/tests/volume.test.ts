@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
 	DEVICE_BUTTONS_NOTE,
+	FIXED_LEVEL_EXPLANATION,
+	FIXED_LEVEL_LABEL,
+	FIXED_LEVEL_NOTE,
+	FIXED_LEVEL_NO_FOLLOW,
+	fixedLevelChange,
+	levelFixed,
+	loadFixedLevel,
+	saveFixedLevel,
 	ELEMENT_RAMP_MS,
 	ElementVolume,
 	belowFull,
@@ -189,5 +197,66 @@ describe('detection and storage', () => {
 		};
 		expect(loadVolumeSetting(broken)).toBe('auto');
 		expect(() => saveVolumeSetting('follow', broken)).not.toThrow();
+	});
+});
+
+describe('fixed output level', () => {
+	it('decides what to send for every setting and reported value', () => {
+		// On: fix it when LMS sets the volume; nothing when already fixed.
+		expect(fixedLevelChange(true, 1)).toBe('0');
+		expect(fixedLevelChange(true, '1')).toBe('0');
+		expect(fixedLevelChange(true, 0)).toBeNull();
+		expect(fixedLevelChange(true, '0')).toBeNull();
+		// Off: give LMS the volume back when fixed; nothing when LMS already sets it.
+		expect(fixedLevelChange(false, 0)).toBe('1');
+		expect(fixedLevelChange(false, '0')).toBe('1');
+		expect(fixedLevelChange(false, 1)).toBeNull();
+		// Unknown: nothing is sent on a guess.
+		for (const v of [undefined, null, 2, -1, '', 'yes', NaN, {}, [], true, false]) {
+			expect(fixedLevelChange(true, v)).toBeNull();
+			expect(fixedLevelChange(false, v)).toBeNull();
+		}
+	});
+
+	it('reads a fixed level from a status', () => {
+		expect(levelFixed({ digital_volume_control: 0 })).toBe(true);
+		expect(levelFixed({ digital_volume_control: '0' })).toBe(true);
+		for (const s of [{ digital_volume_control: 1 }, {}, null, undefined, { digital_volume_control: false }, { digital_volume_control: '' }]) {
+			expect(levelFixed(s)).toBe(false);
+		}
+	});
+
+	it('is on by default; only the off state is kept, and broken storage reads as the default', () => {
+		const m = new Map<string, string>();
+		const store = { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v), removeItem: (k: string) => void m.delete(k) };
+		expect(loadFixedLevel(store)).toBe(true);
+		saveFixedLevel(false, store);
+		expect([...m]).toEqual([['anywhere.device.fixedLevel', 'off']]);
+		expect(loadFixedLevel(store)).toBe(false);
+		saveFixedLevel(true, store);
+		expect(m.size).toBe(0);
+		m.set('anywhere.device.fixedLevel', 'nonsense');
+		expect(loadFixedLevel(store)).toBe(true);
+		const broken = {
+			getItem: () => {
+				throw new Error('blocked');
+			},
+			setItem: () => {
+				throw new Error('blocked');
+			},
+			removeItem: () => {
+				throw new Error('blocked');
+			},
+		};
+		expect(loadFixedLevel(broken)).toBe(true);
+		expect(() => saveFixedLevel(false, broken)).not.toThrow();
+		expect(loadFixedLevel(undefined)).toBe(true);
+	});
+
+	it('says it in British English, with the words LMS uses', () => {
+		expect(FIXED_LEVEL_NOTE).toBe('Output level is fixed at 100%');
+		expect(FIXED_LEVEL_LABEL).toBe('Fix this player’s output level at 100%');
+		expect(FIXED_LEVEL_EXPLANATION).toContain('“Output level is fixed at 100%”');
+		expect(FIXED_LEVEL_NO_FOLLOW).toContain('no LMS volume to follow');
 	});
 });

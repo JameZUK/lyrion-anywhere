@@ -7,7 +7,7 @@
 	import { app } from '#lib/state/app.svelte';
 	import * as cmd from '#lib/lms/commands';
 	import { device } from '#lib/player/device.svelte';
-	import { DEVICE_BUTTONS_NOTE } from '#lib/player/volume';
+	import { DEVICE_BUTTONS_NOTE, FIXED_LEVEL_NOTE, levelFixed } from '#lib/player/volume';
 	import { isThisDevice } from '#lib/player/outputs';
 	import { haptics } from '#lib/haptics/haptics.svelte';
 	import Icon from './Icon.svelte';
@@ -23,6 +23,8 @@
 	// LMS reports a muted player's level as negative.
 	const vol = $derived(Math.min(100, Math.abs(Number(volume ?? app.now?.['mixer volume'] ?? 0)) || 0));
 	const buttonsOnly = $derived(device.buttonsOnly(app.playerId));
+	// LMS keeps the player's output level at 100% (its Volume Control): no volume to set.
+	const fixed = $derived(levelFixed(app.now));
 
 	function set(v: number) {
 		const to = Math.max(0, Math.min(100, Math.round(Number.isFinite(v) ? v : 0)));
@@ -45,7 +47,9 @@
 </script>
 
 <div class="vol" data-volume-slider>
-	{#if buttonsOnly}
+	{#if fixed}
+		<p class="note muted" data-volume-note data-fixed-level-note><Icon name="volume" size={20} /><span>{FIXED_LEVEL_NOTE}</span></p>
+	{:else if buttonsOnly}
 		<p class="note muted" data-volume-note><Icon name="volume" size={20} /><span>{DEVICE_BUTTONS_NOTE}</span></p>
 	{:else}
 		<Icon name={vol > 0 ? 'volume' : 'mute'} size={20} />

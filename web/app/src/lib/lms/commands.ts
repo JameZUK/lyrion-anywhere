@@ -237,6 +237,12 @@ export const jump = (index: number): Command => ['playlist', 'index', start(inde
 export const seek = (seconds: number): Command => ['time', Math.max(0, Math.round(seconds * 10) / 10)];
 export const volume = (v: number): Command => ['mixer', 'volume', Math.max(0, Math.min(100, Math.round(v)))];
 export const mute = (): Command => ['mixer', 'muting', 'toggle'];
+/**
+ * A player's Volume Control in LMS (`digitalVolumeControl`): '0' fixes the output level at
+ * 100%, '1' lets LMS set the volume, '?' asks. The gateway allows it for the caller's own
+ * device player only.
+ */
+export const volumeControl = (v: '0' | '1' | '?'): Command => ['playerpref', 'digitalVolumeControl', v === '0' || v === '1' ? v : '?'];
 export const power = (on: boolean): Command => ['power', on ? 1 : 0];
 /** The longest sleep timer the app sets: a day. */
 export const MAX_SLEEP_SECONDS = 24 * 60 * 60;

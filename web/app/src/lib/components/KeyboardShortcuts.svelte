@@ -10,6 +10,7 @@
 	import { controls } from '#lib/player/controls.svelte';
 	import { nowPlaying } from '#lib/nowplaying/store.svelte';
 	import { haptics } from '#lib/haptics/haptics.svelte';
+	import { levelFixed } from '#lib/player/volume';
 	import { SEEK_STEP, SHORTCUT_HELP, VOLUME_STEP, shortcutFor, type Shortcut } from '#lib/keys/shortcuts';
 	import { keysHelp } from '#lib/keys/help.svelte';
 	import Sheet from './Sheet.svelte';
@@ -55,7 +56,7 @@
 				return;
 			case 'volumeup':
 			case 'volumedown': {
-				if (!now || !g.volume || device.buttonsOnly(app.playerId)) return;
+				if (!now || !g.volume || levelFixed(now) || device.buttonsOnly(app.playerId)) return;
 				const cur = Number(now['mixer volume'] ?? 0);
 				const v = Math.max(0, Math.min(100, Math.abs(cur) + (s === 'volumeup' ? VOLUME_STEP : -VOLUME_STEP)));
 				haptics.volume(Math.abs(cur), v);

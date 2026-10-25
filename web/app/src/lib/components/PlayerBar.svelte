@@ -9,7 +9,7 @@
 	import OutputButton from './OutputButton.svelte';
 	import { playerLabel } from '#lib/lms/sync';
 	import { device } from '#lib/player/device.svelte';
-	import { DEVICE_BUTTONS_NOTE } from '#lib/player/volume';
+	import { DEVICE_BUTTONS_NOTE, FIXED_LEVEL_NOTE, levelFixed } from '#lib/player/volume';
 	import { LONG_PRESS_MS, MiniGesture, miniKey, type MiniAction } from '#lib/player/gesture';
 	import { formatLeft, sleepLeft } from '#lib/lms/sleep';
 	import { haptics } from '#lib/haptics/haptics.svelte';
@@ -206,7 +206,9 @@
 	</div>
 
 	<div class="right">
-		{#if device.buttonsOnly(app.playerId)}
+		{#if levelFixed(app.now)}
+			<p class="volume note muted" data-volume-note data-fixed-level-note>{FIXED_LEVEL_NOTE}</p>
+		{:else if device.buttonsOnly(app.playerId)}
 			<p class="volume note muted" data-volume-note>{DEVICE_BUTTONS_NOTE}</p>
 		{:else}
 			<label class="volume">
