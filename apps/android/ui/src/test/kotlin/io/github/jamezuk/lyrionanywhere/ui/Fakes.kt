@@ -670,8 +670,12 @@ class FakeLocalPlayer : LocalPlayerRepository {
     /** The stream-level overrides asked for, in order (null: back to automatic). */
     val overrides = mutableListOf<io.github.jamezuk.lyrionanywhere.core.StreamQuality?>()
 
+    /** While set, [setQualityOverride] waits for it (the engine waiting for the gateway's echo). */
+    var overrideGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
     override suspend fun setQualityOverride(level: io.github.jamezuk.lyrionanywhere.core.StreamQuality?) {
         overrides += level
+        overrideGate?.await()
         state.update { it.copy(qualityOverride = level, streamQuality = level ?: it.streamSetting) }
     }
 

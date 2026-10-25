@@ -38,6 +38,7 @@ import io.github.jamezuk.lyrionanywhere.core.SignalStage
 import io.github.jamezuk.lyrionanywhere.core.SignalVerdict
 import io.github.jamezuk.lyrionanywhere.data.LocalPlayerState
 import io.github.jamezuk.lyrionanywhere.data.OutputTiming
+import io.github.jamezuk.lyrionanywhere.data.PhoneBlock
 import io.github.jamezuk.lyrionanywhere.core.OutputClock
 import io.github.jamezuk.lyrionanywhere.ui.R
 
@@ -342,6 +343,7 @@ internal fun playOnPhoneDetail(local: LocalPlayerState): String {
             is PlayerConnection.Stopped -> stringResource(R.string.play_on_phone_stopped, c.reason)
             // The gateway's reason is never shown: the app says what to do.
             PlayerConnection.UpdateApp -> stringResource(R.string.player_update_app)
+            PlayerConnection.UpdatePlugin -> phoneBlockedMessage(PhoneBlock.UPDATE_PLUGIN)
         }
     }
 }

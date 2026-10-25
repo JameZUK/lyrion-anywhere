@@ -33,7 +33,7 @@ import org.robolectric.annotation.Config
 
 fun dlTrack(n: Int, albumId: Long? = 7) = OfflineTrack(
     "%064x".format(n), 100L + n, "Song $n", "Band", "Record", albumId, n.toUInt(), 120.0,
-    DownloadFormat.ORIGINAL, "flc", "flac", 1000uL, 0uL, DownloadOrigin.MANUAL,
+    DownloadFormat.ORIGINAL, "flc", null, "flac", 1000uL, 0uL, DownloadOrigin.MANUAL,
 )
 
 fun dlState(

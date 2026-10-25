@@ -58,6 +58,7 @@ fun offlineTrack(n: Int, origin: DownloadOrigin = DownloadOrigin.MANUAL, albumId
     durationSecs = 61.0,
     format = DownloadFormat.ORIGINAL,
     codec = "flc",
+    original = null,
     ext = "flac",
     size = 1000uL,
     downloadedAt = 1_800_000_000uL,

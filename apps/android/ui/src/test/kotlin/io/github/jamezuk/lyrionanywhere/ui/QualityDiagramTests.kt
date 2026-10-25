@@ -20,7 +20,9 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import io.github.jamezuk.lyrionanywhere.core.DiagramVerdict
 import io.github.jamezuk.lyrionanywhere.core.DownloadFormat
+import io.github.jamezuk.lyrionanywhere.core.OfflineTrack
 import io.github.jamezuk.lyrionanywhere.core.PlaybackMode
 import io.github.jamezuk.lyrionanywhere.core.PlayerConnection
 import io.github.jamezuk.lyrionanywhere.core.QualityDiagram
@@ -261,6 +263,52 @@ class QualityBadgeAndDiagramTest {
         compose.onNodeWithTag("phone-blocked").assertDoesNotExist()
     }
 
+    /**
+     * The engine itself found the server's protocol below 2 (UpdatePlugin), though the app's
+     * own check had passed: the phone is blocked with the same words, and other players can
+     * still be chosen.
+     */
+    @Test
+    fun theEngineFindingAnOldPluginBlocksThePhone() {
+        val local = LocalPlayerState(
+            enabled = true,
+            status = localStatus(PHONE, PlayerConnection.UpdatePlugin),
+            protocolChecked = true,
+            serverProtocol = 2u,
+        )
+        show { NowPlayingScreen(PlayerUiState(loading = false, local = local), clock = { 0L }, actions = nowPlayingActions()) }
+        compose.onNodeWithTag("phone-blocked").assertTextEquals(
+            "This phone can't play from this server until its Lyrion Anywhere plugin is updated to 0.7.3 or later. You can still control other players.",
+        )
+        compose.onNodeWithTag("now-playing-choose-player").assertExists()
+    }
+
+    /**
+     * The Downloads badge: an Opus download of a lossless original (kept in the record) is
+     * Transcoded; an older record without the original keeps its Lossy badge. The rule is
+     * the core's ([OriginalDescriber] answers as `offline_quality_diagram` does, held by the
+     * mobile crate's tests); this checks the track reaches it and the badge is drawn.
+     */
+    @Test
+    fun aDownloadOfALosslessOriginalIsBadgedTranscoded() {
+        val describer = OriginalDescriber()
+        val opus = dlTrack(1, format = DownloadFormat.OPUS, codec = "opus", original = QualityFile("flc", 44_100u, 16u, null, null))
+        val old = opus.copy(original = null)
+        fun downloads(t: OfflineTrack): PlayerUiState {
+            val ui = io.github.jamezuk.lyrionanywhere.ui.offline.OfflinePlayerUi(
+                io.github.jamezuk.lyrionanywhere.data.offline.OfflinePlayerState(status = dlStatus(keys = listOf(t.key)), tracks = mapOf(t.key to t), signalPath = signalPath()),
+                diagram = describer.offline(signalPath(), t),
+            )
+            return io.github.jamezuk.lyrionanywhere.ui.offline.DownloadsPlayer.state(ui, "Downloads")!!
+        }
+        var state by mutableStateOf(downloads(opus))
+        show { NowPlayingScreen(state, clock = { 0L }, actions = nowPlayingActions()) }
+        compose.onNodeWithTag("quality-badge").assertTextEquals("Transcoded · Opus 160").assert(amber)
+        state = downloads(old)
+        compose.waitForIdle()
+        compose.onNodeWithTag("quality-badge").assertTextEquals("Lossy · Opus 160").assert(amber)
+    }
+
     /** Settings › About shows the server's player protocol and what plugin that means. */
     @Test
     fun aboutShowsTheServersProtocol() {
@@ -316,9 +364,30 @@ private class VectorDescriber(var local: String = QualityVectors.REPORTED) : Qua
         return QualityVectors.expected(QualityVectors.REMOTE)
     }
 
-    override fun offline(path: SignalPathInfo?, format: DownloadFormat, codec: String): QualityDiagram {
-        asked += "offline $format $codec"
+    var lastTrack: OfflineTrack? = null
+
+    override fun offline(path: SignalPathInfo?, track: OfflineTrack): QualityDiagram {
+        asked += "offline ${track.format} ${track.codec}"
+        lastTrack = track
         return QualityVectors.expected(QualityVectors.OFFLINE_OPUS)
+    }
+}
+
+/**
+ * The downloads' describer as the core answers for an Opus download: Transcoded when the
+ * record keeps a lossless original, else (a lossy original, or a record from before the
+ * original was kept) Lossy.
+ */
+private class OriginalDescriber : QualityDescriber {
+    override fun local(path: SignalPathInfo?, file: QualityFile?, origin: QualityOrigin?, seekable: Boolean): QualityDiagram = error("not here")
+
+    override fun remote(name: String, file: QualityFile?): QualityDiagram = error("not here")
+
+    override fun offline(path: SignalPathInfo?, track: OfflineTrack): QualityDiagram {
+        val d = QualityVectors.expected(QualityVectors.OFFLINE_OPUS)
+        val badge = d.badge!!
+        val lossless = track.original?.kind in setOf("flc", "alc", "wav", "aif", "wvp", "ape")
+        return if (lossless) d else d.copy(badge = badge.copy(verdict = DiagramVerdict.LOSSY, text = "Lossy · ${badge.stream}"))
     }
 }
 
@@ -364,6 +433,28 @@ class QualityOverrideViewModelTest : MainDispatcherTest() {
         runCurrent()
         assertEquals(listOf(StreamQuality.ORIGINAL, null), local.overrides)
         assertEquals(2, players.commands.count { it.startsWith("seek") })
+        vm.stop()
+    }
+
+    /**
+     * The engine's level change blocks until the gateway echoes it (at most 2 s): the seek is
+     * issued only once it has returned, so the new stream cannot be asked for at the old level.
+     */
+    @Test
+    fun theSeekWaitsForTheLevelChange() = runTest(dispatcher) {
+        val (vm, players, local) = setup()
+        vm.start()
+        runCurrent()
+        players.commands.clear()
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        local.overrideGate = gate
+        vm.overrideQuality(StreamQuality.ORIGINAL)
+        runCurrent()
+        assertEquals(listOf<StreamQuality?>(StreamQuality.ORIGINAL), local.overrides)
+        assertTrue("sought before the level was applied", players.commands.none { it.startsWith("seek") })
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(listOf("seek 100.0 $PHONE"), players.commands.filter { it.startsWith("seek") })
         vm.stop()
     }
 
@@ -440,10 +531,16 @@ class QualityOverrideViewModelTest : MainDispatcherTest() {
         val vm = io.github.jamezuk.lyrionanywhere.ui.offline.OfflinePlayerViewModel(player, { 0L }, quality = describer)
         assertEquals("Transcoded · Opus 160", vm.state.value.diagram?.badge?.text)
         assertEquals(listOf("offline ORIGINAL flc"), describer.asked)
+        assertEquals("the whole track reaches the core", tracks[0], describer.lastTrack)
         // Built again only when what it comes from changes.
         player.flow.value = player.flow.value.copy(status = dlStatus(elapsedMs = 20_000))
         assertEquals(1, describer.asked.size)
-        val main = io.github.jamezuk.lyrionanywhere.ui.offline.DownloadsPlayer.state(vm.state.value, "Downloads")!!
+        // The record's original learnt (the same track, rewritten): built again with it.
+        val withOriginal = tracks[0].copy(original = QualityFile("flc", 96_000u, 24u, null, null))
+        player.flow.value = player.flow.value.copy(tracks = mapOf(withOriginal.key to withOriginal, tracks[1].key to tracks[1]))
+        assertEquals(2, describer.asked.size)
+        assertEquals(withOriginal, describer.lastTrack)
+        val main =io.github.jamezuk.lyrionanywhere.ui.offline.DownloadsPlayer.state(vm.state.value, "Downloads")!!
         assertEquals(vm.state.value.diagram, main.diagram)
         assertEquals(signalPath(), main.downloadsPath)
         // No describer: no badge.
