@@ -190,6 +190,14 @@ impl WasmPlayer {
         self.last_track
     }
 
+    /// The track whose format `status_json` reports as `source`: the one being heard, else the
+    /// one about to be (`undefined` when neither is in the output queue). Numbered like
+    /// [`WasmPlayer::pulled_track`], the session's `strm s` frames from 0, so it lags the
+    /// pulled track by however much the output has queued.
+    pub fn heard_track(&self) -> Option<u32> {
+        self.source_audio().map(|a| a.seq)
+    }
+
     /// How many partial flushes there have been (`strm f` while a track is audible; see
     /// `Player::trim_count`).
     pub fn trim_count(&self) -> f64 {
@@ -388,15 +396,18 @@ impl WasmPlayer {
         Some((t.keep_track, t.keep_frames, drop))
     }
 
-    /// The format of the track being heard, else of the one about to be, else the last
-    /// known (a new track's format is known only once its decoder has read the headers).
-    fn current_source(&mut self) -> Option<SourceFormat> {
-        let now = self
-            .inner
+    /// The track being heard, else the next one to be pulled (see `heard_track`).
+    fn source_audio(&self) -> Option<anywhere_core::player::TrackAudio> {
+        self.inner
             .playing_track()
             .and_then(|seq| self.inner.track_audio(seq))
             .or_else(|| self.inner.next_audio())
-            .and_then(|a| a.source);
+    }
+
+    /// The format of the track being heard, else of the one about to be, else the last
+    /// known (a new track's format is known only once its decoder has read the headers).
+    fn current_source(&mut self) -> Option<SourceFormat> {
+        let now = self.source_audio().and_then(|a| a.source);
         if now.is_some() {
             self.last_source = now;
         }
@@ -710,6 +721,28 @@ mod tests {
         assert_eq!(p.pull_one(&mut buf), 44_100);
         assert_eq!(p.pulled_track(), Some(first + 1));
         assert!(buf[..44_100 * 2].iter().all(|&s| track_of(s) == T2));
+    }
+
+    /// The track heard lags the track pulled: track 2 is pulled while track 1 is still heard.
+    #[test]
+    fn heard_track_is_the_one_heard_not_the_one_pulled() {
+        let mut p = two_tracks();
+        assert_eq!(
+            p.heard_track(),
+            Some(0),
+            "nothing heard yet: the first to be"
+        );
+        let mut buf = vec![0f32; 50_000 * 2];
+        p.pull_one(&mut buf);
+        p.pull_one(&mut buf);
+        let second = p.pulled_track().unwrap();
+        p.played(30_000.0);
+        assert_eq!(second, 1);
+        assert_eq!(p.heard_track(), Some(0), "track 1 is still heard");
+        p.played(20_000.0);
+        assert_eq!(p.heard_track(), Some(1), "track 2 is heard now");
+        p.on_control(&strm(b'q'), 700.0).unwrap();
+        assert_eq!(p.heard_track(), None, "stopped: nothing queued");
     }
 
     /// Regression, media-element output: segments of the dropped track already handed to

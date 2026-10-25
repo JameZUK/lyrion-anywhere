@@ -12,7 +12,7 @@ const V = new URL(self.location.href).searchParams.get('v');
 const early = [];
 onmessage = (e) => early.push(e);
 const VQ = V && /^[\w.-]{1,64}$/.test(V) ? `?v=${V}` : '';
-const { AuthWait, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, StreamInfo, backoffMs, closeAction, describeSeek, downloadStream, loadCore, qualityMessage, routeMessage, sanitiseQuality, signInMessage, socketSilent } =
+const { AuthWait, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, StreamInfo, backoffMs, factsSeq, closeAction, describeSeek, downloadStream, loadCore, qualityMessage, routeMessage, sanitiseQuality, signInMessage, socketSilent } =
   await import(`./reconnect.js${VQ}`);
 const { Presentation } = await import(`./presentation.js${VQ}`);
 const { VisualTap } = await import(`./visual.js${VQ}`);
@@ -66,7 +66,7 @@ let lastHeard = 0;
 // Frames received in this session; on resume the gateway resends anything after this.
 let received = 0;
 // What the gateway said about each stream it relays (protocol 2: the stream message), tied
-// to the streams by the count of `strm s` frames.
+// to the core's tracks by number (see factsSeq).
 const streamInfo = new StreamInfo();
 // A malformed stream message is noted in the connection log once, not every time.
 let badStreamNoted = false;
@@ -429,7 +429,6 @@ function onGreeting(g) {
 
 function onFrames(data) {
   received++;
-  streamInfo.frame(received, data);
   try {
     player.on_control(new Uint8Array(data), now());
     if (flushWatch.changed(player.flush_count())) {
@@ -639,9 +638,9 @@ function tick() {
   status.held = localHold.held;
   status.received = streamReceived;
   status.track = player.pulled_track() ?? null;
-  // What LMS served and what the gateway sent for the track handed to the output (the core
-  // numbers its tracks from 0, the gateway its streams from 1), else for the stream fetched.
-  const seq = status.track !== null ? status.track + 1 : (stream?.n ?? null);
+  // What LMS served and what the gateway sent, for the track whose decoder `source` describes
+  // (the one heard), so the badge never mixes two tracks' facts.
+  const seq = factsSeq(player.heard_track(), status.track, stream?.n);
   const info = seq !== null ? streamInfo.of(seq) : null;
   status.stream_seq = info ? seq : null;
   status.served = info?.served ?? null;
