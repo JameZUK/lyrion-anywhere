@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-25: Tests: the offline player's pause check waits for the position to settle across a whole output chunk
+
+The android-v1.17.0 tag run failed once on `offline_player.rs::seek_skip_jump_pause_shuffle_and_repeat` (the position read 0 then 92 ms after a pause "settled"); the same commit was green on main and locally, and the release went out on the re-run. The position moves in whole output chunks of about 90 ms, so two reads 20 ms apart could be equal while it was still moving. Settled now means unchanged across 250 ms, within a 5 s deadline that names the values if it keeps moving, and it must still hold 300 ms later. Passed six runs in a row here. No product change.
+
 ## 2026-10-25: Dependencies: base64 0.23 (scalar engine only), libc, vite 8.3.5, svelte-check 4.7.7, datastore 1.3.0, kotlinx-serialization 1.12.0, Gradle 9.8.2, two Action pins
 
 Dependabot's open pull requests, reviewed before the batch was built (the owner's request). The two GitHub Actions pins (taiki-e/install-action 2.87.30, Swatinem/rust-cache 2.9.3) were checked against their release tags; the Gradle 9.8.2 wrapper and its jar against Gradle's published checksums. base64 0.23 adds a default-on `simd-unsafe` feature (AVX2 and NEON decoders in unsafe code, chosen at run time): the gateway's one use is the tunnel token parser, so it takes the bump with only `std` enabled. The Android bump needed the Gradle dependency-verification metadata regenerated for the new artifacts (datastore 1.3.0 and its collection, tracing and okio transitives; kotlinx-serialization 1.12.0), which Dependabot cannot write; the new entries were reviewed. TypeScript 7.0.2 (#18) stays deferred: SvelteKit 3.1.0's peer range excludes it.

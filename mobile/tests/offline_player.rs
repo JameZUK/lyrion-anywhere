@@ -9,7 +9,7 @@ mod common;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anywhere_mobile::offline::index::serialise;
 use anywhere_mobile::offline::store::scope_name;
@@ -306,19 +306,32 @@ async fn seek_skip_jump_pause_shuffle_and_repeat() {
     // Pause: silence, and the position holds.
     rig.player.pause();
     wait_for("paused", || rig.status().playback == LocalPlayback::Paused).await;
-    // The output may still finish the buffer it was playing as the pause lands: let the
-    // position settle, then it must hold.
-    let mut held = rig.status().elapsed_ms;
-    for _ in 0..50 {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        let now = rig.status().elapsed_ms;
-        if now == held {
-            break;
+    // The output may still finish the buffer it was playing as the pause lands, and the
+    // position moves in whole output chunks (about 90 ms), so two reads 20 ms apart can be
+    // equal while it is still moving (the android-v1.17.0 tag run saw 0 then 92). Settled
+    // means unchanged across a window longer than a chunk; then it must still hold.
+    let settled = {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut held = rig.status().elapsed_ms;
+        loop {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let now = rig.status().elapsed_ms;
+            if now == held {
+                break held;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the position kept moving after the pause: {held} then {now}"
+            );
+            held = now;
         }
-        held = now;
-    }
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(rig.status().elapsed_ms, held);
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        rig.status().elapsed_ms,
+        settled,
+        "the position must hold while paused"
+    );
     rig.player.play();
     wait_for("playing", || {
         rig.status().playback == LocalPlayback::Playing
