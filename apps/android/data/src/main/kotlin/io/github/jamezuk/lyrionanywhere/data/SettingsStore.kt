@@ -494,6 +494,7 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
         val TRANSITIONS = stringPreferencesKey("sound_transitions")
         val CROSSFADE_SECS = doublePreferencesKey("sound_crossfade_secs")
         val LOUDNESS = booleanPreferencesKey("sound_loudness")
+        val FIXED_OUTPUT_LEVEL = booleanPreferencesKey("sound_fixed_output_level")
 
         /** An enum stored by name; anything unknown (an older or newer app) is the default. */
         inline fun <reified T : Enum<T>> enumOr(name: String?, default: T): T =
@@ -528,6 +529,7 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
                 crossfadeSecs = p[CROSSFADE_SECS] ?: d.crossfadeSecs,
                 outputEq = OutputEq.decode(p[OUTPUT_EQ]),
                 loudness = p[LOUDNESS] ?: d.loudness,
+                fixedOutputLevel = p[FIXED_OUTPUT_LEVEL] ?: d.fixedOutputLevel,
             ).sanitised()
         }
 
@@ -557,6 +559,7 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
             p[CROSSFADE_SECS] = s.crossfadeSecs
             if (s.outputEq.isEmpty()) p.remove(OUTPUT_EQ) else p[OUTPUT_EQ] = OutputEq.encode(s.outputEq)
             p[LOUDNESS] = s.loudness
+            p[FIXED_OUTPUT_LEVEL] = s.fixedOutputLevel
         }
     }
 }

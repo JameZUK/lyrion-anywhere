@@ -224,6 +224,8 @@ class AppContainer(context: Context, scope: CoroutineScope) {
     init {
         // Only one of the phone's two players makes sound at a time.
         PlaybackArbiter(scope, localPlayer, players, offlinePlayer).start()
+        // LMS's "Output level is fixed at 100%" for this phone's player follows the Sound setting.
+        io.github.jamezuk.lyrionanywhere.data.FixedLevelKeeper(scope, localPlayer.state, players).start()
     }
 
     /** What this phone is called in LMS and the device list, e.g. "Google Pixel 8". */

@@ -48,6 +48,25 @@ class SettingsStoreTest {
     @After
     fun tearDown() = scopes.forEach { it.cancel() }
 
+    /** "Fix output level at 100%": on by default (and for an older file without it), and kept off. */
+    @Test
+    fun fixedOutputLevelDefaultsOnAndSurvivesARestart() = runBlocking {
+        assertTrue(DataStoreSettings(store()).settings.first().sound.fixedOutputLevel)
+        val first = DataStoreSettings(restart())
+        first.setSound(first.settings.first().sound.copy(fixedOutputLevel = false))
+        assertFalse(DataStoreSettings(restart()).settings.first().sound.fixedOutputLevel)
+        val s = restart()
+        s.edit { it[booleanPreferencesKey("sound_fixed_output_level")] = true }
+        assertTrue(DataStoreSettings(s).settings.first().sound.fixedOutputLevel)
+        // An older file with other Sound settings but not this one: the default (on).
+        val old = restart()
+        old.edit {
+            it.remove(booleanPreferencesKey("sound_fixed_output_level"))
+            it[booleanPreferencesKey("sound_loudness")] = true
+        }
+        assertTrue(DataStoreSettings(old).settings.first().sound.fixedOutputLevel)
+    }
+
     /** The sleep timer's fade-out (Wave 1): 30 s by default, kept, and checked when read. */
     @Test
     fun sleepFadeDefaultsSurvivesARestartAndRefusesNonsense() = runBlocking {

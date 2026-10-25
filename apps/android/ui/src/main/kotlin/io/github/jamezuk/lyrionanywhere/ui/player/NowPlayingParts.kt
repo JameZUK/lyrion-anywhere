@@ -475,6 +475,8 @@ internal fun VolumePopover(
     onDismiss: () -> Unit,
     enabled: Boolean = true,
     steps: Int = 0,
+    /** LMS's "Output level is fixed at 100%": [note] says so, with no slider. */
+    fixed: Boolean = false,
 ) {
     var dragging by remember { mutableStateOf(false) }
     var drag by remember { mutableFloatStateOf(value.toFloat()) }
@@ -496,8 +498,8 @@ internal fun VolumePopover(
             modifier = Modifier.width(88.dp).testTag("volume-popover").semantics { paneTitle = label },
         ) {
             Column(Modifier.padding(vertical = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("${shown.toInt()}", style = MaterialTheme.typography.labelLarge, modifier = Modifier.testTag("volume-value"))
-                Slider(
+                if (!fixed) Text("${shown.toInt()}", style = MaterialTheme.typography.labelLarge, modifier = Modifier.testTag("volume-value"))
+                if (!fixed) Slider(
                     value = shown,
                     onValueChange = {
                         // A light tick at every volume step (Wave 2 §5.4).
@@ -527,7 +529,7 @@ internal fun VolumePopover(
                     note,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 3,
+                    maxLines = if (fixed) 5 else 3,
                     overflow = TextOverflow.Ellipsis,
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                     modifier = Modifier.padding(horizontal = 6.dp).testTag("volume-note"),

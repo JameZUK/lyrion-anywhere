@@ -222,6 +222,8 @@ class RoomsViewModel(
     }
 
     fun setVolume(id: String, volume: Int) {
+        // LMS's "Output level is fixed at 100%" for this player: there is no volume to set.
+        if (_state.value.room(id)?.status?.fixedLevel == true) return
         val v = volume.coerceIn(0, 100)
         control(id, { it.copy(volume = v.toUInt()) }) { players.setVolume(id, v) }
     }

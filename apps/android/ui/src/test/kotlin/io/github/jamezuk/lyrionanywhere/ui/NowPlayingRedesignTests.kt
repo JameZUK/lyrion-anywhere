@@ -553,7 +553,8 @@ class PlayerLevelSettingTest {
         compose.setContent {
             LyrionTheme(dynamicColour = false) {
                 SoundScreen(
-                    SoundUiState(playerLevel = 100),
+                    // With "Fix output level at 100%" off (it is on by default).
+                    SoundUiState(playerLevel = 100, sound = io.github.jamezuk.lyrionanywhere.data.SoundSettings(fixedOutputLevel = false)),
                     object : SoundActions {
                         override fun playerLevel(level: Int) {
                             set += level
@@ -583,6 +584,8 @@ class PlayerLevelViewModelTest : MainDispatcherTest() {
     fun theLevelIsReadFromLmsAndSetThere() = runTest(dispatcher) {
         val local = FakeLocalPlayer()
         val players = FakePlayers().apply { statusResult = ApiResult.Ok(sampleStatus().copy(volume = 80u)) }
+        // With "Fix output level at 100%" off (it is on by default).
+        local.state.update { it.copy(sound = it.sound.copy(fixedOutputLevel = false)) }
         val vm = SoundViewModel(local, sdk = 34, players = players)
         // No player in LMS yet: nothing to set.
         assertNull(vm.state.value.playerLevel)

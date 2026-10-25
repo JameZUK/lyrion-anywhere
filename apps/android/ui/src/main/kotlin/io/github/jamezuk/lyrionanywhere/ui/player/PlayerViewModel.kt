@@ -1370,9 +1370,13 @@ class PlayerViewModel(
     private suspend fun ApiResult<Unit>.then(next: suspend () -> ApiResult<Unit>): ApiResult<Unit> =
         if (this is ApiResult.Err) this else next()
 
-    fun setVolume(volume: Int) = command(
-        optimistic = { it.copy(volume = volume.coerceIn(0, 100).toUInt()) },
-    ) { players.setVolume(it, volume) }
+    fun setVolume(volume: Int) {
+        // LMS's "Output level is fixed at 100%" for this player: there is no volume to set.
+        if (_state.value.status?.fixedLevel == true && !_state.value.localSelected) return
+        command(
+            optimistic = { it.copy(volume = volume.coerceIn(0, 100).toUInt()) },
+        ) { players.setVolume(it, volume) }
+    }
 
     /**
      * A hardware volume key ([up] or down) while the app is in front: a step on the selected
@@ -1383,6 +1387,8 @@ class PlayerViewModel(
         val s = _state.value
         if (s.selectedId == null || s.localSelected) return false
         val status = s.status ?: return false
+        // Fixed at 100 % in LMS: the key does nothing (neither LMS's volume nor the phone's).
+        if (status.fixedLevel) return true
         // Each step builds on the last one shown, so a held key keeps going.
         setVolume((status.volume.toInt() + if (up) VOLUME_STEP else -VOLUME_STEP).coerceIn(0, 100))
         return true

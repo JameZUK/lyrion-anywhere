@@ -186,6 +186,13 @@ interface PlayersRepository {
 
     suspend fun setVolume(player: String, volume: Int): ApiResult<Unit>
 
+    /**
+     * LMS's "Output level is fixed at 100%" for [player] (on), or its volume control back
+     * (off). The gateway allows it only for this phone's own player.
+     */
+    suspend fun setFixedOutputLevel(player: String, on: Boolean): ApiResult<Unit> =
+        ApiResult.Err(AppError.InvalidInput("not available"))
+
     suspend fun setShuffle(player: String, mode: ShuffleMode): ApiResult<Unit>
 
     suspend fun setRepeat(player: String, mode: RepeatMode): ApiResult<Unit>
@@ -463,6 +470,9 @@ class RustPlayersRepository(
 
     override suspend fun setVolume(player: String, volume: Int) =
         withPlayers { it.setVolume(player, volume.coerceIn(0, 100).toUInt()) }
+
+    override suspend fun setFixedOutputLevel(player: String, on: Boolean) =
+        withPlayers { it.setFixedOutputLevel(player, on) }
 
     override suspend fun setShuffle(player: String, mode: ShuffleMode) = withPlayers { it.setShuffle(player, mode) }
 
