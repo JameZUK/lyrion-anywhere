@@ -544,7 +544,7 @@ async fn the_lms_player_name_follows_a_rename() {
     // A new connection is greeted with the new name.
     drop(ws);
     let mut ws = h.dial().await;
-    ws.send(Message::Text(h.tok_a.clone().into()))
+    ws.send(Message::Text(sign_in_form(&h.tok_a).into()))
         .await
         .unwrap();
     match next(&mut ws).await {

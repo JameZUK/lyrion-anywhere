@@ -60,7 +60,7 @@ fn bytes_before_audio(bytes: &[u8], chunk: usize, ms: u64) -> usize {
 /// Open a session, have LMS announce a stream in `format`, and return the stream URL.
 async fn announce(h: &mut Harness, format: u8) -> (Ws, String, OwnedWriteHalf) {
     let mut ws = h.dial().await;
-    ws.send(Message::Text(h.tok_a.clone().into()))
+    ws.send(Message::Text(sign_in_form(&h.tok_a).into()))
         .await
         .unwrap();
     let g = loop {

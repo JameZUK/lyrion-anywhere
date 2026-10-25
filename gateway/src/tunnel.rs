@@ -162,6 +162,43 @@ fn auth_grace(text: &str) -> Result<Option<u64>, ()> {
     }
 }
 
+/// The close code for a client whose player protocol is too old, and its reason (the apps
+/// map it to a plain message, never showing it raw).
+pub const CLOSE_TOO_OLD: u16 = 4426;
+pub const TOO_OLD_REASON: &str = "update the app";
+/// The most of a refused `protocol` value written to the log and the audit trail.
+const MAX_PROTOCOL_DETAIL: usize = 32;
+
+/// The player protocol given at sign-in (`"protocol"`): `Ok` for a whole JSON number of at
+/// least [`crate::PROTOCOL`] (a higher one than this gateway knows is accepted: the newer
+/// client decides), else `Err` with what was given, bounded and JSON-escaped, or `none`
+/// (no `protocol`, or the bare-token form of protocol 1).
+fn auth_protocol(text: &str) -> Result<u64, String> {
+    let none = || "none".to_string();
+    if text.len() > MAX_AUTH_MESSAGE || !text.starts_with('{') {
+        return Err(none());
+    }
+    let v = serde_json::from_str::<serde_json::Value>(text).map_err(|_| none())?;
+    let Some(p) = v.get("protocol") else {
+        return Err(none());
+    };
+    match p.as_u64() {
+        Some(n) if n >= u64::from(crate::PROTOCOL) => Ok(n),
+        _ => Err(p.to_string().chars().take(MAX_PROTOCOL_DETAIL).collect()),
+    }
+}
+
+/// The protocol a refused client speaks, from what [`auth_protocol`] reported: 1 for none
+/// (protocol 1's forms carried no number), the number for a whole one below 2, else
+/// `None` (junk is not a protocol).
+fn old_protocol(given: &str) -> Option<u64> {
+    if given == "none" {
+        Some(1)
+    } else {
+        given.parse::<u64>().ok()
+    }
+}
+
 /// The grace granted for `asked` seconds: at most the server's maximum.
 fn granted_grace(gw: &AppState, asked: u64) -> Duration {
     Duration::from_secs(asked).min(gw.cfg.max_resume_grace)
@@ -194,18 +231,52 @@ async fn close(mut ws: WebSocket, code: u16, reason: &str) {
 
 async fn handle(gw: AppState, mut ws: WebSocket, addr: std::net::IpAddr) {
     let first = tokio::time::timeout(gw.cfg.auth_timeout, ws.recv()).await;
-    let (auth, quality, grace, text_keepalive) = match first {
+    let (auth, protocol, quality, grace, text_keepalive) = match first {
         Ok(Some(Ok(Message::Text(t)))) => (
             parse_auth(&gw, t.as_str()),
+            auth_protocol(t.as_str()),
             auth_quality(t.as_str()),
             auth_grace(t.as_str()),
             auth_keepalive(t.as_str()),
         ),
-        _ => (None, Default::default(), Ok(None), false),
+        _ => (
+            None,
+            Err("none".into()),
+            Default::default(),
+            Ok(None),
+            false,
+        ),
     };
     let Some(auth) = auth else {
         warn!("player authentication failed");
         return close(ws, close_code::POLICY, "unauthorised").await;
+    };
+    // An old client: told to update, before anything is opened or resumed (a session it
+    // could resume is left to its grace).
+    let protocol = match protocol {
+        Ok(p) => p,
+        Err(given) => {
+            let device = auth_device(&auth);
+            warn!(
+                user = %device.username,
+                device = device.device_id,
+                mac = %device.mac_string(),
+                protocol = %given,
+                "player protocol too old; asked to update the app"
+            );
+            let (user, id) = (device.username.clone(), device.device_id);
+            // The device lists show who is behind: what it gave is recorded when it is a
+            // protocol at all (no number is protocol 1, which had none).
+            let recorded = old_protocol(&given);
+            gw.db(move |a| {
+                a.audit("player.too_old", Some(&user), Some(id), &given);
+                if let Some(p) = recorded {
+                    a.record_protocol(id, p);
+                }
+            })
+            .await;
+            return close(ws, CLOSE_TOO_OLD, TOO_OLD_REASON).await;
+        }
     };
     let grace = match grace {
         Ok(g) => g,
@@ -290,11 +361,20 @@ async fn handle(gw: AppState, mut ws: WebSocket, addr: std::net::IpAddr) {
         session.detach(&gw, generation);
         return;
     }
+    // The stream in progress, if any, right after the greeting (newer ones follow from
+    // the queue).
+    if let Some(m) = attached.stream_message
+        && ws.send(Message::Text(m.into())).await.is_err()
+    {
+        session.detach(&gw, generation);
+        return;
+    }
     // Off the async workers (M7): a stalled disk must not hold up other sessions.
     let device = session.device.device_id;
     let seen = gw.accounts.claim_seen(device);
     gw.db(move |a| {
         a.touch_device(device);
+        a.record_protocol(device, protocol);
         if seen {
             a.write_seen(device, addr);
         }
@@ -489,6 +569,17 @@ async fn write_loop(
                 continue;
             }
             WriteStep::Send(Outbound::Close(code, reason)) => (code, reason),
+            WriteStep::Send(Outbound::Text(t)) => {
+                let sent = tokio::select! {
+                    r = sink.send(Message::Text(t.into())) => Ok(r),
+                    k = kicked(&mut kick) => Err(k),
+                };
+                match sent {
+                    Ok(Ok(())) => continue,
+                    Ok(Err(_)) => return,
+                    Err(k) => k,
+                }
+            }
             WriteStep::Send(Outbound::Frame(f)) => {
                 let sent = tokio::select! {
                     r = sink.send(Message::Binary(f.into())) => Ok(r),
@@ -618,6 +709,66 @@ mod tests {
             r#"{"token":"t","grace":99999999999999999999999}"#,
         ] {
             assert_eq!(auth_grace(bad), Err(()), "{bad}");
+        }
+    }
+
+    /// Protocol 2 or above, as a whole JSON number; anything else is an old (or broken)
+    /// client, and what it gave is reported bounded and escaped.
+    #[test]
+    fn sign_in_protocol_is_a_whole_number_of_at_least_two() {
+        assert_eq!(auth_protocol(r#"{"token":"t","protocol":2}"#), Ok(2));
+        assert_eq!(auth_protocol(r#"{"token":"t","protocol":3}"#), Ok(3));
+        assert_eq!(
+            auth_protocol(r#"{"token":"t","protocol":18446744073709551615}"#),
+            Ok(u64::MAX)
+        );
+        assert_eq!(
+            auth_protocol(
+                r#"{"token":"t","resume":{"session":"s","secret":"x","received":1},"protocol":2}"#
+            ),
+            Ok(2)
+        );
+        for (bad, given) in [
+            (r#"{"token":"t"}"#, "none"),
+            ("bare-token", "none"),
+            ("", "none"),
+            (r#"{"token":"t","protocol":2"#, "none"),
+            (r#"{"token":"t","protocol":1}"#, "1"),
+            (r#"{"token":"t","protocol":0}"#, "0"),
+            (r#"{"token":"t","protocol":-1}"#, "-1"),
+            (r#"{"token":"t","protocol":2.0}"#, "2.0"),
+            (r#"{"token":"t","protocol":2e0}"#, "2.0"),
+            (r#"{"token":"t","protocol":"2"}"#, r#""2""#),
+            (r#"{"token":"t","protocol":true}"#, "true"),
+            (r#"{"token":"t","protocol":null}"#, "null"),
+            (r#"{"token":"t","protocol":[2]}"#, "[2]"),
+            (r#"{"token":"t","protocol":{}}"#, "{}"),
+            (r#"{"token":"t","protocol":99999999999999999999}"#, "1e+20"),
+        ] {
+            assert_eq!(auth_protocol(bad), Err(given.to_string()), "{bad}");
+        }
+        // What is reported is bounded and escaped.
+        let long = format!(
+            r#"{{"token":"t","protocol":"{}\n\u0007"}}"#,
+            "x".repeat(200)
+        );
+        let given = auth_protocol(&long).unwrap_err();
+        assert!(given.chars().count() <= MAX_PROTOCOL_DETAIL);
+        assert!(!given.chars().any(char::is_control));
+        let big = format!(
+            r#"{{"token":"{}","protocol":2}}"#,
+            "t".repeat(MAX_AUTH_MESSAGE)
+        );
+        assert_eq!(auth_protocol(&big), Err("none".into()));
+        // What a refused client is recorded as speaking: 1 for none, a small whole number
+        // as it is, junk not at all.
+        assert_eq!(old_protocol("none"), Some(1));
+        assert_eq!(old_protocol("0"), Some(0));
+        assert_eq!(old_protocol("1"), Some(1));
+        for junk in [
+            "-1", "2.0", "1e+20", r#""2""#, "true", "null", "[2]", "{}", "",
+        ] {
+            assert_eq!(old_protocol(junk), None, "{junk}");
         }
     }
 

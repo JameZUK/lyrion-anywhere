@@ -1178,8 +1178,33 @@ impl Harness {
     }
 }
 
+/// The player socket's sign-in form for `token`, of the gateway's protocol.
+pub fn sign_in_form(token: &str) -> String {
+    sign_in_form_with(token, serde_json::json!({}))
+}
+
+/// The sign-in form for `token` with `extra` fields merged in (`"protocol"` among them
+/// replaces the default; `"protocol": null` in `extra` removes it).
+pub fn sign_in_form_with(token: &str, extra: serde_json::Value) -> String {
+    let mut form = serde_json::json!({ "token": token, "protocol": anywhere_gateway::PROTOCOL });
+    for (k, v) in extra.as_object().expect("extra fields are an object") {
+        if k == "protocol" && v.is_null() {
+            form.as_object_mut().unwrap().remove("protocol");
+        } else {
+            form[k] = v.clone();
+        }
+    }
+    form.to_string()
+}
+
+/// Sign in a new session with the current protocol; returns the session id.
 pub async fn connect(ws: &mut Ws, token: &str) -> String {
-    ws.send(Message::Text(token.into())).await.unwrap();
+    connect_form(ws, &sign_in_form(token)).await
+}
+
+/// Sign in with exactly this first message (any form); returns the session id.
+pub async fn connect_form(ws: &mut Ws, form: &str) -> String {
+    ws.send(Message::Text(form.into())).await.unwrap();
     match next(ws).await {
         Message::Text(t) => {
             let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
@@ -1203,6 +1228,37 @@ pub async fn next(ws: &mut Ws) -> Message {
         .expect("timed out waiting for message")
         .expect("socket ended")
         .expect("socket error")
+}
+
+/// Whether a message is the stream message (`{"stream":{…}}`).
+pub fn is_stream_message(m: &Message) -> bool {
+    stream_message(m).is_some()
+}
+
+/// The stream message's body, if `m` is one.
+pub fn stream_message(m: &Message) -> Option<serde_json::Value> {
+    let Message::Text(t) = m else { return None };
+    let v: serde_json::Value = serde_json::from_str(t.as_str()).ok()?;
+    v.get("stream").filter(|s| s.is_object()).cloned()
+}
+
+/// The next message that is not a stream message.
+pub async fn next_skipping_stream(ws: &mut Ws) -> Message {
+    loop {
+        let m = next(ws).await;
+        if !is_stream_message(&m) {
+            return m;
+        }
+    }
+}
+
+/// The next stream message, skipping frames and anything else.
+pub async fn next_stream_message(ws: &mut Ws) -> serde_json::Value {
+    loop {
+        if let Some(s) = stream_message(&next(ws).await) {
+            return s;
+        }
+    }
 }
 
 pub async fn expect_close(ws: &mut Ws, want: CloseCode) {

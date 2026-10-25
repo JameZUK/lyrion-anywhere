@@ -419,6 +419,8 @@ pub async fn me(State(gw): State<AppState>, headers: HeaderMap) -> Response {
     Json(json!({
         "user": { "username": p.username, "role": p.role.as_str() },
         "device": { "id": p.device_id, "name": p.device_name, "mac": p.mac_string() },
+        // The player protocol this gateway speaks (docs/PROTOCOL.md, Versions).
+        "protocol": crate::PROTOCOL,
         // Optional features this server offers (plan §7).
         "features": {
             "analysis": gw.analysis().is_some(),
@@ -798,6 +800,8 @@ pub async fn own_devices(State(gw): State<AppState>, headers: HeaderMap) -> Resp
                         "client_platform": d.client_platform,
                         "created_at": d.created_at,
                         "last_seen": d.last_seen,
+                        // The player protocol it last attached with (null: never).
+                        "protocol": d.protocol,
                         "current": d.id == p.device_id,
                     })
                 })

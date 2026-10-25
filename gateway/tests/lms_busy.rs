@@ -327,7 +327,11 @@ fn keepalive_harness(
 #[tokio::test]
 async fn player_sockets_get_pings_and_text_keepalives_only_when_asked() {
     let mut h = keepalive_harness(|_| {}).await;
-    let mut asked = sign_in(&h, json!({ "token": h.tok_a, "keepalive": true })).await;
+    let mut asked = sign_in(
+        &h,
+        json!({ "token": h.tok_a, "protocol": 2, "keepalive": true }),
+    )
+    .await;
     let _lms_a = h.lms.accept().await;
     let got = collect(&mut asked, Duration::from_millis(550)).await;
     let pings = got.iter().filter(|m| matches!(m, Message::Ping(_))).count();
@@ -349,9 +353,9 @@ async fn player_sockets_get_pings_and_text_keepalives_only_when_asked() {
 
     // Not asked (absent, false, or not a boolean): pings only.
     for auth in [
-        json!({ "token": h.tok_b }),
-        json!({ "token": h.tok_b, "keepalive": false }),
-        json!({ "token": h.tok_b, "keepalive": "yes" }),
+        json!({ "token": h.tok_b, "protocol": 2 }),
+        json!({ "token": h.tok_b, "protocol": 2, "keepalive": false }),
+        json!({ "token": h.tok_b, "protocol": 2, "keepalive": "yes" }),
     ] {
         let mut ws = sign_in(&h, auth).await;
         let got = collect(&mut ws, Duration::from_millis(350)).await;
@@ -369,7 +373,7 @@ async fn player_sockets_get_pings_and_text_keepalives_only_when_asked() {
 #[tokio::test]
 async fn pongs_do_not_count_as_the_player_speaking() {
     let mut h = keepalive_harness(|c| c.client_silence = Duration::from_millis(400)).await;
-    let mut ws = sign_in(&h, json!({ "token": h.tok_a })).await;
+    let mut ws = sign_in(&h, json!({ "token": h.tok_a, "protocol": 2 })).await;
     let _lms = h.lms.accept().await;
     ws.send(Message::Binary(helo(h.mac_a).into()))
         .await

@@ -88,7 +88,7 @@ async fn lms_unreachable_closes_with_try_again() {
     })
     .await;
     let mut ws = h.dial().await;
-    ws.send(Message::Text(h.tok_a.clone().into()))
+    ws.send(Message::Text(sign_in_form(&h.tok_a).into()))
         .await
         .unwrap();
     expect_close(&mut ws, CloseCode::Again).await;
@@ -564,7 +564,9 @@ async fn greeting(ws: &mut Ws) -> serde_json::Value {
 
 /// New session: returns (session id, resume secret).
 async fn open_session(ws: &mut Ws, token: &str) -> (String, String) {
-    ws.send(Message::Text(token.into())).await.unwrap();
+    ws.send(Message::Text(sign_in_form(token).into()))
+        .await
+        .unwrap();
     let g = greeting(ws).await;
     assert_eq!(g["resumed"], false);
     let secret = g["secret"].as_str().unwrap().to_string();
@@ -580,7 +582,7 @@ fn resume_msg(token: &str, sid: &str, secret: &str) -> Message {
 fn resume_after(token: &str, sid: &str, secret: &str, received: u64) -> Message {
     Message::Text(
         serde_json::json!({
-            "token": token,
+            "token": token, "protocol": 2,
             "resume": { "session": sid, "secret": secret, "received": received }
         })
         .to_string()
@@ -1608,7 +1610,7 @@ async fn static_revalidation_is_robust() {
 
 fn sign_in_with(token: &str, grace: serde_json::Value) -> Message {
     Message::Text(
-        serde_json::json!({ "token": token, "grace": grace })
+        serde_json::json!({ "token": token, "protocol": 2, "grace": grace })
             .to_string()
             .into(),
     )
@@ -1617,7 +1619,7 @@ fn sign_in_with(token: &str, grace: serde_json::Value) -> Message {
 fn resume_with(token: &str, sid: &str, secret: &str, grace: serde_json::Value) -> Message {
     Message::Text(
         serde_json::json!({
-            "token": token,
+            "token": token, "protocol": 2,
             "resume": { "session": sid, "secret": secret, "received": 0 },
             "grace": grace,
         })
@@ -1632,14 +1634,16 @@ async fn grace_is_granted_up_to_the_servers_maximum() {
     // Not asked: today's 60 s, in either form of the sign-in.
     let mut h = harness().await;
     let mut ws = h.dial().await;
-    ws.send(Message::Text(h.tok_a.clone().into()))
+    ws.send(Message::Text(sign_in_form(&h.tok_a).into()))
         .await
         .unwrap();
     assert_eq!(greeting(&mut ws).await["grace"], 60);
     let _lms = h.lms.accept().await;
     let mut ws = h.dial().await;
     ws.send(Message::Text(
-        json!({ "token": h.tok_b }).to_string().into(),
+        json!({ "token": h.tok_b, "protocol": 2 })
+            .to_string()
+            .into(),
     ))
     .await
     .unwrap();

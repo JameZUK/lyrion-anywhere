@@ -5,10 +5,11 @@
 //!
 //! # `/v1/player`
 //!
-//! - client → gateway, first message (text), either a bare device token (new session) or
-//!   `{"token":"…","resume":{"session":"…","secret":"…","received":n}}` to resume a session
-//!   after a
-//!   dropped connection. Then binary messages carrying the client → server Slimproto byte
+//! - client → gateway, first message (text): `{"token":"…","protocol":2}` for a new session
+//!   or `{"token":"…","protocol":2,"resume":{"session":"…","secret":"…","received":n}}` to
+//!   resume one after a dropped connection. A form without `protocol` (or the old bare
+//!   token), or with a number below [`PROTOCOL`], is closed with 4426 `update the app`.
+//!   Then binary messages carrying the client → server Slimproto byte
 //!   stream (any chunking). A new session must begin with HELO; a resumed one must not.
 //!   The only text message allowed afterwards is a stream acknowledgement,
 //!   `{"ack":{"stream":n,"bytes":b}}`, which clients send at least every 1 MiB received;
@@ -16,7 +17,10 @@
 //! - gateway → client: a text greeting
 //!   `{"session":"…","secret":"…","mac":"02:…","name":"…","resumed":bool}` (the player
 //!   identity to use in HELO and the resume secret), then one binary message per
-//!   server → client Slimproto frame, length prefix included, exactly as LMS sent it.
+//!   server → client Slimproto frame, length prefix included, exactly as LMS sent it. Text
+//!   messages besides the greeting (never counted as frames): the stream message
+//!   `{"stream":{…}}` for each stream relayed ([`stream_info`]) and, when asked for, the
+//!   keepalive.
 //!
 //! If the socket drops, the session (and LMS's connection) survives for
 //! [`Config::resume_grace`]; frames from LMS are queued and delivered on resume. A new
@@ -63,9 +67,15 @@ pub mod static_files;
 pub mod stations;
 pub mod stats;
 mod status_fix;
+pub mod stream_info;
 pub mod totp;
 pub mod transcode;
 mod tunnel;
+
+/// The player protocol this gateway speaks: `protocol` in `GET /v1/me` and the lowest a
+/// client may give in the player socket's sign-in form (docs/PROTOCOL.md, Versions).
+/// 2: the stream message, the version in the sign-in form, close 4426.
+pub const PROTOCOL: u32 = 2;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};

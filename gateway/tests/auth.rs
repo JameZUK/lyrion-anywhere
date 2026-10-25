@@ -213,7 +213,9 @@ async fn refresh_rotates_the_cookie_and_reuse_revokes_the_device() {
 
     // A live player session on this device.
     let mut ws = h.dial().await;
-    ws.send(Message::Text(token.clone().into())).await.unwrap();
+    ws.send(Message::Text(sign_in_form(&token).into()))
+        .await
+        .unwrap();
     next(&mut ws).await;
     let _lms = h.lms.accept().await;
 
@@ -290,7 +292,9 @@ async fn a_lost_refresh_response_does_not_sign_the_device_out() {
         .unwrap()
         .to_string();
     let mut ws = h.dial().await;
-    ws.send(Message::Text(token.into())).await.unwrap();
+    ws.send(Message::Text(sign_in_form(&token).into()))
+        .await
+        .unwrap();
     next(&mut ws).await;
     let _lms = h.lms.accept().await;
 
@@ -342,7 +346,9 @@ async fn a_replay_within_the_grace_window_is_caught_when_the_owner_returns() {
     let stolen = body["refresh_token"].as_str().unwrap().to_string();
     let access = body["access_token"].as_str().unwrap().to_string();
     let mut ws = h.dial().await;
-    ws.send(Message::Text(access.into())).await.unwrap();
+    ws.send(Message::Text(sign_in_form(&access).into()))
+        .await
+        .unwrap();
     next(&mut ws).await;
     let _lms = h.lms.accept().await;
 
@@ -412,7 +418,9 @@ async fn logout_revokes_the_device_and_clears_the_cookie() {
         .unwrap()
         .to_string();
     let mut ws = h.dial().await;
-    ws.send(Message::Text(token.clone().into())).await.unwrap();
+    ws.send(Message::Text(sign_in_form(&token).into()))
+        .await
+        .unwrap();
     next(&mut ws).await;
     let _lms = h.lms.accept().await;
 
@@ -754,7 +762,7 @@ async fn admin_manages_users_devices_and_pairing() {
 
     // Devices are listed; revoking one ends its live session.
     let mut ws = h.dial().await;
-    ws.send(Message::Text(h.tok_a.clone().into()))
+    ws.send(Message::Text(sign_in_form(&h.tok_a).into()))
         .await
         .unwrap();
     next(&mut ws).await;
@@ -787,7 +795,7 @@ async fn admin_manages_users_devices_and_pairing() {
 
     // Disabling a user ends their sessions too.
     let mut ws = h.dial().await;
-    ws.send(Message::Text(h.tok_b.clone().into()))
+    ws.send(Message::Text(sign_in_form(&h.tok_b).into()))
         .await
         .unwrap();
     next(&mut ws).await;
@@ -1270,7 +1278,7 @@ async fn admin_post_forms_of_deletes_work() {
     let (base, secret) = h.admin().await;
     let c = reqwest::Client::new();
     let mut ws = h.dial().await;
-    ws.send(Message::Text(h.tok_a.clone().into()))
+    ws.send(Message::Text(sign_in_form(&h.tok_a).into()))
         .await
         .unwrap();
     next(&mut ws).await;

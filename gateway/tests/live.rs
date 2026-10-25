@@ -130,14 +130,14 @@ async fn announce(
     ))
     .await
     .unwrap();
-    let strm = strm_payload(&next(&mut ws).await);
+    let strm = strm_payload(&next_skipping_stream(&mut ws).await);
     (ws, sid, lms, strm)
 }
 
 fn auth(token: &str, quality: Option<&str>) -> String {
     match quality {
-        Some(q) => serde_json::json!({ "token": token, "quality": q }).to_string(),
-        None => serde_json::json!({ "token": token }).to_string(),
+        Some(q) => serde_json::json!({ "token": token, "protocol": 2, "quality": q }).to_string(),
+        None => serde_json::json!({ "token": token, "protocol": 2 }).to_string(),
     }
 }
 
@@ -151,7 +151,7 @@ async fn restream(ws: &mut Ws, lms: &mut OwnedWriteHalf, mac: [u8; 6], format: u
     ))
     .await
     .unwrap();
-    strm_payload(&next(ws).await)
+    strm_payload(&next_skipping_stream(ws).await)
 }
 
 async fn fetch_all(h: &Harness, sid: &str, n: u64, tok: &str) -> (Vec<u8>, String) {
@@ -498,7 +498,7 @@ async fn an_unknown_level_at_sign_in_is_original_never_a_refusal() {
     // A level that isn't a string is a malformed sign-in, as before.
     let mut ws = h.dial().await;
     ws.send(Message::Text(
-        serde_json::json!({"token": tok, "quality": 5})
+        serde_json::json!({"token": tok, "protocol": 2, "quality": 5})
             .to_string()
             .into(),
     ))
@@ -723,4 +723,39 @@ async fn ends(h: &Harness, sid: &str, n: u64, tok: &str) -> &'static str {
             Err(_) => return "error",
         }
     }
+}
+
+/// The stream message says what the gateway sent at each level, with what LMS served
+/// (read from the FLAC's STREAMINFO before the bytes went to the encoder, which still got
+/// every one of them).
+#[tokio::test]
+async fn the_stream_message_says_what_was_sent_at_each_level() {
+    let Live { mut h, dir } = live(None, 4).await;
+    let file = library_flac(0, 10);
+    *h.lms.stream_body.lock().unwrap() = Some(Arc::new(file.clone()));
+    let tok = h.tok_a.clone();
+    let served = serde_json::json!({"codec": "flac", "rate": 44100, "bits": 16, "channels": 2});
+    let (mut ws, sid, mut lms, _) = announce(&mut h, auth(&tok, None), A, b'f').await;
+    let (got, _) = fetch_all(&h, &sid, 1, &tok).await;
+    assert!(got.starts_with(b"fLaC"));
+    assert_eq!(
+        next_stream_message(&mut ws).await,
+        serde_json::json!({"seq": 1, "served": served, "sent": {"mode": "passthrough"}})
+    );
+    for (n, level, kbps) in [(2u64, "low", 96), (3, "high", 160)] {
+        ws.send(Message::Text(format!(r#"{{"quality":"{level}"}}"#).into()))
+            .await
+            .unwrap();
+        let strm = restream(&mut ws, &mut lms, h.mac_a, b'f').await;
+        assert_eq!(strm[2], b'u');
+        let (got, _) = fetch_all(&h, &sid, n, &tok).await;
+        assert_eq!(got, ogg_of(&file), "the encoder had every byte, unchanged");
+        assert_eq!(
+            next_stream_message(&mut ws).await,
+            serde_json::json!({"seq": n, "served": served,
+                "sent": {"mode": "opus", "kbps": kbps, "level": level}}),
+            "{level}"
+        );
+    }
+    assert_eq!(runs(&dir).len(), 2);
 }
