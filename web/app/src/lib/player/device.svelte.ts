@@ -137,6 +137,8 @@ class DevicePlayer {
 	#fixedAt = -Infinity;
 	/** A read-and-set of the Volume Control is under way. */
 	#fixedBusy = false;
+	/** Why another sync was asked for while one was under way (it runs when that one ends), or null. */
+	#fixedDirty: string | null = null;
 	/** "Streaming quality in this browser" in Settings, and the level it means now. */
 	qualityPreference = $state<QualityPreference>(loadQualityPreference());
 	quality = $state<StreamQuality>('original');
@@ -513,7 +515,12 @@ class DevicePlayer {
 	async #syncFixedLevel(why: string) {
 		const mac = this.mac;
 		const gen = this.#gen;
-		if (!mac || this.#fixedBusy) return;
+		if (!mac) return;
+		if (this.#fixedBusy) {
+			// A change made while a sync is under way: run once more when it ends.
+			this.#fixedDirty = why;
+			return;
+		}
 		this.#fixedBusy = true;
 		try {
 			let reported: unknown;
@@ -528,6 +535,10 @@ class DevicePlayer {
 			if (v) await this.#setVolumeControl(mac, v, why);
 		} finally {
 			this.#fixedBusy = false;
+			const again = this.#fixedDirty;
+			this.#fixedDirty = null;
+			// Read afresh: LMS has what this sync set, and the setting may differ from it now.
+			if (again !== null && gen === this.#gen && this.state === 'connected') void this.#syncFixedLevel(again);
 		}
 	}
 
