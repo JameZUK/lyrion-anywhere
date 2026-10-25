@@ -212,7 +212,8 @@ async fn an_mp3_is_sent_as_it_is() {
         (b'o', "ogg"),
         (b'a', "aac"),
         (b'l', "alac"),
-        (b'u', "unknown"),
+        (b'u', "opus"),
+        (b'w', "unknown"),
         (b'?', "unknown"),
     ]
     .into_iter()
