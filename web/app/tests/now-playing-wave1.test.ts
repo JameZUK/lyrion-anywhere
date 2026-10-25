@@ -93,11 +93,12 @@ function pointer(el: Element, type: string, init: PointerEventInit & { timeStamp
 }
 
 describe('Now playing', () => {
-	test('the quality badge reads FLAC 24/96 · Hi-Res and opens the signal path', async () => {
+	test('the quality badge reads Hi-Res · FLAC 24/96 and opens the signal path', async () => {
 		const r = render(NowPlaying);
 		await tick();
 		const badge = r.container.querySelector<HTMLButtonElement>('[data-quality-badge]')!;
-		expect(badge.textContent).toBe('FLAC 24/96 · Hi-Res');
+		expect(badge.textContent).toBe('Hi-Res · FLAC 24/96');
+		expect(badge.classList.contains('amber')).toBe(false);
 		expect(badge.getAttribute('aria-label')).toMatch(/signal path/i);
 		await fireEvent.click(badge);
 		const path = await waitFor(() => r.container.querySelector('[data-signal-path]')!);
@@ -105,6 +106,10 @@ describe('Now playing', () => {
 		expect(path.textContent).toContain('FLAC 24/96 · Hi-Res · lossless');
 		// Another player is controlled: only what is known is claimed.
 		expect(path.textContent).toContain('On Test player');
+		// Another player: File → that player, no gateway and no switch.
+		expect([...path.querySelectorAll('[data-block]')].map((b) => b.getAttribute('data-block'))).toEqual(['file', 'player']);
+		expect(path.querySelector('[data-block=player] .title')!.textContent).toBe('Test player');
+		expect(path.querySelector('[data-quality-switch]')).toBeNull();
 		r.unmount();
 	});
 
@@ -112,7 +117,9 @@ describe('Now playing', () => {
 		fake.app.now = status({ playlist_loop: [{ id: 11, title: 'Song', type: 'mp3', bitrate: '320kbps', samplerate: '44100' }] });
 		const r = render(NowPlaying);
 		await tick();
-		expect(r.container.querySelector('[data-quality-badge]')!.textContent).toBe('MP3 320');
+		const badge = r.container.querySelector('[data-quality-badge]')!;
+		expect(badge.textContent).toBe('Lossy · MP3 320');
+		expect(badge.classList.contains('amber')).toBe(true);
 		r.unmount();
 	});
 

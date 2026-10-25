@@ -10,10 +10,9 @@
 	import { app } from '#lib/state/app.svelte';
 	import * as cmd from '#lib/lms/commands';
 	import { duration, isRemote, textOf } from '#lib/lms/format';
-	import { badgeText, quality, streamed } from '#lib/lms/quality';
 	import { formatLeft, sleepLeft } from '#lib/lms/sleep';
 	import { device } from '#lib/player/device.svelte';
-	import { streamOf } from '#lib/player/stream-quality';
+	import { amber, qualityNow } from '#lib/player/quality-now.svelte';
 	import { controls } from '#lib/player/controls.svelte';
 	import { now } from '#lib/player/now.svelte';
 	import { offlinePlayer } from '#lib/offline/index.svelte';
@@ -63,10 +62,10 @@
 	const repeat = $derived(Number(app.now?.['playlist repeat'] ?? 0));
 	/** Which controls work now (all of them while the server is in reach). */
 	const g = $derived(controls.gates);
-	// The badge says what is streamed to this device when it is the player ("Opus 160" for a
-	// re-encoded stream), else the track as it is in the library.
-	const here = $derived(!!app.playerId && app.playerId === device.mac && device.state === 'connected');
-	const badge = $derived(downloads ? null : streamed(quality(track), here ? streamOf(device.detail.source) : null, here ? device.quality : null));
+	// The badge states the weakest link, then what is heard ("Transcoded · Opus 160"): the
+	// shared model's, from the file, the gateway's stream message and the decoder.
+	const diagram = $derived(qualityNow.diagram);
+	const badge = $derived(diagram.badge);
 	const sleepIn = $derived(downloads ? null : sleepLeft(app.now));
 	const coverOf = (size: number) => cmd.coverPath(track?.coverid ?? track?.artwork_track_id, size);
 	/** Art and title cross-fade between tracks (not under "reduce motion"). */
@@ -216,7 +215,7 @@
 					{#if artistHref}<a href={artistHref}>{artist}</a>{:else}{artist}{/if}{#if artist && album}{' · '}{/if}{#if albumHref}<a href={albumHref}>{album}</a>{:else}{album}{/if}
 				</span>
 				{#if badge}
-					<button class="badge" class:hires={badge.hiRes} onclick={() => openSheet('path')} aria-haspopup="dialog" aria-label={`${badgeText(badge)}. Show the signal path`} data-quality-badge>{badgeText(badge)}</button>
+					<button class="badge" class:hires={badge.verdict === 'hi_res'} class:amber={amber(diagram)} onclick={() => openSheet('path')} aria-haspopup="dialog" aria-label={`${badge.text}. Show the signal path`} data-quality-badge data-verdict={badge.verdict}>{badge.text}</button>
 				{/if}
 				{#if sleepIn !== null}
 					<!-- The timer's state (set it, or turn it off, in ⋮ › Sleep timer). -->
@@ -503,6 +502,11 @@
 	}
 	.badge.hires {
 		border-color: var(--accent);
+	}
+	.badge.amber {
+		border-color: var(--amber);
+		background: var(--amber-soft);
+		color: var(--amber-fg);
 	}
 	.sleep-left {
 		flex: none;

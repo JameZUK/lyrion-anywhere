@@ -11,9 +11,7 @@
 	import { isRemote } from '#lib/lms/format';
 	import { gaplessLinks } from '#lib/queue/tracker';
 	import type { PlayerStatus } from '#lib/lms/types';
-	import { badgeText, quality, streamed } from '#lib/lms/quality';
-	import { device } from '#lib/player/device.svelte';
-	import { streamOf } from '#lib/player/stream-quality';
+	import { amber, qualityNow } from '#lib/player/quality-now.svelte';
 	import RatingControl from './RatingControl.svelte';
 	import SignalPathView from './SignalPathView.svelte';
 	import TrackCredits from './TrackCredits.svelte';
@@ -22,10 +20,9 @@
 	let { compact = false }: { compact?: boolean } = $props();
 
 	const track = $derived(app.now?.playlist_loop?.[0]);
-	// What is streamed to this device when it is the player ("Opus 160" when the gateway
-	// re-encoded it), else the track as it is in the library.
-	const here = $derived(!!app.playerId && app.playerId === device.mac && device.state === 'connected');
-	const badge = $derived(streamed(quality(track), here ? streamOf(device.detail.source) : null, here ? device.quality : null));
+	// The weakest link, then what is heard ("Transcoded · Opus 160"): the shared model's badge.
+	const diagram = $derived(qualityNow.diagram);
+	const badge = $derived(diagram.badge);
 	/** The signal path stays folded away until asked for. */
 	let pathOpen = $state(false);
 	const pathId = `np-info-path-${Math.random().toString(36).slice(2, 8)}`;
@@ -56,7 +53,7 @@
 	{:else}
 		<section aria-labelledby="np-info-quality">
 			<h3 id="np-info-quality">Quality</h3>
-			{#if badge}<p class="badge" class:hires={badge.hiRes}>{badgeText(badge)}</p>{/if}
+			{#if badge}<p class="badge" class:hires={badge.verdict === 'hi_res'} class:amber={amber(diagram)} data-verdict={badge.verdict}>{badge.text}</p>{/if}
 			{#if gapless}<p class="gapless muted" data-gapless>Gapless: runs straight on into the next track, from the same album.</p>{/if}
 			{#if !compact}
 				<button class="disclose" aria-expanded={pathOpen} aria-controls={pathId} onclick={() => (pathOpen = !pathOpen)} data-signal-path-toggle>
@@ -115,6 +112,11 @@
 	}
 	.badge.hires {
 		border-color: var(--accent);
+	}
+	.badge.amber {
+		border-color: var(--amber);
+		background: var(--amber-soft);
+		color: var(--amber-fg);
 	}
 	.disclose {
 		justify-self: start;

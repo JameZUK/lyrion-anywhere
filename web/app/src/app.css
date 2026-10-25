@@ -13,6 +13,10 @@
 	--accent-soft: #fde7da;
 	--accent-soft-fg: #1c1b19;
 	--danger: #b91c1c;
+	/* Transcoded and Lossy quality badges: a subtle amber tint (the word carries the meaning). */
+	--amber: #b45309;
+	--amber-soft: #fef3c7;
+	--amber-fg: #78350f;
 	--shadow: 0 1px 2px rgb(0 0 0 / 6%), 0 8px 24px rgb(0 0 0 / 8%);
 	--radius: 12px;
 	--radius-sm: 8px;
@@ -44,6 +48,9 @@
 		--accent-fg: #1a0d05;
 		--accent-soft: #3a2316;
 		--danger: #f87171;
+		--amber: #f59e0b;
+		--amber-soft: #33240b;
+		--amber-fg: #fcd34d;
 		--shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 8px 24px rgb(0 0 0 / 40%);
 	}
 }
@@ -58,6 +65,9 @@
 	--accent-fg: #1a0d05;
 	--accent-soft: #3a2316;
 	--danger: #f87171;
+	--amber: #f59e0b;
+	--amber-soft: #33240b;
+	--amber-fg: #fcd34d;
 	--shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 8px 24px rgb(0 0 0 / 40%);
 }
 

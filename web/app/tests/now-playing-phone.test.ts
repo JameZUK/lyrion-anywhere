@@ -165,7 +165,7 @@ describe('layout', () => {
 		expect(sub.querySelector('.who')!.textContent!.replace(/\s+/g, ' ').trim()).toBe('The Example Quartet · Coastal Hours');
 		expect(sub.querySelector('a[href="#/artist/3"]')).not.toBeNull();
 		const badge = sub.querySelector<HTMLButtonElement>('[data-quality-badge]')!;
-		expect(badge.textContent).toBe('FLAC 24/96 · Hi-Res');
+		expect(badge.textContent).toBe('Hi-Res · FLAC 24/96');
 		// The signal path is never shown inline: the badge opens it in a sheet.
 		expect(r.container.querySelector('[data-signal-path]')).toBeNull();
 		await fireEvent.click(badge);

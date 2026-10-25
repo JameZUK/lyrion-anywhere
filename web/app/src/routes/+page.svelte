@@ -32,7 +32,7 @@
 	import RatingControl from '#lib/components/RatingControl.svelte';
 	import { lyrics } from '#lib/state/lyrics';
 	import { lineAt } from '#lib/lyrics/lyrics';
-	import { badgeText, quality } from '#lib/lms/quality';
+	import { amber, qualityNow } from '#lib/player/quality-now.svelte';
 	import { formatLeft, sleepLeft } from '#lib/lms/sleep';
 	import { reducedMotion } from '#lib/theme/motion';
 	import { fade } from 'svelte/transition';
@@ -157,7 +157,9 @@
 	/** Which controls work now (all of them while the server is in reach). */
 	const g = $derived(controls.gates);
 	const vol = $derived(volume ?? app.now?.['mixer volume'] ?? 0);
-	const badge = $derived(downloads ? null : quality(track));
+	// The badge states the weakest link, then what is heard (the shared model's diagram).
+	const diagram = $derived(qualityNow.diagram);
+	const badge = $derived(diagram.badge);
 	const sleepIn = $derived(downloads ? null : sleepLeft(app.now));
 	/** Art and title cross-fade between tracks (not under "reduce motion"). */
 	const trackKey = $derived(`${track?.id ?? ''}|${title}`);
@@ -331,7 +333,7 @@
 			</p>
 			<p class="details muted">
 				{#if badge}
-					<button class="badge" class:hires={badge.hiRes} onclick={() => (showPath = true)} aria-haspopup="dialog" aria-label={`${badgeText(badge)}. Show the signal path`} data-quality-badge>{badgeText(badge)}</button>
+					<button class="badge" class:hires={badge.verdict === 'hi_res'} class:amber={amber(diagram)} onclick={() => (showPath = true)} aria-haspopup="dialog" aria-label={`${badge.text}. Show the signal path`} data-quality-badge data-verdict={badge.verdict}>{badge.text}</button>
 				{:else}{formatDetails(track ?? {})}{/if}{pos ? ` · ${pos}` : ''}{#if sleepIn !== null}<span class="sleep-left" data-sleep-left> · <Icon name="moon" size={13} /> {formatLeft(sleepIn)}</span>{/if}
 			</p>
 			{#if lyricsId !== null && !downloads}<div class="rating"><RatingControl track={lyricsId} toggle /></div>{/if}
@@ -560,6 +562,11 @@
 	.badge.hires {
 		border-color: var(--accent);
 		color: var(--fg);
+	}
+	.badge.amber {
+		border-color: var(--amber);
+		background: var(--amber-soft);
+		color: var(--amber-fg);
 	}
 	.rating {
 		margin-top: 0.35rem;

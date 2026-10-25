@@ -140,11 +140,20 @@ describe('one mini player', () => {
 });
 
 describe('one Now playing', () => {
-	test('phones: the download, no rating or quality badge; ⋮ has Stop playing downloads and nothing of LMS', async () => {
+	test('phones: the download, its quality badge and no rating; ⋮ has Stop playing downloads and nothing of LMS', async () => {
 		const r = render(NowPlaying);
 		await tick();
 		expect(r.container.querySelector('h1.title')!.textContent).toBe('First kept');
-		expect(r.container.querySelector('[data-rating-toggle], [data-quality-badge]')).toBeNull();
+		expect(r.container.querySelector('[data-rating-toggle]')).toBeNull();
+		// The download's own format (an Opus download, its library file not recorded): lossy.
+		const badge = r.container.querySelector<HTMLButtonElement>('[data-quality-badge]')!;
+		expect(badge.textContent).toBe('Lossy · Opus 160');
+		await fireEvent.click(badge);
+		const path = await waitFor(() => document.querySelector('dialog[open] [data-signal-path]')!);
+		expect([...path.querySelectorAll('[data-block]')].map((b) => b.getAttribute('data-block'))).toEqual(['download', 'device']);
+		expect(path.querySelector('[data-quality-switch], [data-details]')).toBeNull();
+		(document.querySelector('dialog[open]') as HTMLDialogElement).close();
+		await tick();
 		// Up next is the next download; the queue opens on a tap.
 		expect(r.container.querySelector('[data-up-next]')!.textContent).toContain('Second kept');
 		await fireEvent.click(r.getByRole('button', { name: 'More options' }));
