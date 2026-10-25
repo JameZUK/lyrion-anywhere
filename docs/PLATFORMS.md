@@ -20,7 +20,7 @@ Every client plays in LMS sync groups; how each one keeps in step is in [`FEATUR
 
 ## Getting the Android app
 
-- **Signed APKs** are on the [releases page](https://github.com/JameZUK/lyrion-anywhere/releases), tagged `android-v*` (the latest is 1.17.0). They are never marked *Latest* on GitHub: that stays the LMS plugin, whose repository URL depends on it.
+- **Signed APKs** are on the [releases page](https://github.com/JameZUK/lyrion-anywhere/releases), tagged `android-v*` (the latest is 1.17.1). They are never marked *Latest* on GitHub: that stays the LMS plugin, whose repository URL depends on it.
 - **Which file:** `…-arm64-v8a.apk` suits most phones; the universal `.apk` works on any. Check the files against `SHA256SUMS`.
 - **Stores:** Google Play and F-Droid listings are being prepared ([`RELEASING.md`](RELEASING.md)).
 - **Source:** [`apps/android`](../apps/android).
