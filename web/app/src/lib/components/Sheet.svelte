@@ -4,7 +4,17 @@
 	import type { Snippet } from 'svelte';
 	import Icon from './Icon.svelte';
 
-	let { title, onclose, children, label = title }: { title: string; onclose: () => void; children: Snippet; label?: string } = $props();
+	/**
+	 * `wide`: a panel up to 760 px across on wide screens instead of 460 px, for content laid out
+	 * in a row (the signal path's blocks). On phones every sheet is the full width anyway.
+	 */
+	let {
+		title,
+		onclose,
+		children,
+		label = title,
+		wide = false,
+	}: { title: string; onclose: () => void; children: Snippet; label?: string; wide?: boolean } = $props();
 	let dialog = $state<HTMLDialogElement>();
 	$effect(() => {
 		const d = dialog;
@@ -12,7 +22,7 @@
 	});
 </script>
 
-<dialog bind:this={dialog} {onclose} onclick={(e) => e.target === dialog && dialog?.close()} aria-label={label}>
+<dialog bind:this={dialog} class:wide {onclose} onclick={(e) => e.target === dialog && dialog?.close()} aria-label={label}>
 	<div class="sheet">
 		<header>
 			<h2>{title}</h2>
@@ -31,6 +41,9 @@
 		max-width: min(96vw, 460px);
 		width: 100%;
 		max-height: 86vh;
+	}
+	dialog.wide {
+		max-width: min(96vw, 760px);
 	}
 	dialog::backdrop {
 		background: rgb(0 0 0 / 45%);
@@ -57,7 +70,8 @@
 		font-size: 1.1rem;
 	}
 	@media (max-width: 760px) {
-		dialog {
+		dialog,
+		dialog.wide {
 			margin: auto 0 0;
 			max-width: 100vw;
 		}

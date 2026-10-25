@@ -2,9 +2,11 @@
 	// The signal path (docs/plans/signal-path-redesign.md), for the sheet opened from the
 	// quality badge and for Now playing's Info layout: the shared model's blocks as cards
 	// (File → LMS → Lyrion gateway → This device; File → a remote player; Download → This
-	// device), stacked on narrow screens and in a row with arrows on wide ones. The block that
-	// lowers the verdict is tinted amber. Under the gateway block, the quality switch (this
-	// device only); under the device block, Details: the stage list, rates and notes as before.
+	// device), stacked by default and in a row with arrows when `row` is set (the sheet on a wide
+	// screen). The block that lowers the verdict is tinted amber. The quality switch (this
+	// device only) is under the gateway block when stacked, and on its own full-width line under
+	// the row otherwise, so its pills never wrap in a narrow column; under the device block,
+	// Details: the stage list, rates and notes as before.
 	import { app } from '#lib/state/app.svelte';
 	import { device } from '#lib/player/device.svelte';
 	import { quality } from '#lib/lms/quality';
@@ -12,6 +14,9 @@
 	import { levelName, type Level } from '#lib/player/quality-path';
 	import { amber, qualityNow } from '#lib/player/quality-now.svelte';
 	import { streamOf } from '#lib/player/stream-quality';
+
+	/** The blocks in a row with the switch beneath (wide screens); stacked otherwise. */
+	let { row = false }: { row?: boolean } = $props();
 
 	const diagram = $derived(qualityNow.diagram);
 	const here = $derived(qualityNow.here);
@@ -51,7 +56,27 @@
 	const detailsAt = $derived(diagram.blocks.findLastIndex((b) => b.kind === 'device' || b.kind === 'player'));
 </script>
 
-<div class="path" data-signal-path>
+{#snippet qualitySwitch()}
+	{#if sw}
+		<div class="switch" role="radiogroup" aria-label="Streaming quality" data-quality-switch>
+			{#each sw.levels as level (level)}
+				<button
+					type="button"
+					role="radio"
+					aria-checked={sw.in_force === level}
+					class:on={sw.in_force === level}
+					onclick={() => choose(level)}
+					data-level={level}>{levelName(level)}</button
+				>
+			{/each}
+		</div>
+		{#if sw.origin_text}<p class="caption" data-origin>{sw.origin_text}</p>{/if}
+		{#if !sw.seekable || appliesNext}<p class="caption" data-applies-next>Applies from the next track.</p>{/if}
+		{#if sw.overridden}<button type="button" class="link back" onclick={() => choose(null)} data-back-to-automatic>Back to automatic</button>{/if}
+	{/if}
+{/snippet}
+
+<div class="path" class:row data-signal-path data-layout={row ? 'row' : 'stack'}>
 	{#if diagram.badge}<p class="verdict" class:amber={amber(diagram)} data-verdict={diagram.badge.verdict}>{diagram.badge.text}</p>{/if}
 	<ol class="blocks" style:--cols={cols} aria-label="The path from the file to what you hear">
 		{#each diagram.blocks as b, i (b.kind)}
@@ -60,23 +85,7 @@
 				<h3 class="title">{b.title}</h3>
 				{#if b.format}<p class="format">{b.format}</p>{/if}
 				{#if b.note}<p class="note">{b.note}</p>{/if}
-				{#if b.kind === 'gateway' && sw}
-					<div class="switch" role="radiogroup" aria-label="Streaming quality" data-quality-switch>
-						{#each sw.levels as level (level)}
-							<button
-								type="button"
-								role="radio"
-								aria-checked={sw.in_force === level}
-								class:on={sw.in_force === level}
-								onclick={() => choose(level)}
-								data-level={level}>{levelName(level)}</button
-							>
-						{/each}
-					</div>
-					{#if sw.origin_text}<p class="caption" data-origin>{sw.origin_text}</p>{/if}
-					{#if !sw.seekable || appliesNext}<p class="caption" data-applies-next>Applies from the next track.</p>{/if}
-					{#if sw.overridden}<button type="button" class="link back" onclick={() => choose(null)} data-back-to-automatic>Back to automatic</button>{/if}
-				{/if}
+				{#if b.kind === 'gateway' && !row}{@render qualitySwitch()}{/if}
 				{#if i === detailsAt && details}
 					<details class="details" data-details>
 						<summary>Details</summary>
@@ -94,13 +103,15 @@
 			</li>
 		{/each}
 	</ol>
+	{#if row && sw}
+		<div class="switch-line" data-switch-line>{@render qualitySwitch()}</div>
+	{/if}
 </div>
 
 <style>
 	.path {
 		display: grid;
 		gap: 0.75rem;
-		container-type: inline-size;
 	}
 	.verdict {
 		justify-self: start;
@@ -168,15 +179,22 @@
 	.caption {
 		color: var(--fg-muted);
 	}
-	/* A row of cards with arrows between, once there is room. */
-	@container (min-width: 600px) {
-		.blocks {
-			grid-template-columns: var(--cols);
-			gap: 0.4rem;
-		}
-		.arrow {
-			transform: none;
-		}
+	/* A row of cards with arrows between (the sheet on a wide screen). */
+	.row .blocks {
+		grid-template-columns: var(--cols);
+		gap: 0.4rem;
+	}
+	.row .arrow {
+		transform: none;
+	}
+	/* The switch and its caption on their own line beneath the row. */
+	.switch-line {
+		display: grid;
+		gap: 0.2rem;
+		justify-items: start;
+	}
+	.switch-line .switch {
+		margin-top: 0;
 	}
 	.switch {
 		display: inline-flex;
@@ -195,6 +213,7 @@
 		color: var(--fg);
 		font: inherit;
 		font-size: 0.85rem;
+		white-space: nowrap;
 		cursor: pointer;
 	}
 	.switch button + button {

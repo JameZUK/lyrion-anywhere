@@ -4,7 +4,7 @@
 // whose override applies now with a seek. The exact case reported: a 24/96 FLAC on mobile
 // data, re-encoded to Opus 160, reads "Transcoded · Opus 160" in amber.
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
-import { tick } from 'svelte';
+import { createRawSnippet, tick } from 'svelte';
 import type { PlayerStatus } from '#lib/lms/types';
 
 vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
@@ -14,6 +14,8 @@ const { SERVER_TOO_OLD_TEXT } = await import('#lib/state/status');
 const { default: NowPlaying } = await import('../src/routes/+page.svelte');
 const { default: PlayerBar } = await import('#lib/components/PlayerBar.svelte');
 const { default: SignalPathView } = await import('#lib/components/SignalPathView.svelte');
+const { default: SignalPathSheet } = await import('#lib/components/SignalPath.svelte');
+const { default: Sheet } = await import('#lib/components/Sheet.svelte');
 const { default: PlaybackSettings } = await import('#lib/settings/PlaybackSettings.svelte');
 const { default: AdvancedSettings } = await import('#lib/settings/AdvancedSettings.svelte');
 const { default: StatusSlot } = await import('#lib/components/StatusSlot.svelte');
@@ -131,13 +133,22 @@ describe('the badge', () => {
 		r.unmount();
 	});
 
-	test('the mini player says it too, in its second line', async () => {
+	test('the mini player shows the verdict word alone, after the artist, amber for Transcoded (phone width)', async () => {
+		width = 360;
 		const r = render(PlayerBar);
 		await tick();
 		const q = r.container.querySelector<HTMLElement>('[data-mini-player] [data-mini-quality]')!;
-		expect(q.textContent).toBe('Transcoded · Opus 160');
+		expect(q.textContent).toBe('Transcoded');
+		expect(q.dataset.verdict).toBe('transcoded');
 		expect(q.classList.contains('amber')).toBe(true);
-		expect(r.container.querySelector('.sub')!.textContent).toContain('The Example Quartet · Coastal Hours · Transcoded · Opus 160');
+		// The full badge is Now playing's; here it is only the hover title.
+		expect(q.getAttribute('title')).toBe('Transcoded · Opus 160');
+		// The artist and album are in full, in their own span the chip sits after (it is not cut with them).
+		const line = r.container.querySelector<HTMLElement>('[data-mini-sub]')!;
+		expect(line.textContent).toBe('The Example Quartet · Coastal Hours');
+		expect(line.contains(q)).toBe(false);
+		expect(line.nextElementSibling).toBe(q);
+		expect(r.container.querySelector('.sub')!.textContent).not.toContain('Opus 160');
 		r.unmount();
 	});
 
@@ -152,8 +163,11 @@ describe('the badge', () => {
 		const r = render(PlayerBar);
 		await tick();
 		const q = r.container.querySelector<HTMLElement>('[data-mini-quality]')!;
-		expect(q.textContent).toBe('Hi-Res · FLAC 24/96');
+		expect(q.textContent).toBe('Hi-Res');
+		expect(q.dataset.verdict).toBe('hi_res');
 		expect(q.classList.contains('amber')).toBe(false);
+		expect(q.classList.contains('hires')).toBe(true);
+		expect(r.container.querySelector('[data-mini-sub]')!.textContent).toBe('The Example Quartet · Coastal Hours');
 		r.unmount();
 	});
 
@@ -161,7 +175,7 @@ describe('the badge', () => {
 		fake.app.playerId = KITCHEN;
 		const r = render(PlayerBar);
 		await tick();
-		expect(r.container.querySelector('[data-mini-quality]')!.textContent).toBe('Hi-Res · FLAC 24/96');
+		expect(r.container.querySelector('[data-mini-quality]')!.textContent).toBe('Hi-Res');
 		r.unmount();
 		width = 1300;
 		const np = render(NowPlaying);
@@ -174,7 +188,7 @@ describe('the badge', () => {
 		device.state = 'reconnecting';
 		const r = render(PlayerBar);
 		await tick();
-		expect(r.container.querySelector('[data-mini-quality]')!.textContent).toBe('Transcoded · Opus 160');
+		expect(r.container.querySelector('[data-mini-quality]')!.textContent).toBe('Transcoded');
 		r.unmount();
 		const s = render(SignalPathView);
 		await tick();
@@ -185,7 +199,7 @@ describe('the badge', () => {
 		device.state = 'stopped';
 		const p = render(PlayerBar);
 		await tick();
-		expect(p.container.querySelector('[data-mini-quality]')!.textContent).toBe('Hi-Res · FLAC 24/96');
+		expect(p.container.querySelector('[data-mini-quality]')!.textContent).toBe('Hi-Res');
 		p.unmount();
 	});
 
@@ -345,6 +359,76 @@ describe('the sheet', () => {
 		await tick();
 		expect(r.container.querySelector('.verdict')!.textContent).toBe('Lossy · MP3 320');
 		expect(r.container.querySelector('[data-block=file]')!.classList.contains('lowers')).toBe(true);
+		r.unmount();
+	});
+});
+
+describe('the sheet on a wide screen and on a phone', () => {
+	test('wide (1300 px): a wider dialog, the three blocks in a row, the switch on its own line beneath', async () => {
+		width = 1300;
+		const r = render(SignalPathSheet, { onclose: () => {} });
+		await tick();
+		const dialog = document.querySelector<HTMLDialogElement>('dialog[open]')!;
+		expect(dialog.classList.contains('wide')).toBe(true);
+		const path = dialog.querySelector<HTMLElement>('[data-signal-path]')!;
+		expect(path.dataset.layout).toBe('row');
+		expect(path.classList.contains('row')).toBe(true);
+		const ol = path.querySelector('ol.blocks')!;
+		expect(blocks(ol)).toEqual(['file', 'gateway', 'device']);
+		// The grid's columns: card, arrow, card, arrow, card.
+		expect(ol.getAttribute('style')).toContain('--cols: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr)');
+		// The switch is not in the gateway's column but on the line after the row, with its caption.
+		expect(path.querySelector('[data-block=gateway] [data-quality-switch]')).toBeNull();
+		const line = path.querySelector<HTMLElement>('[data-switch-line]')!;
+		expect(ol.nextElementSibling).toBe(line);
+		expect(path.querySelectorAll('[data-quality-switch]')).toHaveLength(1);
+		const radios = [...line.querySelectorAll<HTMLButtonElement>('[data-quality-switch] [role=radio]')];
+		expect(radios.map((b) => b.textContent)).toEqual(['Original', 'High', 'Data saver']);
+		expect(line.querySelector('[data-origin]')!.textContent).toBe('High, on mobile data');
+		// Details stays under the device block.
+		expect(path.querySelector('[data-block=device] [data-details]')).not.toBeNull();
+		r.unmount();
+	});
+
+	test('wide: the switch beneath the row still works', async () => {
+		width = 1300;
+		const r = render(SignalPathSheet, { onclose: () => {} });
+		await tick();
+		await chooseAndWait(document.querySelector('[data-switch-line] [data-level=original]')!);
+		expect(device.qualityOverride).toBe('original');
+		expect(time()).toEqual([{ player: HERE, cmd: ['time', 30] }]);
+		await waitFor(() => expect(document.querySelector('[data-switch-line] [data-origin]')!.textContent).toBe('Original applies from the next track'));
+		expect(document.querySelector('[data-switch-line] [data-back-to-automatic]')).not.toBeNull();
+		r.unmount();
+		device.qualityOverride = null;
+	});
+
+	test('phone (360 px): the blocks stack and the switch is under the gateway block', async () => {
+		width = 360;
+		const r = render(SignalPathSheet, { onclose: () => {} });
+		await tick();
+		const path = document.querySelector<HTMLElement>('dialog[open] [data-signal-path]')!;
+		expect(path.dataset.layout).toBe('stack');
+		expect(path.classList.contains('row')).toBe(false);
+		expect(path.querySelector('[data-switch-line]')).toBeNull();
+		expect(path.querySelector('[data-block=gateway] [data-quality-switch]')).not.toBeNull();
+		r.unmount();
+	});
+
+	test("Now playing's Info pane keeps the stacked layout", async () => {
+		width = 1300;
+		const r = render(SignalPathView);
+		await tick();
+		expect(r.container.querySelector<HTMLElement>('[data-signal-path]')!.dataset.layout).toBe('stack');
+		r.unmount();
+	});
+
+	test('other sheets keep their own width: only the signal path asks for the wide one', async () => {
+		width = 1300;
+		const children = createRawSnippet(() => ({ render: () => '<p>Body</p>' }));
+		const r = render(Sheet, { title: 'Sleep timer', onclose: () => {}, children });
+		await tick();
+		expect(document.querySelector('dialog[open]')!.classList.contains('wide')).toBe(false);
 		r.unmount();
 	});
 });

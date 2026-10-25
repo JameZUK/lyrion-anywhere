@@ -177,6 +177,8 @@ async function transcodedPath(page) {
   await page.click('[data-quality-switch] [data-level="high"]');
   await waitForText(page, '[data-signal-path] .verdict', 'Transcoded · Opus 160');
   await waitForText(page, '[data-signal-path] [data-origin]', 'High');
+  // The mini player's chip says the verdict word alone.
+  await waitForText(page, '[data-mini-quality]', 'Transcoded');
   await settle(page, null, 1000);
 }
 
@@ -330,8 +332,8 @@ await group(['signal-path-phone'], async () => {
   await ctx.close();
 });
 
-// The sheet is a dialog at most 460 px wide on a desktop, so its blocks stack there too (the
-// row with arrows needs 600 px: a sheet on a tablet-width window).
+// On a desktop the signal-path sheet is a dialog up to 760 px wide: the blocks sit in a row
+// with arrows, and the quality switch is on its own line beneath them.
 await group(['signal-path-desktop'], async () => {
   const { ctx, page } = await session({ device: DESKTOP, scheme: 'light', player: 'device' });
   await go(page, '#/', 'main.content');
