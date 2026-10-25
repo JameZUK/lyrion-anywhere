@@ -34,6 +34,7 @@
 }
 
 .aw-ua { font-size: 0.8em; max-width: 28em; overflow-wrap: anywhere; }
+.aw-tag { display: inline-block; margin-left: 0.5em; padding: 0 0.4em; font-size: 0.8em; opacity: 0.75; border: 1px solid currentColor; border-radius: 3px; white-space: nowrap; }
 
 .aw-pair { max-width: 36em; padding: 0.8em 1em; border: 1px solid rgba(128, 128, 128, 0.4); border-radius: 6px; }
 .aw-pair h4 { margin: 0 0 0.4em; }

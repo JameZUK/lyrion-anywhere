@@ -78,6 +78,19 @@
 
   const CLIENT_KINDS = { pwa: 'Installed web app', browser: 'Browser tab', android: 'Android app' };
 
+  /** The player protocol this plugin's gateway speaks (`protocol` in its /v1/me). */
+  const PLAYER_PROTOCOL = 2;
+
+  /**
+   * Whether a device last attached with a player protocol older than the gateway's: its
+   * app needs updating. Nothing for a device that never attached (`protocol` null) or one
+   * that is current.
+   */
+  function needsUpdating(d) {
+    const p = d && d.protocol;
+    return typeof p === 'number' && Number.isFinite(p) && p < PLAYER_PROTOCOL;
+  }
+
   /** What kind of client a device is, e.g. "Browser tab \u00b7 Safari on iPadOS". */
   function clientText(d) {
     const kind = d && Object.prototype.hasOwnProperty.call(CLIENT_KINDS, d.client_kind) ? CLIENT_KINDS[d.client_kind] : '';
@@ -188,6 +201,7 @@
     'totp.disable_failed': 'Two-step not turned off (wrong password)',
     'player.granted': 'Player given',
     'player.ungranted': 'Player taken away',
+    'player.too_old': 'App too old to play (asked to update)',
     'settings.session_days': 'Sign-in lifetime changed',
     'settings.admin_only_plugins': 'Admin-only plugins changed',
     'history.cleared': 'Play history cleared',
@@ -606,7 +620,7 @@
     return `${have} (this release pins ${pin})`;
   }
 
-  const api = { command, adminOnlyArg, pageToken, validDays, sessionDaysShown, validDeviceName, clientText, validUsername, validPassword, formatTime, formatUptime, diagnosticsText, downloadsText, formatCountdown, pairingView, auditEventText, isHttpUrl, isPrivateAddress, privateHttpOrigin, pairingLinkFor, hasTrustedNetworks, trustedListenText, isEnter, restartText, offlineText, DEFAULT_SESSION_DAYS,
+  const api = { command, adminOnlyArg, pageToken, validDays, sessionDaysShown, validDeviceName, clientText, needsUpdating, validUsername, validPassword, formatTime, formatUptime, diagnosticsText, downloadsText, formatCountdown, pairingView, auditEventText, isHttpUrl, isPrivateAddress, privateHttpOrigin, pairingLinkFor, hasTrustedNetworks, trustedListenText, isEnter, restartText, offlineText, DEFAULT_SESSION_DAYS,
     validTunnelHostname, validTunnelToken, validApiToken, tunnelRequest, clearFields, formatMB, tunnelStateText, tunnelControls, tunnelUrl, pairingPublicUrl, tunnelOverrideText, tunnelListen, tunnelServiceText, quickCountdownText, tunnelLogText, tunnelVersionText };
   if (typeof globalThis.__anywhereTest === 'object') {
     Object.assign(globalThis.__anywhereTest, api);
@@ -1019,6 +1033,13 @@
         client.append(el('div', { className: 'aw-note aw-ua', text: d.user_agent }));
       }
       const name = el('td', {}, [el('span', { text: String(d.name) })]);
+      if (needsUpdating(d)) {
+        name.append(el('span', {
+          className: 'aw-tag',
+          text: 'needs updating',
+          title: 'This device last connected with an app too old to play from this server. Update the app on it.',
+        }));
+      }
       table.append(el('tr', {}, [
         name,
         el('td', { text: d.username }),
