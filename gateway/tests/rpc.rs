@@ -725,6 +725,98 @@ async fn dont_stop_the_music_for_permitted_players_only() {
     assert_eq!(lms_calls(), before, "refused commands reached LMS");
 }
 
+/// LMS's Volume Control setting: a device may switch it (or read it) on its own player
+/// only; never on another player, even one it is permitted to control, and only with the
+/// values LMS means.
+#[tokio::test]
+async fn volume_control_pref_for_the_callers_own_player_only() {
+    let h = harness().await;
+    let mine = anywhere_core::proto::format_mac(&h.mac_a);
+    let theirs = anywhere_core::proto::format_mac(&h.mac_b);
+    let pref = "digitalVolumeControl";
+    for v in ["0", "1", "?"] {
+        let r = h.rpc(&h.tok_a, &mine, json!(["playerpref", pref, v])).await;
+        assert_eq!(r.status(), S::OK, "{v}");
+        assert!(
+            h.lms
+                .rpc_calls()
+                .iter()
+                .any(|c| c == &json!([mine.clone(), ["playerpref", pref, v]])),
+            "{v} forwarded verbatim"
+        );
+    }
+    // The other user's device may do the same for its own player.
+    let r = h
+        .rpc(&h.tok_b, &theirs, json!(["playerpref", pref, "0"]))
+        .await;
+    assert_eq!(r.status(), S::OK);
+    // The own MAC in capitals is still the own player.
+    let r = h
+        .rpc(
+            &h.tok_a,
+            &mine.to_ascii_uppercase(),
+            json!(["playerpref", pref, "1"]),
+        )
+        .await;
+    assert_eq!(r.status(), S::OK);
+
+    h.accounts
+        .grant_player("alice", "aa:bb:cc:dd:ee:01")
+        .unwrap();
+    // The grant works for other commands...
+    assert_eq!(
+        h.rpc(&h.tok_a, "aa:bb:cc:dd:ee:01", json!(["play"]))
+            .await
+            .status(),
+        S::OK
+    );
+    let lms_calls = || {
+        h.lms
+            .rpc_calls()
+            .into_iter()
+            .filter(|c| !matches!(c[1][0].as_str(), Some("apps" | "radios")))
+            .count()
+    };
+    let before = lms_calls();
+    // ...but not for this one.
+    for (player, cmd) in [
+        ("aa:bb:cc:dd:ee:01", json!(["playerpref", pref, "0"])),
+        (theirs.as_str(), json!(["playerpref", pref, "0"])),
+        ("", json!(["playerpref", pref, "0"])),
+        (mine.as_str(), json!(["playerpref", pref, "2"])),
+        (mine.as_str(), json!(["playerpref", pref, ""])),
+        (mine.as_str(), json!(["playerpref", pref, "00"])),
+        (mine.as_str(), json!(["playerpref", pref, "1 "])),
+        (mine.as_str(), json!(["playerpref", pref, 0])),
+        (mine.as_str(), json!(["playerpref", pref, "A".repeat(65)])),
+        (mine.as_str(), json!(["playerpref", pref])),
+        (mine.as_str(), json!(["playerpref", pref, "1", "x"])),
+        (
+            mine.as_str(),
+            json!(["playerpref", "digitalvolumecontrol", "0"]),
+        ),
+        (mine.as_str(), json!(["playerpref", "maxVolume", "100"])),
+    ] {
+        let r = h.rpc(&h.tok_a, player, cmd.clone()).await;
+        assert_eq!(r.status(), S::FORBIDDEN, "{player} {cmd}");
+    }
+    assert_eq!(lms_calls(), before, "refused commands reached LMS");
+}
+
+/// The clients read the player's Volume Control setting from `status`: it reaches them.
+#[tokio::test]
+async fn status_carries_digital_volume_control() {
+    let h = harness().await;
+    let mine = anywhere_core::proto::format_mac(&h.mac_a);
+    let body: Value = h
+        .rpc(&h.tok_a, &mine, json!(["status", "-", 1, "tags:a"]))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["result"]["digital_volume_control"], json!(0), "{body}");
+}
+
 /// An admin-only plugin's Don't Stop The Music provider is neither listed nor choosable by
 /// a listener.
 #[tokio::test]

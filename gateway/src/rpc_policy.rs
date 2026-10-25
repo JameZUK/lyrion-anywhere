@@ -37,6 +37,11 @@ fn deny<T>(why: impl Into<String>) -> Result<T, Denied> {
 pub trait Caller {
     fn role(&self) -> Role;
     fn may_control(&self, player: &str) -> bool;
+    /// Is this the calling device's own player (the MAC the gateway gave the device)?
+    /// Callers without a player of their own answer no.
+    fn is_own_player(&self, _player: &str) -> bool {
+        false
+    }
 }
 
 /// A validated request, ready to send to LMS.
@@ -555,6 +560,15 @@ pub fn check(
             _ => false,
         },
         "randomplayisactive" => n == 1,
+        // LMS's Volume Control setting (1 = on, 0 = output fixed at 100%), only on the
+        // device's own player: a device decides how it plays itself, never how another
+        // player does, permitted or not. Exactly one of these values, as a JSON string.
+        "playerpref" if c.get(1) == Some(&VOLUME_CONTROL_PREF) => {
+            n == 3
+                && raw[2].is_string()
+                && matches!(c[2], "0" | "1" | "?")
+                && caller.is_own_player(player)
+        }
         "playerpref" => n == 3 && c[1] == DSTM_PREF && (c[2] == "?" || dstm_provider_ok(c[2])),
         "favorites" if c.get(1) == Some(&"playlist") => {
             n >= 4
@@ -617,6 +631,9 @@ pub const RANDOM_MIX_MODES: &[&str] = &[
 fn positive_id(s: &str) -> bool {
     is_uint(s) && !s.starts_with('0')
 }
+
+/// The player preference holding LMS's Volume Control setting for the player.
+pub const VOLUME_CONTROL_PREF: &str = "digitalVolumeControl";
 
 /// The player preference holding Don't Stop The Music's provider.
 pub const DSTM_PREF: &str = "plugin.dontstopthemusic:provider";
@@ -1291,6 +1308,9 @@ mod tests {
         fn may_control(&self, p: &str) -> bool {
             self.0 == Role::Admin || p == MINE || p == HOME
         }
+        fn is_own_player(&self, p: &str) -> bool {
+            p.eq_ignore_ascii_case(MINE)
+        }
     }
 
     fn apps() -> HashSet<String> {
@@ -1556,6 +1576,85 @@ mod tests {
         }
         denied(MINE, json!(["playerpref", DSTM_PREF, "A".repeat(65)]));
         denied(MINE, json!(["playerpref", DSTM_PREF, 5]));
+    }
+
+    #[test]
+    fn volume_control_pref_only_on_the_callers_own_player() {
+        for v in ["0", "1", "?"] {
+            let c = ok(MINE, json!(["playerpref", VOLUME_CONTROL_PREF, v]));
+            assert_eq!(c.player, MINE);
+            assert_eq!(c.cmd, vec!["playerpref", VOLUME_CONTROL_PREF, v]);
+            // Every role, for its own player.
+            let raw = json!(["playerpref", VOLUME_CONTROL_PREF, v]);
+            let raw = raw.as_array().unwrap();
+            assert!(check(&Who(Role::Admin), MINE, raw, &apps()).is_ok(), "{v}");
+        }
+        // The same MAC in capitals is still the caller's own player (an admin here, as this
+        // test caller's player permissions are exact; tests/rpc.rs covers the real ones).
+        let upper = MINE.to_ascii_uppercase();
+        assert!(
+            check(
+                &Who(Role::Admin),
+                &upper,
+                json!(["playerpref", VOLUME_CONTROL_PREF, "0"])
+                    .as_array()
+                    .unwrap(),
+                &apps()
+            )
+            .is_ok()
+        );
+        // Never another player: not a permitted one, not one the caller may not control,
+        // not without a player, and not even for an admin, who may control every player.
+        for v in ["0", "1", "?"] {
+            denied(HOME, json!(["playerpref", VOLUME_CONTROL_PREF, v]));
+            denied(OTHER, json!(["playerpref", VOLUME_CONTROL_PREF, v]));
+            denied("", json!(["playerpref", VOLUME_CONTROL_PREF, v]));
+            for p in [HOME, OTHER] {
+                let raw = json!(["playerpref", VOLUME_CONTROL_PREF, v]);
+                assert!(
+                    check(&Who(Role::Admin), p, raw.as_array().unwrap(), &apps()).is_err(),
+                    "admin {p} {v}"
+                );
+            }
+        }
+        // Exactly these values, as strings.
+        for v in [
+            json!("2"),
+            json!(""),
+            json!("00"),
+            json!("1 "),
+            json!(" 1"),
+            json!("-1"),
+            json!("01"),
+            json!("true"),
+            json!("1\n"),
+            json!("A".repeat(65)),
+            json!(0),
+            json!(1),
+            json!(1.0),
+            json!(true),
+            json!(null),
+            json!(["1"]),
+            json!({"v": "1"}),
+        ] {
+            denied(MINE, json!(["playerpref", VOLUME_CONTROL_PREF, v]));
+        }
+        // Exactly this shape and this pref name.
+        for cmd in [
+            json!(["playerpref", VOLUME_CONTROL_PREF]),
+            json!(["playerpref", VOLUME_CONTROL_PREF, "1", "x"]),
+            json!(["playerpref", "digitalvolumecontrol", "1"]),
+            json!(["playerpref", "DIGITALVOLUMECONTROL", "1"]),
+            json!(["playerpref", "digitalVolumeControl ", "1"]),
+            json!(["playerpref", "digitalVolumeControl:x", "1"]),
+            json!(["playerpref", "volume", "100"]),
+            json!(["playerpref", "maxVolume", "100"]),
+            json!(["playerpref", "mp3StreamingMethod", "1"]),
+            json!(["playerpref", "audiodir", "/srv/music"]),
+            json!(["playerpref", "transitionType", "1"]),
+        ] {
+            denied(MINE, cmd);
+        }
     }
 
     #[test]
@@ -2281,6 +2380,18 @@ mod tests {
         let art = json!({"artwork_url": "https://images.example.com/a.jpg", "icon": "/imageproxy/x/image.png",
                          "image": "html/images/cover.png"});
         assert_eq!(filter_response(Kind::Plain, art.clone(), &|_| true), art);
+    }
+
+    /// The clients read the player's Volume Control setting from `status`.
+    #[test]
+    fn status_keeps_digital_volume_control() {
+        for v in [0, 1] {
+            let raw = json!({"mode": "play", "mixer volume": 100, "digital_volume_control": v,
+                             "player_name": "Kitchen"});
+            let out = filter_response(Kind::Plain, raw.clone(), &|_| true);
+            assert_eq!(out["digital_volume_control"], json!(v));
+            assert_eq!(out, raw);
+        }
     }
 
     /// Regression: track info menus carry lines such as `Location: /srv/music/…` and

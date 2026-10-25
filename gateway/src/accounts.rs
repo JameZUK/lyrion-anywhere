@@ -2592,6 +2592,29 @@ impl Accounts {
             .flatten()
     }
 
+    /// Whether the device's player has yet to be given its initial LMS volume: true only
+    /// for a device created since the gateway started tracking it, until
+    /// [`Self::mark_initial_level_set`]. An unknown device needs nothing.
+    pub fn needs_initial_level(&self, device_id: i64) -> bool {
+        self.reader()
+            .query_row(
+                "SELECT level_set FROM devices WHERE id = ?1",
+                [device_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .is_ok_and(|v| v == 0)
+    }
+
+    /// Record that LMS accepted the device's initial volume, so it is never set again.
+    pub fn mark_initial_level_set(&self, device_id: i64) {
+        let db = self.db.lock().unwrap();
+        self.stall_write();
+        let _ = db.execute(
+            "UPDATE devices SET level_set = 1 WHERE id = ?1",
+            [device_id],
+        );
+    }
+
     pub fn touch_device(&self, device_id: i64) {
         let db = self.db.lock().unwrap();
         self.stall_write();
@@ -3275,11 +3298,31 @@ fn migrate_steps(db: &Connection) -> Result<(), AuthError> {
         }
         db.execute_batch("PRAGMA user_version = 13;")?;
     }
+    if version < 14 {
+        // Whether the device's player has been given its initial LMS volume (see
+        // `Session::ensure_initial_level`). Every device that already exists has its player
+        // in LMS at whatever level its owner chose, so it counts as done; only devices
+        // created from now on start at 0.
+        let has: i64 = db.query_row(
+            "SELECT count(*) FROM pragma_table_info('devices') WHERE name = 'level_set'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has == 0 {
+            db.execute_batch(
+                "ALTER TABLE devices ADD COLUMN level_set INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+        db.execute_batch(
+            "UPDATE devices SET level_set = 1;
+             PRAGMA user_version = 14;",
+        )?;
+    }
     Ok(())
 }
 
 /// The schema version [`migrate`] brings a database to.
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 fn unix_now() -> u64 {
     SystemTime::now()
@@ -6148,6 +6191,85 @@ mod tests {
         .contains("AUTOINCREMENT")
     }
 
+    /// Version 14 tracks whether a device's player has had its initial LMS volume: every
+    /// device from before it counts as done (its player already has its owner's level),
+    /// and only devices created afterwards need it.
+    #[test]
+    fn migration_to_14_leaves_existing_devices_alone() {
+        let path = std::env::temp_dir().join(format!("anywhere-mig14-{}.db", crate::random_id()));
+        let old = {
+            let a = Accounts::open(&path).unwrap();
+            a.create_user("alice", PW, Role::Listener).unwrap();
+            let old = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
+            // As a version-13 gateway left it: no `level_set` column.
+            a.with_db(|db| {
+                db.execute_batch(
+                    "ALTER TABLE devices DROP COLUMN level_set;
+                     PRAGMA user_version = 13;",
+                )
+            })
+            .unwrap();
+            assert_eq!(a.schema_version(), 13);
+            old.principal.device_id
+        };
+        let a = Accounts::open(&path).unwrap();
+        assert_eq!(a.schema_version(), SCHEMA_VERSION);
+        assert!(
+            !a.needs_initial_level(old),
+            "an existing device is left alone"
+        );
+        assert_eq!(device_row(&a, old).name, "Laptop");
+        // A device created after the upgrade needs its level, until it is marked done.
+        let new = a
+            .login("alice", PW, None, "Phone", None, "c")
+            .unwrap()
+            .principal
+            .device_id;
+        assert!(a.needs_initial_level(new));
+        assert!(!a.needs_initial_level(old));
+        // Running the step again (as after a half-finished upgrade) is safe, and marks
+        // everything there done.
+        a.with_db(|db| {
+            db.execute_batch("PRAGMA user_version = 13;")?;
+            migrate(db).map_err(|_| rusqlite::Error::InvalidQuery)?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(a.schema_version(), SCHEMA_VERSION);
+        assert!(!a.needs_initial_level(new));
+        let newer = a
+            .login("alice", PW, None, "Tablet", None, "c")
+            .unwrap()
+            .principal
+            .device_id;
+        assert!(a.needs_initial_level(newer));
+        a.mark_initial_level_set(newer);
+        assert!(!a.needs_initial_level(newer));
+        // Unknown devices need nothing.
+        assert!(!a.needs_initial_level(newer + 1000));
+        drop(a);
+        for ext in ["db", "db-wal", "db-shm"] {
+            let _ = std::fs::remove_file(path.with_extension(ext));
+        }
+    }
+
+    /// A brand-new database: devices start needing their initial level.
+    #[test]
+    fn a_new_device_needs_its_initial_level_once() {
+        let a = Accounts::in_memory().unwrap();
+        a.create_user("alice", PW, Role::Listener).unwrap();
+        let d = a
+            .login("alice", PW, None, "Phone", None, "c")
+            .unwrap()
+            .principal
+            .device_id;
+        assert!(a.needs_initial_level(d));
+        a.mark_initial_level_set(d);
+        assert!(!a.needs_initial_level(d));
+        a.mark_initial_level_set(d);
+        assert!(!a.needs_initial_level(d));
+    }
+
     /// Version 13 rebuilds the devices table so its ids are never reused, keeping every
     /// device, its refresh tokens and its diagnostics; it is safe to run again.
     #[test]
@@ -6177,7 +6299,9 @@ mod tests {
                        client_kind TEXT,
                        client_platform TEXT,
                        user_agent TEXT);
-                     INSERT INTO devices_v12 SELECT * FROM devices;
+                     INSERT INTO devices_v12 SELECT id, user_id, name, mac, created_at,
+                       last_seen, revoked, revoked_at, last_addr, client_kind,
+                       client_platform, user_agent FROM devices;
                      DROP TABLE devices;
                      ALTER TABLE devices_v12 RENAME TO devices;
                      PRAGMA foreign_keys = ON;

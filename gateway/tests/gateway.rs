@@ -1907,6 +1907,133 @@ async fn lms_is_told_to_proxy_once_the_player_is_known() {
     assert_eq!(calls_for(&h, &me, &proxied), 1);
 }
 
+/// `mixer volume 100`, as the gateway sends it (LMS's JSON-RPC takes the words as strings).
+fn initial_level() -> serde_json::Value {
+    serde_json::json!(["mixer", "volume", "100"])
+}
+
+/// Open a session for device A, send its HELO and have LMS speak once; returns the
+/// websocket and LMS's side of the connection.
+async fn attach_and_let_lms_speak(h: &mut Harness) -> (Ws, tokio::net::tcp::OwnedWriteHalf) {
+    fn helos(h: &Harness) -> usize {
+        h.lms.frames().iter().filter(|f| *f == "HELO").count()
+    }
+    let before = helos(h);
+    let mut ws = h.dial().await;
+    connect(&mut ws, &h.tok_a).await;
+    let mut lms = h.lms.accept().await;
+    ws.send(Message::Binary(helo(h.mac_a).into()))
+        .await
+        .unwrap();
+    wait_for(|| helos(h) > before).await;
+    lms.write_all(&encode_server_frame(*b"vers", b"9.1.1"))
+        .await
+        .unwrap();
+    let _ = next(&mut ws).await;
+    (ws, lms)
+}
+
+/// A brand-new device's player starts at full volume, not LMS's 50: the gateway sets it to
+/// 100 once LMS knows the player, exactly once, and never again for that device, not on a
+/// resume and not on a later session.
+#[tokio::test]
+async fn a_new_devices_player_is_set_to_full_volume_once() {
+    let mut h = harness().await;
+    let me = format_mac(&h.mac_a);
+    assert!(h.accounts.needs_initial_level(h.dev_a));
+    let mut ws = h.dial().await;
+    let (sid, secret) = open_session(&mut ws, &h.tok_a).await;
+    let mut lms = h.lms.accept().await;
+    ws.send(Message::Binary(helo(h.mac_a).into()))
+        .await
+        .unwrap();
+    wait_for(|| h.lms.frames() == ["HELO"]).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        calls_for(&h, &me, &initial_level()),
+        0,
+        "not before LMS has spoken"
+    );
+    lms.write_all(&encode_server_frame(*b"vers", b"9.1.1"))
+        .await
+        .unwrap();
+    let _ = next(&mut ws).await;
+    assert_eq!(wait_calls(&h, &me, &initial_level(), 1).await, 1);
+    wait_for(|| !h.accounts.needs_initial_level(h.dev_a)).await;
+    // Sent for this player only, never for anyone else's.
+    let theirs = format_mac(&h.mac_b);
+    assert_eq!(calls_for(&h, &theirs, &initial_level()), 0);
+    // Once per session, not once per frame.
+    lms.write_all(&encode_server_frame(*b"vers", b"9.1.1"))
+        .await
+        .unwrap();
+    let _ = next(&mut ws).await;
+    // A resume of the same session: nothing again.
+    drop(ws);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let mut ws = h.dial().await;
+    ws.send(resume_msg(&h.tok_a, &sid, &secret)).await.unwrap();
+    assert_eq!(greeting(&mut ws).await["resumed"], true);
+    lms.write_all(&encode_server_frame(*b"vers", b"9.1.1"))
+        .await
+        .unwrap();
+    let _ = next(&mut ws).await;
+    drop(ws);
+    drop(lms);
+    // A new session for the same device (a reconnect): nothing again either.
+    let (_ws, _lms) = attach_and_let_lms_speak(&mut h).await;
+    let proxied = serde_json::json!(["playerpref", "mp3StreamingMethod", "1"]);
+    assert_eq!(
+        wait_calls(&h, &me, &proxied, 2).await,
+        2,
+        "second session ran"
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(calls_for(&h, &me, &initial_level()), 1);
+}
+
+/// LMS failing the command: the device is not marked done, and the next session tries
+/// again; only once LMS accepts it is the device done for good.
+#[tokio::test]
+async fn a_failed_initial_volume_is_tried_again_next_session() {
+    let mut h = harness().await;
+    let me = format_mac(&h.mac_a);
+    h.lms.fail_rpc.lock().unwrap().insert("mixer volume".into());
+    {
+        let (_ws, _lms) = attach_and_let_lms_speak(&mut h).await;
+        assert_eq!(wait_calls(&h, &me, &initial_level(), 1).await, 1);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            h.accounts.needs_initial_level(h.dev_a),
+            "not done until LMS accepts it"
+        );
+    }
+    h.lms.fail_rpc.lock().unwrap().clear();
+    let (_ws, _lms) = attach_and_let_lms_speak(&mut h).await;
+    assert_eq!(wait_calls(&h, &me, &initial_level(), 2).await, 2);
+    wait_for(|| !h.accounts.needs_initial_level(h.dev_a)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(calls_for(&h, &me, &initial_level()), 2);
+}
+
+/// A device that already had its level (every device from before the gateway tracked it is
+/// migrated as done): its player's volume is never touched.
+#[tokio::test]
+async fn an_existing_devices_volume_is_left_alone() {
+    let mut h = harness().await;
+    let me = format_mac(&h.mac_a);
+    h.accounts.mark_initial_level_set(h.dev_a);
+    let (_ws, _lms) = attach_and_let_lms_speak(&mut h).await;
+    let proxied = serde_json::json!(["playerpref", "mp3StreamingMethod", "1"]);
+    assert_eq!(wait_calls(&h, &me, &proxied, 1).await, 1, "LMS has spoken");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(calls_for(&h, &me, &initial_level()), 0);
+    assert!(
+        h.lms.rpc_calls().iter().all(|c| c[1][0] != "mixer"),
+        "no mixer command at all"
+    );
+}
+
 /// A direct stream that still arrives (the pref not yet applied, or ignored): the player
 /// is told nothing of where it pointed, and LMS is asked to proxy and then to replay the
 /// entry, which it then serves itself. At most three times in a row; an accepted stream
