@@ -438,13 +438,14 @@ async fn handle(gw: AppState, mut ws: WebSocket, addr: std::net::IpAddr) {
         session.detach(&gw, generation);
         return;
     }
-    // The stream in progress, if any, right after the greeting (newer ones follow from
-    // the queue).
-    if let Some(m) = attached.stream_message
-        && ws.send(Message::Text(m.into())).await.is_err()
-    {
-        session.detach(&gw, generation);
-        return;
+    // The streams lately relayed, if any, oldest first, right after the greeting (newer
+    // ones follow from the queue): a client that read ahead into the next track still gets
+    // the message for the one it is hearing.
+    for m in attached.stream_messages {
+        if ws.send(Message::Text(m.into())).await.is_err() {
+            session.detach(&gw, generation);
+            return;
+        }
     }
     // Off the async workers (M7): a stalled disk must not hold up other sessions.
     let device = session.device.device_id;

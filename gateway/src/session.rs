@@ -109,10 +109,15 @@ pub struct Attached {
     pub generation: u64,
     pub rx: mpsc::Receiver<Outbound>,
     pub kick: watch::Receiver<Kick>,
-    /// The last stream message sent in this session, to send again right after the
-    /// greeting (a resumed client is never without it). Later ones follow on `rx`.
-    pub stream_message: Option<String>,
+    /// The last [`HELD_STREAM_MESSAGES`] stream messages sent in this session, oldest
+    /// first, to send again right after the greeting: a resumed client is never without
+    /// the one for the stream it is hearing, even when it has read ahead into the next.
+    /// Later ones follow on `rx`.
+    pub stream_messages: Vec<String>,
 }
+
+/// Stream messages held per session for a resume greeting.
+pub const HELD_STREAM_MESSAGES: usize = 4;
 
 struct State {
     attached: Option<Attachment>,
@@ -138,9 +143,9 @@ struct State {
     /// What the current `strm s` says LMS serves (the stream message's `served`, less a
     /// FLAC stream's format, read from its first bytes).
     stream_served: Option<crate::stream_info::Served>,
-    /// The last stream message sent (or kept for a detached client), sent again after a
-    /// resume greeting.
-    stream_message: Option<String>,
+    /// The last stream messages sent (or kept for a detached client), by `seq`, oldest
+    /// first and at most [`HELD_STREAM_MESSAGES`]: sent again after a resume greeting.
+    stream_messages: VecDeque<(u64, String)>,
     /// The level the client asked for (docs/plans/streaming-quality.md).
     quality: crate::live::Quality,
     /// The current stream is to be re-encoded: the level, its bit rate and the slot it
@@ -266,7 +271,7 @@ impl Session {
                 stream_path: None,
                 stream_format: 0,
                 stream_served: None,
-                stream_message: None,
+                stream_messages: VecDeque::new(),
                 quality: Default::default(),
                 live: None,
                 relay: None,
@@ -407,7 +412,7 @@ impl Session {
             generation,
             rx,
             kick: kick_rx,
-            stream_message: st.stream_message.clone(),
+            stream_messages: st.stream_messages.iter().map(|(_, m)| m.clone()).collect(),
         })
     }
 
@@ -1192,7 +1197,12 @@ impl Session {
         };
         let msg = crate::stream_info::message(n, &served, sent);
         debug!(mac = %self.device.mac_string(), stream = n, message = %msg, "stream message");
-        st.stream_message = Some(msg.clone());
+        // In `seq` order: only the current stream is announced, and `seq` only grows.
+        st.stream_messages.retain(|(seq, _)| *seq < n);
+        st.stream_messages.push_back((n, msg.clone()));
+        while st.stream_messages.len() > HELD_STREAM_MESSAGES {
+            st.stream_messages.pop_front();
+        }
         // A socket too slow for it is kicked and held for its resume, whose greeting
         // brings the message again.
         let detached = self.text_to_client(&mut st, msg);
@@ -1448,8 +1458,8 @@ mod tests {
         assert!(s.is_detached(), "held for its resume");
         // Kept for the resume greeting.
         let resumed = s.attach(n).unwrap();
-        let held = resumed.stream_message.expect("the message is kept");
-        assert!(held.contains(r#""seq":1"#), "{held}");
+        assert_eq!(resumed.stream_messages.len(), 1, "the message is kept");
+        assert!(resumed.stream_messages[0].contains(r#""seq":1"#));
         // Room in the queue: delivered, nobody kicked.
         let mut b = resumed.rx;
         current_stream(&s, 2);

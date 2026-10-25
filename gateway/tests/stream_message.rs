@@ -376,14 +376,69 @@ async fn a_resume_gets_the_message_again_and_it_is_never_a_frame() {
     assert_eq!(p.frames, 3);
     let (m, _) = fetch(&h, &mut p, 3).await;
     assert_eq!(m["seq"], 3);
-    // Resumed again, the newest is the one sent.
+    // Resumed again: both streams relayed, in order.
     p.ws = h.dial().await;
     p.ws.send(resume(&h.tok_a, &p, p.frames)).await.unwrap();
     greeting(&mut p.ws).await;
+    for seq in [2, 3] {
+        assert_eq!(
+            stream_message(&next(&mut p.ws).await).expect("the stream message")["seq"],
+            seq
+        );
+    }
+    quiet(&mut p.ws).await;
+}
+
+/// A client with a read-ahead stream (the next track fetched while the current one plays)
+/// that resumes still gets the message for the track it is hearing: the last four streams'
+/// messages come again after the greeting, oldest first, and none is a frame, so the
+/// count of frames is unchanged and a further resume with it is accepted.
+#[tokio::test]
+async fn a_resume_gets_the_recent_streams_messages_in_order() {
+    let mut h = harness().await;
+    *h.lms.stream_body.lock().unwrap() = Some(Arc::new(flac_24_96(5)));
+    let mut p = open(&mut h).await;
+    // The track playing and the next one, read ahead.
+    p.lms_sends(&strm_s(h.mac_a, b'f', UNKNOWN, 0)).await;
+    let (one, _) = fetch(&h, &mut p, 1).await;
+    p.lms_sends(&strm_s(h.mac_a, b'm', UNKNOWN, 0)).await;
+    let (two, _) = fetch(&h, &mut p, 2).await;
     assert_eq!(
-        stream_message(&next(&mut p.ws).await).expect("the stream message")["seq"],
-        3
+        (one["seq"].clone(), two["seq"].clone()),
+        (json!(1), json!(2))
     );
+    assert_eq!(p.frames, 2);
+    for _ in 0..2 {
+        p.ws.close(None).await.ok();
+        p.ws = h.dial().await;
+        p.ws.send(resume(&h.tok_a, &p, p.frames)).await.unwrap();
+        assert_eq!(greeting(&mut p.ws).await["resumed"], true);
+        assert_eq!(
+            stream_message(&next(&mut p.ws).await).expect("the first"),
+            one
+        );
+        assert_eq!(
+            stream_message(&next(&mut p.ws).await).expect("the second"),
+            two
+        );
+        quiet(&mut p.ws).await;
+    }
+    // At most four: the oldest go first.
+    for n in 3..=6u64 {
+        p.lms_sends(&strm_s(h.mac_a, b'm', UNKNOWN, 0)).await;
+        assert_eq!(fetch(&h, &mut p, n).await.0["seq"], n);
+    }
+    p.ws.close(None).await.ok();
+    p.ws = h.dial().await;
+    p.ws.send(resume(&h.tok_a, &p, p.frames)).await.unwrap();
+    greeting(&mut p.ws).await;
+    for seq in 3..=6u64 {
+        assert_eq!(
+            stream_message(&next(&mut p.ws).await).expect("a message")["seq"],
+            seq
+        );
+    }
+    quiet(&mut p.ws).await;
 }
 
 /// A resumed session with no stream relayed yet: nothing after the greeting. A stream
