@@ -125,6 +125,12 @@ export interface StoredTrack {
 	 * transcoded. Missing on tracks stored before it was kept.
 	 */
 	source?: string;
+	/**
+	 * An original's sample rate (Hz) and bit depth, read from the file's own header (FLAC or
+	 * WAV), so the badge can say Hi-Res. Missing when unknown, and on tracks stored before.
+	 */
+	rate?: number;
+	bits?: number;
 	ext: string;
 	size: number;
 	contentType: string;
@@ -204,6 +210,9 @@ export interface PartialDownload {
 	received: number;
 	chunks: number;
 	contentType: string;
+	/** An original's rate and depth, from the first bytes received (see StoredTrack). */
+	rate?: number;
+	bits?: number;
 }
 
 /** A download waiting in the queue, kept so it carries on after the page reloads. */

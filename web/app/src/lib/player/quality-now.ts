@@ -17,8 +17,11 @@ export interface PathFacts {
 	playerName?: string;
 	/** The current track as LMS reports it (`type`, `samplerate`, `samplesize`, `bitrate`). */
 	track?: { type?: unknown; samplerate?: unknown; samplesize?: unknown; bitrate?: unknown } | null;
-	/** The download playing offline: its format, its codec, and the library file's type when kept. */
-	download?: { format: Format; codec: string; source?: string } | null;
+	/**
+	 * The download playing offline: its format, its codec, the library file's type when kept,
+	 * and an original's rate and depth when known.
+	 */
+	download?: { format: Format; codec: string; source?: string; rate?: number; bits?: number } | null;
 	/** The worker's status fields (local): what the engine decodes, what LMS served, what the gateway sent. */
 	source?: unknown;
 	served?: unknown;
@@ -46,14 +49,22 @@ export function fileOf(track: PathFacts['track']): FileFormat | null {
 /** The download's label as Now playing shows it ("FLAC", "Opus 160", "MP3 320"). */
 export function downloadLabel(d: NonNullable<PathFacts['download']>): string {
 	if (d.format !== 'original') return `${d.format === 'opus' ? 'Opus' : 'MP3'} ${DOWNLOAD_KBPS[d.format]}`;
-	return quality({ type: d.codec })?.label ?? '';
+	const h = originalHeader(d);
+	return quality({ type: d.codec, samplerate: h.rate, samplesize: h.bits })?.label ?? '';
 }
 
 function downloadDecoded(d: NonNullable<PathFacts['download']>): Decoded | null {
 	if (d.format === 'opus') return { codec: 'Opus', rate: 48_000, lossless: false };
 	if (d.format === 'mp3') return { codec: 'MP3', lossless: false };
-	const c = codecOf(d.codec);
-	return c ? { codec: c[0], lossless: c[1] } : null;
+	// Records come from IndexedDB: never trust the type.
+	const c = typeof d.codec === 'string' ? codecOf(d.codec) : null;
+	return c ? { codec: c[0], lossless: c[1], ...originalHeader(d) } : null;
+}
+
+/** An original download's rate and depth, when stored (and sane). */
+function originalHeader(d: NonNullable<PathFacts['download']>): { rate?: number; bits?: number } {
+	if (d.format !== 'original') return {};
+	return { ...(rate(d.rate) !== null ? { rate: d.rate } : {}), ...(typeof d.bits === 'number' && Number.isSafeInteger(d.bits) && d.bits >= 1 && d.bits <= 32 ? { bits: d.bits } : {}) };
 }
 
 /** The facts as the shared model's inputs. */
@@ -66,7 +77,7 @@ export function qualityInputs(f: PathFacts): QualityInputs {
 		const kind = d.format === 'original' ? d.codec : d.source;
 		return {
 			player: { kind: 'offline', format: downloadLabel(d) },
-			file: kind ? { kind } : null,
+			file: typeof kind === 'string' && kind ? { kind, ...originalHeader(d) } : null,
 			decoded: downloadDecoded(d),
 		};
 	}

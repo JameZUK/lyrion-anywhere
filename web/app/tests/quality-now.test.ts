@@ -100,6 +100,38 @@ test('offline: Download → This device, with the download format', () => {
 	expect(describeDiagram(qualityInputs({ player: 'offline', download: null })).badge).toBeNull();
 });
 
+test('offline: an Original 24/96 FLAC with its rate and depth stored is Hi-Res; one stored before stays as it was', () => {
+	const hires = describeDiagram(qualityInputs({ player: 'offline', download: { format: 'original', codec: 'flc', rate: 96_000, bits: 24 } }));
+	expect(hires.badge!.text).toBe('Hi-Res · FLAC 24/96');
+	expect(hires.badge!.verdict).toBe('hi_res');
+	const cd = describeDiagram(qualityInputs({ player: 'offline', download: { format: 'original', codec: 'flc', rate: 44_100, bits: 16 } }));
+	expect(cd.badge!.text).toBe('Lossless · FLAC 16/44.1');
+	// Stored before rate and depth were kept: unchanged.
+	expect(describeDiagram(qualityInputs({ player: 'offline', download: { format: 'original', codec: 'flc' } })).badge!.text).toBe('Lossless · FLAC');
+	// A transcode's numbers are never the original's: ignored there.
+	expect(describeDiagram(qualityInputs({ player: 'offline', download: { format: 'opus', codec: 'opus', source: 'flc', rate: 96_000, bits: 24 } })).badge!.text).toBe(
+		'Transcoded · Opus 160',
+	);
+	// Junk numbers from a record are dropped, never shown.
+	for (const [rate, bits] of [
+		[-1, 0],
+		[96_000.5, 99],
+		[NaN, 24.5],
+		[1e12, -3],
+	]) {
+		expect(describeDiagram(qualityInputs({ player: 'offline', download: { format: 'original', codec: 'flc', rate, bits } })).badge!.text).toBe('Lossless · FLAC');
+	}
+});
+
+test('offline: a stored codec that is not a string is unknown, never a throw', () => {
+	for (const codec of [3, null, undefined, {}, ['flc'], true]) {
+		const d = { format: 'original', codec } as unknown as NonNullable<PathFacts['download']>;
+		expect(() => describeDiagram(qualityInputs({ player: 'offline', download: d }))).not.toThrow();
+	}
+	const d = { format: 'opus', codec: 7, source: 'flc' } as unknown as NonNullable<PathFacts['download']>;
+	expect(describeDiagram(qualityInputs({ player: 'offline', download: d })).badge!.text).toBe('Transcoded · Opus 160');
+});
+
 describe('why the level in force is in force', () => {
 	test.each([
 		['auto', null, { type: 'cellular' }, 'High, on mobile data'],
