@@ -6,9 +6,12 @@ Every page of Lyrion Anywhere's documentation, with what each covers. Start with
 
 | Document | For | What it covers |
 |---|---|---|
+| [`SETUP-DOMAIN.md`](SETUP-DOMAIN.md) | Everyone setting it up | The walkthrough with a domain name: the built-in Cloudflare Tunnel, or your own reverse proxy, with screenshots of each step |
+| [`SETUP-VPN.md`](SETUP-VPN.md) | Everyone setting it up | The walkthrough over a VPN, without HTTPS: trusted networks, the private address, what the apps show |
 | [`INSTALL.md`](INSTALL.md) | Everyone setting it up | Step by step: the plugin or Docker, the reverse proxy, users, first sign-in, checks, everyday administration, troubleshooting |
 | [`DEPLOY.md`](DEPLOY.md) | Administrators | The deployment reference: plugin, Docker networking, reverse proxy requirements, CDNs, a checklist |
 | [`FEATURES.md`](FEATURES.md) | Everyone | The highlights, then every feature by area, with the platforms it runs on |
+| [`SCREENSHOTS.md`](SCREENSHOTS.md) | Everyone | Every screenshot, web, Android and the settings page, with what it shows |
 | [`PLATFORMS.md`](PLATFORMS.md) | Everyone | Supported browsers and devices, getting the Android app, project status and roadmap |
 | [`SECURITY.md`](SECURITY.md) | Everyone | Security and privacy in brief, and how to report a vulnerability |
 | [`PRIVACY.md`](PRIVACY.md) | Everyone | The full privacy policy: what the apps and the gateway store, where and for how long; Google Play's Data safety answers |
@@ -17,9 +20,10 @@ Every page of Lyrion Anywhere's documentation, with what each covers. Start with
 
 | Document | What it covers |
 |---|---|
+| [`TECHNICAL.md`](TECHNICAL.md) | Under the bonnet: the player core, the decoders, the DSP, the quality model, the gateway, the player link, in plain words |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Components, repository layout, trust boundary, request flows with sequence diagrams, the core and its hosts, the Android app, the plugin, storage, testing |
 | [`PROTOCOL.md`](PROTOCOL.md) | The public API (`/v1`) and player protocol: authentication, the player socket and resume, streams, the command policy, transfer, sync, downloads, offline plays, your own data, analysis, lyrics, events |
-| [`../SPEC.md`](../SPEC.md) | The specification: every design decision (D1–D27), goals, the threat model and the testing strategy |
+| [`../SPEC.md`](../SPEC.md) | The specification: every design decision (D1–D30), goals, the threat model and the testing strategy |
 | [`PERFORMANCE.md`](PERFORMANCE.md) | Android performance budgets and how to measure them |
 | [`security/`](security) | Security reviews and penetration tests |
 

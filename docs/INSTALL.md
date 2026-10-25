@@ -2,6 +2,8 @@
 
 This guide takes you from a working LMS at home to playing your music on your phone over the internet. It takes about half an hour if you already have a domain name; most of that time is setting up HTTPS. With a domain on Cloudflare, the plugin's built-in Cloudflare Tunnel ([Option C](#option-c-built-in-cloudflare-tunnel)) replaces the HTTPS set-up altogether.
 
+> **In a hurry?** Two short walkthroughs cover the common cases with screenshots: [Set up with a domain](SETUP-DOMAIN.md) (the built-in Cloudflare Tunnel, or your own reverse proxy) and [Set up over a VPN](SETUP-VPN.md). This page is the complete reference.
+
 Every name and address here is an example. Throughout:
 
 | In this guide | Means | Replace with |
