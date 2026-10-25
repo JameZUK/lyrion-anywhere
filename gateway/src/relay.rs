@@ -49,6 +49,7 @@ use tracing::{debug, info, warn};
 
 use crate::AppState;
 use crate::flac_strip::{StripInfo, StripStream};
+use crate::stream_info::STREAMINFO_LEN;
 
 const CHUNK: usize = 64 * 1024;
 
@@ -103,6 +104,8 @@ pub struct Relay {
     flac: Option<Arc<OnceLock<StripInfo>>>,
     /// Set for streams re-encoded to Opus ([`crate::live`]).
     live: Option<LiveSetup>,
+    /// What the player is sent (for the stream message).
+    sent: crate::stream_info::Sent,
 }
 
 /// A live encode for this stream: `ffmpeg`, the bit rate, the slot it holds (handed to
@@ -171,17 +174,23 @@ impl Relay {
             read_timeout,
             flac: None,
             live: None,
+            sent: crate::stream_info::Sent::Passthrough,
         }
     }
 
-    /// Re-encode this (FLAC) stream to Ogg Opus at `bitrate_k` ([`crate::live`]), holding
-    /// `permit` (a live-encode slot) while it runs.
+    /// Re-encode this (FLAC) stream to Ogg Opus at `bitrate_k` ([`crate::live`]) for the
+    /// client's `level`, holding `permit` (a live-encode slot) while it runs.
     pub fn with_live(
         mut self,
         ffmpeg: &std::path::Path,
+        level: crate::live::Quality,
         bitrate_k: u32,
         permit: tokio::sync::OwnedSemaphorePermit,
     ) -> Self {
+        self.sent = crate::stream_info::Sent::Opus {
+            kbps: bitrate_k,
+            level,
+        };
         self.live = Some(LiveSetup {
             ffmpeg: ffmpeg.to_path_buf(),
             bitrate_k,
@@ -326,7 +335,22 @@ pub async fn stream(
                         .to_string();
                     let body = resp
                         .bytes_stream()
-                        .map(|r| r.map_err(std::io::Error::other));
+                        .map(|r| r.map_err(std::io::Error::other))
+                        .boxed();
+                    // The stream message, before any of the stream is passed on (or to the
+                    // encoder): a FLAC stream's format is read from its first bytes, which
+                    // then go on unchanged.
+                    let (flac, body) = if sess.stream_format(n) == Some(b'f') {
+                        let (head, rest) = tokio::select! {
+                            p = peek(body, STREAMINFO_LEN, relay.read_timeout) => p,
+                            _ = cancelled(&mut cancel) => {
+                                return StatusCode::NOT_FOUND.into_response();
+                            }
+                        };
+                        (crate::stream_info::flac_streaminfo(&head), rest)
+                    } else {
+                        (None, body)
+                    };
                     up.stream = Some(match (&relay.live, &relay.flac) {
                         (Some(live), _) => {
                             // The slot is used once: an encoder that failed to start gave
@@ -357,6 +381,9 @@ pub async fn stream(
                         (None, None) => body.boxed(),
                     });
                     up.opened = true;
+                    // Queued on the player socket before this response is returned, so
+                    // before any of the stream's bytes are sent.
+                    sess.announce_stream(n, flac, relay.sent);
                 }
                 Ok(Ok(resp)) => {
                     warn!(status = %resp.status(), "LMS stream status");
@@ -404,6 +431,49 @@ pub async fn stream(
             q.limit.map(|l| offset.saturating_add(l)),
         )))
         .unwrap()
+}
+
+/// The first `want` bytes of `body` (fewer if it ends, fails or stalls for `timeout`
+/// first), and a stream of exactly the items `body` had: the chunks read, unchanged, then
+/// the rest. A failure or a stall here is passed on as the stream's last item, an error.
+async fn peek(mut body: Upstream, want: usize, timeout: Duration) -> (Vec<u8>, Upstream) {
+    let mut head = Vec::with_capacity(want);
+    let mut read: Vec<Result<Bytes, std::io::Error>> = Vec::new();
+    let mut finished = false;
+    while head.len() < want {
+        match tokio::time::timeout(timeout, body.next()).await {
+            Ok(Some(Ok(chunk))) => {
+                let take = chunk.len().min(want - head.len());
+                head.extend_from_slice(&chunk[..take]);
+                read.push(Ok(chunk));
+            }
+            Ok(Some(Err(e))) => {
+                read.push(Err(e));
+                finished = true;
+                break;
+            }
+            Ok(None) => {
+                finished = true;
+                break;
+            }
+            Err(_) => {
+                warn!("LMS stream stalled before its first bytes");
+                read.push(Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "upstream read timed out",
+                )));
+                finished = true;
+                break;
+            }
+        }
+    }
+    let read = futures_util::stream::iter(read);
+    let rest = if finished {
+        read.boxed()
+    } else {
+        read.chain(body).boxed()
+    };
+    (head, rest)
 }
 
 struct Cursor {
@@ -903,6 +973,76 @@ mod tests {
             .unwrap();
         assert_eq!((n, err), (4, true));
         drop(feed);
+    }
+
+    /// Reading a stream's first bytes (for the stream message) never changes the stream:
+    /// every chunk comes back as it was, however the bytes were split, whatever the length.
+    #[tokio::test]
+    async fn peeking_gives_back_every_chunk_unchanged() {
+        for sizes in [
+            vec![],
+            vec![0],
+            vec![1; 64],
+            vec![10, 40, 30],
+            vec![41],
+            vec![42],
+            vec![43],
+            vec![41, 1],
+            vec![41, 0, 2, 100],
+            vec![65_536],
+        ] {
+            let mut n = 0u8;
+            let chunks: Vec<Bytes> = sizes
+                .iter()
+                .map(|s| {
+                    Bytes::from(
+                        (0..*s)
+                            .map(|_| {
+                                n = n.wrapping_add(1);
+                                n
+                            })
+                            .collect::<Vec<u8>>(),
+                    )
+                })
+                .collect();
+            let all: Vec<u8> = chunks.iter().flat_map(|c| c.to_vec()).collect();
+            let body = futures_util::stream::iter(chunks.clone().into_iter().map(Ok)).boxed();
+            let (head, rest) = peek(body, STREAMINFO_LEN, Duration::from_secs(5)).await;
+            assert_eq!(head, all[..all.len().min(STREAMINFO_LEN)], "{sizes:?}");
+            let back: Vec<Bytes> = rest.map(|r| r.unwrap()).collect().await;
+            assert_eq!(back, chunks, "{sizes:?}");
+        }
+    }
+
+    /// A failure or a stall while peeking is passed on, after the bytes already read, as
+    /// the stream's last item: an error, never a clean end.
+    #[tokio::test]
+    async fn peeking_passes_on_a_failure_or_a_stall() {
+        let body = futures_util::stream::iter([
+            Ok(Bytes::from_static(b"fLaC")),
+            Err(std::io::Error::other("reset")),
+        ])
+        .boxed();
+        let (head, rest) = peek(body, STREAMINFO_LEN, Duration::from_secs(5)).await;
+        assert_eq!(head, b"fLaC");
+        let items: Vec<_> = rest.collect().await;
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].as_ref().unwrap(), &Bytes::from_static(b"fLaC"));
+        assert!(items[1].is_err());
+
+        let body = futures_util::stream::iter([Ok(Bytes::from_static(b"fLa"))])
+            .chain(futures_util::stream::pending())
+            .boxed();
+        let (head, rest) = peek(body, STREAMINFO_LEN, Duration::from_millis(50)).await;
+        assert_eq!(head, b"fLa");
+        let items: Vec<_> = tokio::time::timeout(Duration::from_secs(5), rest.collect())
+            .await
+            .expect("a stall ends the stream");
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[1].as_ref().unwrap_err().kind(),
+            std::io::ErrorKind::TimedOut
+        );
     }
 
     /// Regression (CI, 18 October): bytes the body yielded just before an error never

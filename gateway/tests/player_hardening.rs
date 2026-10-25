@@ -12,7 +12,9 @@ async fn greeting(ws: &mut Ws) -> serde_json::Value {
 }
 
 async fn open_session(ws: &mut Ws, token: &str) -> (String, String) {
-    ws.send(Message::Text(token.into())).await.unwrap();
+    ws.send(Message::Text(sign_in_form(token).into()))
+        .await
+        .unwrap();
     let g = greeting(ws).await;
     (
         g["session"].as_str().unwrap().to_string(),
@@ -23,7 +25,7 @@ async fn open_session(ws: &mut Ws, token: &str) -> (String, String) {
 fn resume_after(token: &str, sid: &str, secret: &str, received: u64) -> Message {
     Message::Text(
         serde_json::json!({
-            "token": token,
+            "token": token, "protocol": 2,
             "resume": { "session": sid, "secret": secret, "received": received }
         })
         .to_string()

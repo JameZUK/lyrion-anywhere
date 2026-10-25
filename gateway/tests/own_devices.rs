@@ -89,7 +89,7 @@ async fn raw(
 /// Open a player session for a device; returns the socket and LMS's end of it.
 async fn player(h: &mut Harness, token: &str) -> (Ws, OwnedWriteHalf) {
     let mut ws = h.dial().await;
-    ws.send(Message::Text(token.to_string().into()))
+    ws.send(Message::Text(sign_in_form(token).into()))
         .await
         .unwrap();
     next(&mut ws).await;
@@ -146,7 +146,8 @@ async fn a_user_sees_their_own_devices_only() {
                 "current",
                 "id",
                 "last_seen",
-                "name"
+                "name",
+                "protocol"
             ]
         );
     }

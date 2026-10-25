@@ -91,6 +91,10 @@ fn install_crypto_provider() {
     });
 }
 
+/// The player protocol this client speaks (`protocol` in the sign-in form; a gateway
+/// closes an older one with 4426).
+const PLAYER_PROTOCOL: u32 = 2;
+
 /// Refresh the access token this often (it lasts 15 minutes).
 const REFRESH_EVERY: Duration = Duration::from_secs(10 * 60);
 
@@ -221,7 +225,10 @@ pub fn connect(
     let (mut ws, _) = tungstenite::client_tls_with_config(req, tcp, None, connector)
         .map_err(|e| format!("websocket handshake: {e}"))?;
 
-    ws.send(Message::Text(access.into()))
+    // Protocol 2: the version in the sign-in form. The stream messages that follow are text
+    // and are ignored below (this player probes what it fetches).
+    let sign_in = serde_json::json!({ "token": access, "protocol": PLAYER_PROTOCOL });
+    ws.send(Message::Text(sign_in.to_string().into()))
         .map_err(|e| e.to_string())?;
     let greeting = match ws
         .read()

@@ -68,6 +68,15 @@ impl Quality {
     }
 
     pub const NAMES: [&'static str; 3] = ["original", "high", "low"];
+
+    /// The level's name, as a client gives it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Quality::Original => "original",
+            Quality::High => "high",
+            Quality::Low => "low",
+        }
+    }
 }
 
 /// The `strm` format code for Ogg Opus.

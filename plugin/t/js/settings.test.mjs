@@ -510,6 +510,37 @@ test('the device panel tells browser users to sign in with a password', async ()
   assert.match(text, /web browser.*username and password/);
 });
 
+// --- player protocol (docs/plans/signal-path-redesign.md) ---------------------------------
+
+test('a device needs updating only when its protocol is a number below 2', () => {
+  for (const p of [0, 1, 1.5, -1]) assert.equal(t.needsUpdating({ protocol: p }), true, String(p));
+  for (const p of [2, 3, 2 ** 53, null, undefined, '1', '', true, [1], {}, NaN, Infinity, -Infinity]) {
+    assert.equal(t.needsUpdating({ protocol: p }), false, String(p));
+  }
+  assert.equal(t.needsUpdating({}), false, 'never attached');
+  assert.equal(t.needsUpdating(null), false);
+  assert.equal(t.auditEventText('player.too_old'), 'App too old to play (asked to update)');
+});
+
+test('the Devices list tags an old device "needs updating", as text, and no other', async () => {
+  const devices = [
+    { id: 1, name: 'Old phone', username: 'bob', mac: '02:4c:41:00:00:01', last_seen: 1, protocol: 1 },
+    { id: 2, name: 'New phone', username: 'bob', mac: '02:4c:41:00:00:02', last_seen: 1, protocol: 2 },
+    { id: 3, name: 'Never played', username: 'carol', mac: '02:4c:41:00:00:03', last_seen: 1, protocol: null },
+    { id: 4, name: 'Newer still', username: 'carol', mac: '02:4c:41:00:00:04', last_seen: 1, protocol: 3 },
+    { id: 5, name: 'Odd', username: 'carol', mac: '02:4c:41:00:00:05', last_seen: 1, protocol: '1' },
+    { id: 6, name: 'Before the field', username: 'carol', mac: '02:4c:41:00:00:06', last_seen: 1 },
+  ];
+  const p = await page({ ...BASE, devices: { data: { devices } } });
+  const tags = p.dom.created.filter((e) => e.className === 'aw-tag');
+  assert.equal(tags.length, 1, 'one tag');
+  assert.equal(tags[0].textContent, 'needs updating');
+  assert.match(tags[0].getAttribute('title'), /Update the app/);
+  const rows = p.dom.byId.get('aw-devices').textContent;
+  assert.ok(rows.includes('Old phoneneeds updating'), 'beside the old device’s name');
+  assert.equal(rows.split('needs updating').length, 2, 'nowhere else');
+});
+
 // --- trusted networks and http:// to a private address (docs/plans/trusted-networks.md) -----
 
 // The vectors shared with the gateway (core/src/privnet.rs) and the plugin's Perl check.

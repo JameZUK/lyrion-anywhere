@@ -335,6 +335,8 @@ pub struct DeviceInfo {
     /// E.g. "Safari on iPadOS" or "Pixel 8".
     pub client_platform: Option<String>,
     pub user_agent: Option<String>,
+    /// The player protocol it last attached with; `None` if it never has.
+    pub protocol: Option<i64>,
 }
 
 /// One of a user's own devices, as they see it (no addresses or MACs).
@@ -350,6 +352,8 @@ pub struct OwnDevice {
     pub created_at: i64,
     /// When it was last used (Unix seconds), to the minute.
     pub last_seen: Option<i64>,
+    /// The player protocol it last attached with; `None` if it never has.
+    pub protocol: Option<i64>,
 }
 
 /// A signed-in user's request to change their own password
@@ -1969,8 +1973,8 @@ impl Accounts {
     pub fn own_devices(&self, user: i64) -> Result<Vec<OwnDevice>, AuthError> {
         let db = self.reader();
         let mut st = db.prepare(
-            "SELECT id, name, client_kind, client_platform, created_at, last_seen FROM devices
-             WHERE user_id = ?1 AND revoked = 0 ORDER BY id",
+            "SELECT id, name, client_kind, client_platform, created_at, last_seen, protocol
+             FROM devices WHERE user_id = ?1 AND revoked = 0 ORDER BY id",
         )?;
         let rows = st.query_map([user], |r| {
             let kind: Option<String> = r.get(2)?;
@@ -1986,6 +1990,7 @@ impl Accounts {
                 created_at: r.get(4)?,
                 // Coarse: a user needs "a few minutes ago", not the second.
                 last_seen: r.get::<_, Option<i64>>(5)?.map(|t| t - t.rem_euclid(60)),
+                protocol: r.get(6)?,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -2095,7 +2100,7 @@ impl Accounts {
         let db = self.reader();
         let mut st = db.prepare(
             "SELECT d.id, u.username, d.name, d.mac, d.created_at, d.last_seen, d.last_addr,
-                    d.client_kind, d.client_platform, d.user_agent
+                    d.client_kind, d.client_platform, d.user_agent, d.protocol
              FROM devices d JOIN users u ON u.id = d.user_id WHERE d.revoked = 0 ORDER BY d.id",
         )?;
         let rows = st.query_map([], |r| {
@@ -2120,6 +2125,7 @@ impl Accounts {
                     .map(|k| k.as_str().to_string()),
                 client_platform: platform.as_deref().and_then(clean_platform),
                 user_agent: ua.as_deref().and_then(clean_user_agent),
+                protocol: r.get(10)?,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -2612,6 +2618,17 @@ impl Accounts {
         let _ = db.execute(
             "UPDATE devices SET level_set = 1 WHERE id = ?1",
             [device_id],
+        );
+    }
+
+    /// Record the player protocol the device attached with (at every attach). A number
+    /// beyond SQLite's integer range is stored as its largest.
+    pub fn record_protocol(&self, device_id: i64, protocol: u64) {
+        let db = self.db.lock().unwrap();
+        self.stall_write();
+        let _ = db.execute(
+            "UPDATE devices SET protocol = ?1 WHERE id = ?2",
+            params![i64::try_from(protocol).unwrap_or(i64::MAX), device_id],
         );
     }
 
@@ -3318,11 +3335,25 @@ fn migrate_steps(db: &Connection) -> Result<(), AuthError> {
              PRAGMA user_version = 14;",
         )?;
     }
+    if version < 15 {
+        // The player protocol each device last attached with (`protocol` in the player
+        // socket's sign-in form), so the device lists can show who needs updating. `NULL`
+        // until the device next attaches.
+        let has: i64 = db.query_row(
+            "SELECT count(*) FROM pragma_table_info('devices') WHERE name = 'protocol'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has == 0 {
+            db.execute_batch("ALTER TABLE devices ADD COLUMN protocol INTEGER;")?;
+        }
+        db.execute_batch("PRAGMA user_version = 15;")?;
+    }
     Ok(())
 }
 
 /// The schema version [`migrate`] brings a database to.
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 15;
 
 fn unix_now() -> u64 {
     SystemTime::now()
@@ -6247,6 +6278,63 @@ mod tests {
         assert!(!a.needs_initial_level(newer));
         // Unknown devices need nothing.
         assert!(!a.needs_initial_level(newer + 1000));
+        drop(a);
+        for ext in ["db", "db-wal", "db-shm"] {
+            let _ = std::fs::remove_file(path.with_extension(ext));
+        }
+    }
+
+    /// Version 15 records each device's player protocol: existing devices have none until
+    /// they next attach; the step is safe to run again and keeps what was recorded.
+    #[test]
+    fn migration_to_15_adds_the_protocol_as_unknown() {
+        let path = std::env::temp_dir().join(format!("anywhere-mig15-{}.db", crate::random_id()));
+        let old = {
+            let a = Accounts::open(&path).unwrap();
+            a.create_user("alice", PW, Role::Listener).unwrap();
+            let old = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
+            // As a version-14 gateway left it: no `protocol` column.
+            a.with_db(|db| {
+                db.execute_batch(
+                    "ALTER TABLE devices DROP COLUMN protocol;
+                     PRAGMA user_version = 14;",
+                )
+            })
+            .unwrap();
+            assert_eq!(a.schema_version(), 14);
+            old.principal.device_id
+        };
+        let a = Accounts::open(&path).unwrap();
+        assert_eq!(a.schema_version(), SCHEMA_VERSION);
+        let row = device_row(&a, old);
+        assert_eq!((row.name.as_str(), row.protocol), ("Laptop", None));
+        a.record_protocol(old, 2);
+        assert_eq!(device_row(&a, old).protocol, Some(2));
+        a.record_protocol(old, 3);
+        assert_eq!(device_row(&a, old).protocol, Some(3));
+        a.record_protocol(old, u64::MAX);
+        assert_eq!(device_row(&a, old).protocol, Some(i64::MAX), "bounded");
+        // Again (as after a half-finished upgrade): safe, and what was recorded stays.
+        a.with_db(|db| {
+            db.execute_batch("PRAGMA user_version = 14;")?;
+            migrate(db).map_err(|_| rusqlite::Error::InvalidQuery)?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(a.schema_version(), SCHEMA_VERSION);
+        assert_eq!(device_row(&a, old).protocol, Some(i64::MAX));
+        // A new device has none until it attaches; an unknown device is ignored.
+        let new = a
+            .login("alice", PW, None, "Phone", None, "c")
+            .unwrap()
+            .principal;
+        assert_eq!(device_row(&a, new.device_id).protocol, None);
+        let own = a.own_devices(new.user_id).unwrap();
+        assert_eq!(
+            own.iter().map(|d| d.protocol).collect::<Vec<_>>(),
+            vec![Some(i64::MAX), None]
+        );
+        a.record_protocol(new.device_id + 1000, 2);
         drop(a);
         for ext in ["db", "db-wal", "db-shm"] {
             let _ = std::fs::remove_file(path.with_extension(ext));

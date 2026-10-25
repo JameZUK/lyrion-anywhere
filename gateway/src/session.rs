@@ -45,6 +45,9 @@ use crate::{AppState, Gateway};
 #[derive(Debug)]
 pub enum Outbound {
     Frame(Vec<u8>),
+    /// A text message that is not a frame (never logged for redelivery, never counted in
+    /// `received`): the stream message ([`crate::stream_info`]).
+    Text(String),
     Close(u16, &'static str),
 }
 
@@ -104,6 +107,9 @@ pub struct Attached {
     pub generation: u64,
     pub rx: mpsc::Receiver<Outbound>,
     pub kick: watch::Receiver<Kick>,
+    /// The last stream message sent in this session, to send again right after the
+    /// greeting (a resumed client is never without it). Later ones follow on `rx`.
+    pub stream_message: Option<String>,
 }
 
 struct State {
@@ -127,11 +133,17 @@ struct State {
     stream_path: Option<String>,
     /// The current `strm s` format code (`f` for FLAC).
     stream_format: u8,
+    /// What the current `strm s` says LMS serves (the stream message's `served`, less a
+    /// FLAC stream's format, read from its first bytes).
+    stream_served: Option<crate::stream_info::Served>,
+    /// The last stream message sent (or kept for a detached client), sent again after a
+    /// resume greeting.
+    stream_message: Option<String>,
     /// The level the client asked for (docs/plans/streaming-quality.md).
     quality: crate::live::Quality,
-    /// The current stream is to be re-encoded: its bit rate and the slot it holds, until
-    /// its relay is made.
-    live: Option<(u32, tokio::sync::OwnedSemaphorePermit)>,
+    /// The current stream is to be re-encoded: the level, its bit rate and the slot it
+    /// holds, until its relay is made.
+    live: Option<(crate::live::Quality, u32, tokio::sync::OwnedSemaphorePermit)>,
     relay: Option<Arc<Relay>>,
     /// Client → LMS framing; persists across sockets so a frame split by a drop is safe.
     from_client: ClientFrameReader,
@@ -251,6 +263,8 @@ impl Session {
                 ack_ignored_logged: None,
                 stream_path: None,
                 stream_format: 0,
+                stream_served: None,
+                stream_message: None,
                 quality: Default::default(),
                 live: None,
                 relay: None,
@@ -391,6 +405,7 @@ impl Session {
             generation,
             rx,
             kick: kick_rx,
+            stream_message: st.stream_message.clone(),
         })
     }
 
@@ -712,6 +727,12 @@ impl Session {
         (st.stream_seq, st.stream_path.clone())
     }
 
+    /// The `strm s` format code of stream `n`, if it is still the current stream.
+    pub fn stream_format(&self, n: u64) -> Option<u8> {
+        let st = self.state.lock().unwrap();
+        (st.stream_seq == n).then_some(st.stream_format)
+    }
+
     /// Socket `generation` acknowledges `bytes` of stream `n`. Acks for other streams, and
     /// from sockets that are no longer current, are ignored. Never waits on network I/O.
     pub fn ack(&self, generation: u64, n: u64, bytes: u64) {
@@ -763,7 +784,9 @@ impl Session {
         if st.relay.is_none() {
             let relay = Relay::new(window);
             let relay = match (st.live.take(), live_ffmpeg) {
-                (Some((bitrate, permit)), Some(ffmpeg)) => relay.with_live(ffmpeg, bitrate, permit),
+                (Some((level, bitrate, permit)), Some(ffmpeg)) => {
+                    relay.with_live(ffmpeg, level, bitrate, permit)
+                }
                 // (The player was told Opus but gets FLAC: its core probes the content.)
                 _ if strip_flac && st.stream_format == b'f' => relay.with_flac_strip(),
                 _ => relay,
@@ -1101,6 +1124,10 @@ impl Session {
         st.stream_seq += 1;
         st.stream_path = path;
         st.stream_format = s.format;
+        st.stream_served = st
+            .stream_path
+            .is_some()
+            .then(|| crate::stream_info::Served::from_strm(&s));
         st.refused_direct = direct_elsewhere;
         if !direct_elsewhere {
             st.replays = 0;
@@ -1129,8 +1156,40 @@ impl Session {
             return None;
         };
         let rewritten = crate::live::rewrite_strm(payload)?;
-        st.live = Some((bitrate, permit));
+        st.live = Some((st.quality, bitrate, permit));
         Some(rewritten)
+    }
+
+    /// The upstream response for stream `n` is in: tell the client what LMS served (with a
+    /// FLAC stream's format, `flac`, read from its first bytes) and what the gateway sends.
+    /// Sent now to an attached socket, and kept to send again after a resume greeting.
+    /// Nothing for a stream that is no longer the current one.
+    pub fn announce_stream(
+        &self,
+        n: u64,
+        flac: Option<crate::stream_info::FlacFormat>,
+        sent: crate::stream_info::Sent,
+    ) {
+        let mut st = self.state.lock().unwrap();
+        if st.ended || n != st.stream_seq {
+            return;
+        }
+        let Some(served) = st.stream_served.clone() else {
+            return;
+        };
+        let served = if served.codec == "flac" {
+            served.with_flac(flac.unwrap_or_default())
+        } else {
+            served
+        };
+        let msg = crate::stream_info::message(n, &served, sent);
+        debug!(mac = %self.device.mac_string(), stream = n, message = %msg, "stream message");
+        st.stream_message = Some(msg.clone());
+        if let Some(a) = &st.attached {
+            // A socket too slow for this is kicked by the frames behind it; its resume
+            // greeting brings the message again.
+            let _ = a.tx.try_send(Outbound::Text(msg));
+        }
     }
 }
 
