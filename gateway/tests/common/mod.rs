@@ -335,7 +335,9 @@ pub fn fake_rpc_result(cmd: &str) -> serde_json::Value {
         "sync" => json!({"_sync": "aa:bb:cc:dd:ee:01,aa:bb:cc:dd:ee:02"}),
         // LMS's status leaving out a queued track it can't resolve: the next track is listed
         // as current, though the player's duration is the playing track's (status_fix.rs).
+        // A player whose Volume Control is off (LMS: output fixed at 100%).
         "status" => json!({"mode": "play", "playlist_cur_index": "1", "duration": 300.5,
+            "digital_volume_control": 0,
             "playlist_loop": [{"playlist index": 1, "id": 3, "title": "Next Track", "duration": 95.25}]}),
         "playlist" => json!({"_path": "file:///srv/music/Playing%20Track.flac"}),
         "songinfo" => json!({"count": 6, "songinfo_loop": [
@@ -478,6 +480,9 @@ pub struct FakeLms {
     /// JSON-RPC commands (by first word) that are recorded but never answered, as when a
     /// plugin hangs inside LMS.
     pub hang_rpc: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// JSON-RPC commands (by first word, or first two such as `mixer volume`) that are
+    /// recorded and then refused with HTTP 500, as when LMS fails a request.
+    pub fail_rpc: Arc<Mutex<std::collections::HashSet<String>>>,
 }
 
 /// The fake LMS's saved playlists, and the length of every player's queue.
@@ -658,6 +663,8 @@ impl FakeLms {
         let sv = saved.clone();
         let hang_rpc: Arc<Mutex<std::collections::HashSet<String>>> = Default::default();
         let hung = hang_rpc.clone();
+        let fail_rpc: Arc<Mutex<std::collections::HashSet<String>>> = Default::default();
+        let failing = fail_rpc.clone();
         let (r, a, stall, ex, pl) = (
             rec.clone(),
             audio.clone(),
@@ -670,6 +677,7 @@ impl FakeLms {
             let frozen = frozen.clone();
             let sv = sv.clone();
             let hung = hung.clone();
+            let failing = failing.clone();
             let playing = *st_track.lock().unwrap();
             let library = lib.lock().unwrap().clone();
             let a = sb.lock().unwrap().clone().unwrap_or_else(|| a.clone());
@@ -708,6 +716,18 @@ impl FakeLms {
                     r.lock().unwrap().rpc.push(params.clone());
                     if hung.lock().unwrap().contains(&cmd) {
                         futures_util::future::pending::<()>().await;
+                    }
+                    let pair = format!("{cmd} {}", params[1][1].as_str().unwrap_or(""));
+                    let fail = {
+                        let f = failing.lock().unwrap();
+                        f.contains(&cmd) || f.contains(&pair)
+                    };
+                    if fail {
+                        return (
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            "fake LMS failure",
+                        )
+                            .into_response_parts();
                     }
                     let added = track_id.and_then(|id| ex.lock().unwrap().get(&id).cloned());
                     let words = params[1].as_array().cloned().unwrap_or_default();
@@ -913,6 +933,7 @@ impl FakeLms {
             status_track,
             saved,
             hang_rpc,
+            fail_rpc,
         }
     }
 
@@ -1052,6 +1073,8 @@ pub struct Harness {
     /// Access tokens and assigned player MACs for two users' devices.
     pub tok_a: String,
     pub mac_a: [u8; 6],
+    /// The first device's id in the accounts database.
+    pub dev_a: i64,
     pub tok_b: String,
     pub mac_b: [u8; 6],
     /// The accounts database's scratch directory, removed with the harness.
@@ -1112,6 +1135,7 @@ pub async fn harness_with(mutate: impl FnOnce(&mut Config)) -> Harness {
         accounts,
         tok_a: a.access,
         mac_a: a.principal.mac,
+        dev_a: a.principal.device_id,
         tok_b: b.access,
         mac_b: b.principal.mac,
         db_dir,

@@ -174,6 +174,9 @@ impl Caller for Who<'_> {
     fn may_control(&self, player: &str) -> bool {
         self.scope.allows(player)
     }
+    fn is_own_player(&self, player: &str) -> bool {
+        player.eq_ignore_ascii_case(&self.principal.mac_string())
+    }
 }
 
 fn error(status: StatusCode, message: &str) -> Response {
@@ -607,6 +610,10 @@ mod tests {
         assert_eq!(
             command_label(&words(&["mixer", "volume", "+5"])),
             "mixer volume"
+        );
+        assert_eq!(
+            command_label(&words(&["playerpref", "digitalVolumeControl", "0"])),
+            "playerpref"
         );
         assert_eq!(
             command_label(&words(&["albums", "0", "50", "tags:al"])),

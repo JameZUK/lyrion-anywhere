@@ -149,6 +149,9 @@ struct State {
     /// Whether LMS has been told to proxy internet streams for this player (its
     /// `mp3StreamingMethod` player pref), see [`Session::ensure_proxied_streaming`].
     proxied_pref: PrefState,
+    /// Whether the device's player has been given its initial LMS volume this session (see
+    /// [`Session::ensure_initial_level`]).
+    initial_level: PrefState,
     /// The current `strm` pointed the player at another server and was refused; the reader
     /// takes this to have LMS replay the entry through itself.
     refused_direct: bool,
@@ -240,6 +243,7 @@ impl Session {
                 sent_upto: 0,
                 seen_helo: false,
                 proxied_pref: PrefState::NotYet,
+                initial_level: PrefState::NotYet,
                 refused_direct: false,
                 replays: 0,
                 ended: false,
@@ -982,6 +986,56 @@ impl Session {
         ok
     }
 
+    /// Give a brand-new device's player full volume, once, as soon as LMS knows the player
+    /// (the same moment as [`Self::ensure_proxied_streaming`]). LMS starts every player it
+    /// has never seen at 50; these players are meant to start at 100. Only a device that
+    /// has never had it (see `Accounts::needs_initial_level`), and it is recorded only once
+    /// LMS has accepted it, so a failure is tried again at the next chance (this session or
+    /// a later one) and a success is never repeated, whatever the owner sets afterwards.
+    fn ensure_initial_level(self: &Arc<Self>, gw: &crate::AppState) {
+        {
+            let mut st = self.state.lock().unwrap();
+            if !st.seen_helo || st.initial_level != PrefState::NotYet {
+                return;
+            }
+            st.initial_level = PrefState::Pending;
+        }
+        let (gw, session) = (gw.clone(), Arc::clone(self));
+        tokio::spawn(async move {
+            let ok = session.set_initial_level(&gw).await;
+            session.state.lock().unwrap().initial_level = if ok {
+                PrefState::Done
+            } else {
+                PrefState::NotYet
+            };
+        });
+    }
+
+    /// The `mixer volume 100` itself, if the device still needs it. True once done.
+    async fn set_initial_level(&self, gw: &Gateway) -> bool {
+        let device = self.device.device_id;
+        // Off the async workers: a stalled disk must not hold up other sessions.
+        if !gw.db(move |a| a.needs_initial_level(device)).await {
+            return true;
+        }
+        let mac = self.device.mac_string();
+        let cmd: Vec<String> = ["mixer", "volume", "100"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        match gw.lms_command(&mac, &cmd).await {
+            Ok(_) => {
+                gw.db(move |a| a.mark_initial_level_set(device)).await;
+                info!(mac = %mac, "new player: LMS volume set to 100");
+                true
+            }
+            Err(e) => {
+                warn!(mac = %mac, error = %e, "could not set a new player's LMS volume to 100");
+                false
+            }
+        }
+    }
+
     /// Whether the last `strm` pointed elsewhere and was refused; cleared on reading.
     fn take_refused_direct(&self) -> bool {
         std::mem::take(&mut self.state.lock().unwrap().refused_direct)
@@ -1181,6 +1235,8 @@ async fn read_lms(gw: AppState, session: Arc<Session>, mut rd: tokio::net::tcp::
             };
             // LMS knows the player once it sends it anything: have it proxy internet streams.
             session.ensure_proxied_streaming(&gw);
+            // ... and give a brand-new device's player its initial volume.
+            session.ensure_initial_level(&gw);
             match &op {
                 // Never let a remote device be redirected to another server.
                 b"serv" => {
