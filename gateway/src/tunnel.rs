@@ -1,7 +1,7 @@
 //! `/v1/player`: authenticate a socket and attach it to a new or resumed session.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade, close_code};
 use axum::extract::{ConnectInfo, State};
@@ -29,7 +29,7 @@ pub const MAX_GRACE_REQUEST: u64 = 3600;
 /// The text messages allowed after authentication, each exactly one of:
 /// - `{"ack":{"stream":n,"bytes":b}}`: bytes of stream `n` the client has received;
 /// - `{"quality":"original"|"high"|"low"}`: the level of the streams that follow
-///   (docs/plans/streaming-quality.md).
+///   (docs/plans/streaming-quality.md), answered with [`quality_echo`] once applied.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ControlMessage {
@@ -43,7 +43,7 @@ enum Control {
 }
 
 /// A control message, or `None` for anything else (too long, malformed, unknown fields,
-/// both or neither field, an unknown level).
+/// both or neither field, a level that is not a string). An unknown level is `original`.
 fn parse_control(t: &str) -> Option<Control> {
     if t.len() > MAX_CONTROL_MESSAGE {
         return None;
@@ -53,10 +53,13 @@ fn parse_control(t: &str) -> Option<Control> {
             ack: Some(a),
             quality: None,
         } => Some(Control::Ack(a)),
+        // An unknown level is `original`, as at sign-in: the echo tells the client so.
         ControlMessage {
             ack: None,
             quality: Some(q),
-        } => crate::live::Quality::parse(&q).map(Control::Quality),
+        } => Some(Control::Quality(
+            crate::live::Quality::parse(&q).unwrap_or_default(),
+        )),
         _ => None,
     }
 }
@@ -166,36 +169,106 @@ fn auth_grace(text: &str) -> Result<Option<u64>, ()> {
 /// map it to a plain message, never showing it raw).
 pub const CLOSE_TOO_OLD: u16 = 4426;
 pub const TOO_OLD_REASON: &str = "update the app";
-/// The most of a refused `protocol` value written to the log and the audit trail.
-const MAX_PROTOCOL_DETAIL: usize = 32;
+/// How often a refused device is audited and logged at most (it is always refused). Apps
+/// from before protocol 2 take 4426 for a dropped connection and sign in again every few
+/// seconds; one row each time would push the rest of the audit trail out within days.
+pub const TOO_OLD_NOTE_EVERY: Duration = Duration::from_secs(3600);
+/// Refused devices remembered at most (a fuller map is pruned, then cleared).
+const TOO_OLD_SEEN_CAP: usize = 4096;
 
 /// The player protocol given at sign-in (`"protocol"`): `Ok` for a whole JSON number of at
 /// least [`crate::PROTOCOL`] (a higher one than this gateway knows is accepted: the newer
-/// client decides), else `Err` with what was given, bounded and JSON-escaped, or `none`
-/// (no `protocol`, or the bare-token form of protocol 1).
+/// client decides), else `Err` with what was given, for the log and the audit trail: a
+/// whole number as it is, anything else only as its type (`string`, `float`, `bool`,
+/// `null`, `array`, `object`), and `none` for no `protocol` (or the bare-token form of
+/// protocol 1). Only ASCII from a fixed set ever comes out, so a client cannot write
+/// bidi overrides, line separators or anything long into what an admin reads.
 fn auth_protocol(text: &str) -> Result<u64, String> {
+    use serde_json::Value;
     let none = || "none".to_string();
     if text.len() > MAX_AUTH_MESSAGE || !text.starts_with('{') {
         return Err(none());
     }
-    let v = serde_json::from_str::<serde_json::Value>(text).map_err(|_| none())?;
+    let v = serde_json::from_str::<Value>(text).map_err(|_| none())?;
     let Some(p) = v.get("protocol") else {
         return Err(none());
     };
-    match p.as_u64() {
-        Some(n) if n >= u64::from(crate::PROTOCOL) => Ok(n),
-        _ => Err(p.to_string().chars().take(MAX_PROTOCOL_DETAIL).collect()),
+    match p {
+        Value::Number(n) => match (n.as_u64(), n.as_i64()) {
+            (Some(n), _) if n >= u64::from(crate::PROTOCOL) => Ok(n),
+            (Some(n), _) => Err(n.to_string()),
+            (None, Some(n)) => Err(n.to_string()),
+            (None, None) => Err("float".into()),
+        },
+        Value::String(_) => Err("string".into()),
+        Value::Bool(_) => Err("bool".into()),
+        Value::Null => Err("null".into()),
+        Value::Array(_) => Err("array".into()),
+        Value::Object(_) => Err("object".into()),
     }
 }
 
-/// The protocol a refused client speaks, from what [`auth_protocol`] reported: 1 for none
-/// (protocol 1's forms carried no number), the number for a whole one below 2, else
-/// `None` (junk is not a protocol).
-fn old_protocol(given: &str) -> Option<u64> {
+/// The protocol a refused client is recorded as speaking, from what [`auth_protocol`]
+/// reported: 1 for none (protocol 1's forms carried no number), a whole number below 2 as
+/// it is, and 0 for anything else, so the device lists show "needs updating" whatever it
+/// sent.
+fn old_protocol(given: &str) -> u64 {
     if given == "none" {
-        Some(1)
+        1
     } else {
-        given.parse::<u64>().ok()
+        given.parse::<u64>().unwrap_or(0)
+    }
+}
+
+/// What to do about one refused sign-in (it is refused either way).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TooOldNote {
+    /// Write the audit row and the warning: the first for this device in
+    /// [`TOO_OLD_NOTE_EVERY`].
+    pub audit: bool,
+    /// Record the protocol in the device lists: it differs from what was last recorded.
+    pub record: bool,
+}
+
+/// Refused devices lately audited: device → (when, the protocol recorded for it).
+#[derive(Default)]
+pub(crate) struct TooOldSeen(std::sync::Mutex<std::collections::HashMap<i64, (Instant, u64)>>);
+
+impl TooOldSeen {
+    pub(crate) fn note(&self, device: i64, recorded: u64, now: Instant) -> TooOldNote {
+        let mut seen = self.0.lock().unwrap();
+        let fresh = |t: &Instant| now.saturating_duration_since(*t) < TOO_OLD_NOTE_EVERY;
+        if let Some((at, p)) = seen.get_mut(&device)
+            && fresh(at)
+        {
+            let record = *p != recorded;
+            *p = recorded;
+            return TooOldNote {
+                audit: false,
+                record,
+            };
+        }
+        if seen.len() >= TOO_OLD_SEEN_CAP && !seen.contains_key(&device) {
+            seen.retain(|_, (t, _)| fresh(t));
+            if seen.len() >= TOO_OLD_SEEN_CAP {
+                seen.clear();
+            }
+        }
+        seen.insert(device, (now, recorded));
+        TooOldNote {
+            audit: true,
+            record: true,
+        }
+    }
+
+    /// The device attached with a current protocol: its next refusal is news again.
+    pub(crate) fn forget(&self, device: i64) {
+        self.0.lock().unwrap().remove(&device);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.0.lock().unwrap().len()
     }
 }
 
@@ -257,24 +330,31 @@ async fn handle(gw: AppState, mut ws: WebSocket, addr: std::net::IpAddr) {
         Ok(p) => p,
         Err(given) => {
             let device = auth_device(&auth);
-            warn!(
-                user = %device.username,
-                device = device.device_id,
-                mac = %device.mac_string(),
-                protocol = %given,
-                "player protocol too old; asked to update the app"
-            );
             let (user, id) = (device.username.clone(), device.device_id);
-            // The device lists show who is behind: what it gave is recorded when it is a
-            // protocol at all (no number is protocol 1, which had none).
+            // The device lists show who is behind: no number is protocol 1 (which had
+            // none), and anything that is not a protocol at all is 0.
             let recorded = old_protocol(&given);
-            gw.db(move |a| {
-                a.audit("player.too_old", Some(&user), Some(id), &given);
-                if let Some(p) = recorded {
-                    a.record_protocol(id, p);
-                }
-            })
-            .await;
+            let note = gw.too_old.note(id, recorded, Instant::now());
+            if note.audit {
+                warn!(
+                    user = %device.username,
+                    device = id,
+                    mac = %device.mac_string(),
+                    protocol = %given,
+                    "player protocol too old; asked to update the app (noted once an hour per device)"
+                );
+            }
+            if note.audit || note.record {
+                gw.db(move |a| {
+                    if note.audit {
+                        a.audit("player.too_old", Some(&user), Some(id), &given);
+                    }
+                    if note.record {
+                        a.record_protocol(id, recorded);
+                    }
+                })
+                .await;
+            }
             return close(ws, CLOSE_TOO_OLD, TOO_OLD_REASON).await;
         }
     };
@@ -361,17 +441,19 @@ async fn handle(gw: AppState, mut ws: WebSocket, addr: std::net::IpAddr) {
         session.detach(&gw, generation);
         return;
     }
-    // The stream in progress, if any, right after the greeting (newer ones follow from
-    // the queue).
-    if let Some(m) = attached.stream_message
-        && ws.send(Message::Text(m.into())).await.is_err()
-    {
-        session.detach(&gw, generation);
-        return;
+    // The streams lately relayed, if any, oldest first, right after the greeting (newer
+    // ones follow from the queue): a client that read ahead into the next track still gets
+    // the message for the one it is hearing.
+    for m in attached.stream_messages {
+        if ws.send(Message::Text(m.into())).await.is_err() {
+            session.detach(&gw, generation);
+            return;
+        }
     }
     // Off the async workers (M7): a stalled disk must not hold up other sessions.
     let device = session.device.device_id;
     let seen = gw.accounts.claim_seen(device);
+    gw.too_old.forget(device);
     gw.db(move |a| {
         a.touch_device(device);
         a.record_protocol(device, protocol);
@@ -467,7 +549,7 @@ async fn read_loop(
                     continue;
                 }
                 Some(Control::Quality(q)) => {
-                    session.set_quality(q);
+                    session.apply_quality(generation, q);
                     continue;
                 }
                 None => return ReadEnd::Policy("unexpected text message".into()),
@@ -515,6 +597,13 @@ struct Keepalive {
 
 /// The text keepalive: never a greeting (no `session`), never a frame (not binary).
 pub const KEEPALIVE_TEXT: &str = r#"{"keepalive":true}"#;
+
+/// The answer to a client's quality message, once the level is applied to the session:
+/// `{"quality":"original"|"high"|"low"}`, the level now in force. Text, so never counted in
+/// `received`; never a greeting (no `session`) or a stream message (no `stream`).
+pub fn quality_echo(level: crate::live::Quality) -> String {
+    serde_json::json!({ "quality": level.name() }).to_string()
+}
 
 async fn write_loop(
     mut sink: futures_util::stream::SplitSink<WebSocket, Message>,
@@ -642,12 +731,18 @@ mod tests {
                 bytes: 100
             }))
         ));
+        // The three levels; an unknown one (any other string) is `original`, as at
+        // sign-in, and the echo says so.
         for (m, q) in [
             ("original", Quality::Original),
             ("high", Quality::High),
             ("low", Quality::Low),
+            ("ultra", Quality::Original),
+            ("High", Quality::Original),
+            ("", Quality::Original),
+            ("\u{202e}low", Quality::Original),
         ] {
-            let msg = format!(r#"{{"quality":"{m}"}}"#);
+            let msg = serde_json::json!({ "quality": m }).to_string();
             assert!(
                 matches!(parse_control(&msg), Some(Control::Quality(x)) if x == q),
                 "{m}"
@@ -658,9 +753,6 @@ mod tests {
             "{}",
             "null",
             "[]",
-            r#"{"quality":"ultra"}"#,
-            r#"{"quality":"High"}"#,
-            r#"{"quality":""}"#,
             r#"{"quality":1}"#,
             r#"{"quality":["low"]}"#,
             r#"{"quality":null}"#,
@@ -677,6 +769,23 @@ mod tests {
             "x".repeat(MAX_CONTROL_MESSAGE)
         );
         assert!(parse_control(&long).is_none());
+        let long = format!(r#"{{"quality":"{}"}}"#, "l".repeat(MAX_CONTROL_MESSAGE));
+        assert!(parse_control(&long).is_none());
+    }
+
+    /// The quality echo is exactly `{"quality":"…"}` with the level's name, and can never
+    /// be taken for a greeting, a stream message, a keepalive or a control message the
+    /// gateway would act on twice.
+    #[test]
+    fn the_quality_echo() {
+        assert_eq!(quality_echo(Quality::Original), r#"{"quality":"original"}"#);
+        assert_eq!(quality_echo(Quality::High), r#"{"quality":"high"}"#);
+        assert_eq!(quality_echo(Quality::Low), r#"{"quality":"low"}"#);
+        for q in [Quality::Original, Quality::High, Quality::Low] {
+            let v: serde_json::Value = serde_json::from_str(&quality_echo(q)).unwrap();
+            assert!(v.get("session").is_none() && v.get("stream").is_none());
+            assert_ne!(quality_echo(q), KEEPALIVE_TEXT);
+        }
     }
 
     #[test]
@@ -713,7 +822,7 @@ mod tests {
     }
 
     /// Protocol 2 or above, as a whole JSON number; anything else is an old (or broken)
-    /// client, and what it gave is reported bounded and escaped.
+    /// client, and what it gave is reported as a whole number or only its type.
     #[test]
     fn sign_in_protocol_is_a_whole_number_of_at_least_two() {
         assert_eq!(auth_protocol(r#"{"token":"t","protocol":2}"#), Ok(2));
@@ -736,40 +845,153 @@ mod tests {
             (r#"{"token":"t","protocol":1}"#, "1"),
             (r#"{"token":"t","protocol":0}"#, "0"),
             (r#"{"token":"t","protocol":-1}"#, "-1"),
-            (r#"{"token":"t","protocol":2.0}"#, "2.0"),
-            (r#"{"token":"t","protocol":2e0}"#, "2.0"),
-            (r#"{"token":"t","protocol":"2"}"#, r#""2""#),
-            (r#"{"token":"t","protocol":true}"#, "true"),
+            (
+                r#"{"token":"t","protocol":-9223372036854775808}"#,
+                "-9223372036854775808",
+            ),
+            (r#"{"token":"t","protocol":2.0}"#, "float"),
+            (r#"{"token":"t","protocol":2e0}"#, "float"),
+            (r#"{"token":"t","protocol":-0.5}"#, "float"),
+            (r#"{"token":"t","protocol":"2"}"#, "string"),
+            (r#"{"token":"t","protocol":true}"#, "bool"),
             (r#"{"token":"t","protocol":null}"#, "null"),
-            (r#"{"token":"t","protocol":[2]}"#, "[2]"),
-            (r#"{"token":"t","protocol":{}}"#, "{}"),
-            (r#"{"token":"t","protocol":99999999999999999999}"#, "1e+20"),
+            (r#"{"token":"t","protocol":[2]}"#, "array"),
+            (r#"{"token":"t","protocol":{}}"#, "object"),
+            (r#"{"token":"t","protocol":99999999999999999999}"#, "float"),
         ] {
             assert_eq!(auth_protocol(bad), Err(given.to_string()), "{bad}");
         }
-        // What is reported is bounded and escaped.
-        let long = format!(
-            r#"{{"token":"t","protocol":"{}\n\u0007"}}"#,
-            "x".repeat(200)
-        );
-        let given = auth_protocol(&long).unwrap_err();
-        assert!(given.chars().count() <= MAX_PROTOCOL_DETAIL);
-        assert!(!given.chars().any(char::is_control));
         let big = format!(
             r#"{{"token":"{}","protocol":2}}"#,
             "t".repeat(MAX_AUTH_MESSAGE)
         );
         assert_eq!(auth_protocol(&big), Err("none".into()));
         // What a refused client is recorded as speaking: 1 for none, a small whole number
-        // as it is, junk not at all.
-        assert_eq!(old_protocol("none"), Some(1));
-        assert_eq!(old_protocol("0"), Some(0));
-        assert_eq!(old_protocol("1"), Some(1));
+        // as it is, and 0 for anything else (still shown as needing an update).
+        assert_eq!(old_protocol("none"), 1);
+        assert_eq!(old_protocol("0"), 0);
+        assert_eq!(old_protocol("1"), 1);
         for junk in [
-            "-1", "2.0", "1e+20", r#""2""#, "true", "null", "[2]", "{}", "",
+            "-1", "float", "string", "bool", "null", "array", "object", "",
         ] {
-            assert_eq!(old_protocol(junk), None, "{junk}");
+            assert_eq!(old_protocol(junk), 0, "{junk}");
         }
+    }
+
+    fn json_form(protocol: serde_json::Value) -> String {
+        serde_json::json!({"token": "t", "protocol": protocol}).to_string()
+    }
+
+    /// Security (log injection): what a refused client sent never reaches the log or the
+    /// audit trail as text. Bidi overrides, line and paragraph separators, control
+    /// characters and long strings all come out as a type tag; nothing but ASCII from a
+    /// fixed set (or a whole number) ever does.
+    #[test]
+    fn a_refused_protocol_is_recorded_as_ascii_only() {
+        let long = "x".repeat(900);
+        let hostile = [
+            "\u{202e}gnissap",
+            "line\u{2028}break",
+            "para\u{2029}graph",
+            "\u{200f}\u{2066}x\u{2069}",
+            "ctl\n\r\t\u{7}\u{1b}[31m",
+            long.as_str(),
+        ];
+        for h in hostile {
+            for (form, tag) in [
+                (json_form(serde_json::json!(h)), "string"),
+                (json_form(serde_json::json!([h])), "array"),
+                (json_form(serde_json::json!({ h: h })), "object"),
+            ] {
+                if form.len() > MAX_AUTH_MESSAGE {
+                    continue;
+                }
+                assert_eq!(auth_protocol(&form), Err(tag.to_string()), "{form}");
+            }
+        }
+        // A 1 kB string: too long a sign-in form, so `none`; still nothing of it.
+        let kb = json_form(serde_json::json!("\u{202e}".repeat(342)));
+        assert!(kb.len() > 1024);
+        assert_eq!(auth_protocol(&kb), Err("none".into()));
+        let kb = json_form(serde_json::json!("y".repeat(980)));
+        assert_eq!(auth_protocol(&kb), Err("string".into()));
+        // Escaped in the JSON itself: the same.
+        assert_eq!(
+            auth_protocol("{\"token\":\"t\",\"protocol\":\"\\u202e\\u2028\\u2029\"}"),
+            Err("string".into())
+        );
+        // Any number is short and plain.
+        for n in ["-1", "1", "0", "-9223372036854775808", "1e308", "-1e-308"] {
+            let given = auth_protocol(&format!(r#"{{"token":"t","protocol":{n}}}"#)).unwrap_err();
+            assert!(
+                given
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                    && given.len() <= 20,
+                "{given}"
+            );
+        }
+    }
+
+    /// Security (audit flooding): a refused device is audited and warned about once an
+    /// hour, whatever it sends meanwhile; another device gets its own; once the hour is
+    /// up it is audited again. A change of what it speaks is recorded, unaudited.
+    #[test]
+    fn a_refused_device_is_noted_once_an_hour() {
+        let both = TooOldNote {
+            audit: true,
+            record: true,
+        };
+        let neither = TooOldNote {
+            audit: false,
+            record: false,
+        };
+        let seen = TooOldSeen::default();
+        let t0 = Instant::now();
+        assert_eq!(seen.note(7, 1, t0), both);
+        for i in 1..10u64 {
+            assert_eq!(seen.note(7, 1, t0 + Duration::from_secs(i * 5)), neither);
+        }
+        // Another device: its own note.
+        assert_eq!(seen.note(8, 1, t0 + Duration::from_secs(10)), both);
+        // A change of protocol within the hour: recorded, not audited.
+        assert_eq!(
+            seen.note(7, 0, t0 + Duration::from_secs(60)),
+            TooOldNote {
+                audit: false,
+                record: true
+            }
+        );
+        // After the window: audited again, and then not for another hour.
+        let later = t0 + TOO_OLD_NOTE_EVERY;
+        assert_eq!(seen.note(7, 0, later), both);
+        assert_eq!(seen.note(7, 0, later), neither);
+        // A current attach forgets it: the next refusal is news.
+        seen.forget(7);
+        assert_eq!(seen.note(7, 0, later), both);
+        // A clock that went back is never a reason to audit again.
+        assert_eq!(seen.note(7, 0, t0), neither);
+    }
+
+    /// The map stays bounded however many devices are refused, and expired entries are
+    /// what goes first.
+    #[test]
+    fn the_refused_devices_map_is_bounded() {
+        let seen = TooOldSeen::default();
+        let t0 = Instant::now();
+        for d in 0..(TOO_OLD_SEEN_CAP as i64 * 3) {
+            assert!(seen.note(d, 1, t0).audit);
+            assert!(seen.len() <= TOO_OLD_SEEN_CAP);
+        }
+        let seen = TooOldSeen::default();
+        for d in 0..(TOO_OLD_SEEN_CAP as i64 - 1) {
+            seen.note(d, 1, t0);
+        }
+        let later = t0 + TOO_OLD_NOTE_EVERY;
+        seen.note(-1, 1, later);
+        seen.note(-2, 1, later);
+        assert_eq!(seen.len(), 2);
+        assert!(!seen.note(-1, 1, later).audit);
     }
 
     #[test]

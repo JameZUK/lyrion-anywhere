@@ -34,6 +34,8 @@ enum PrefState {
     NotYet,
     Pending,
     Done,
+    /// Tried and failed: not again this session.
+    Failed,
 }
 
 /// Refused direct streams replayed through LMS, at most, in a row.
@@ -107,10 +109,15 @@ pub struct Attached {
     pub generation: u64,
     pub rx: mpsc::Receiver<Outbound>,
     pub kick: watch::Receiver<Kick>,
-    /// The last stream message sent in this session, to send again right after the
-    /// greeting (a resumed client is never without it). Later ones follow on `rx`.
-    pub stream_message: Option<String>,
+    /// The last [`HELD_STREAM_MESSAGES`] stream messages sent in this session, oldest
+    /// first, to send again right after the greeting: a resumed client is never without
+    /// the one for the stream it is hearing, even when it has read ahead into the next.
+    /// Later ones follow on `rx`.
+    pub stream_messages: Vec<String>,
 }
+
+/// Stream messages held per session for a resume greeting.
+pub const HELD_STREAM_MESSAGES: usize = 4;
 
 struct State {
     attached: Option<Attachment>,
@@ -136,9 +143,9 @@ struct State {
     /// What the current `strm s` says LMS serves (the stream message's `served`, less a
     /// FLAC stream's format, read from its first bytes).
     stream_served: Option<crate::stream_info::Served>,
-    /// The last stream message sent (or kept for a detached client), sent again after a
-    /// resume greeting.
-    stream_message: Option<String>,
+    /// The last stream messages sent (or kept for a detached client), by `seq`, oldest
+    /// first and at most [`HELD_STREAM_MESSAGES`]: sent again after a resume greeting.
+    stream_messages: VecDeque<(u64, String)>,
     /// The level the client asked for (docs/plans/streaming-quality.md).
     quality: crate::live::Quality,
     /// The current stream is to be re-encoded: the level, its bit rate and the slot it
@@ -264,7 +271,7 @@ impl Session {
                 stream_path: None,
                 stream_format: 0,
                 stream_served: None,
-                stream_message: None,
+                stream_messages: VecDeque::new(),
                 quality: Default::default(),
                 live: None,
                 relay: None,
@@ -405,7 +412,7 @@ impl Session {
             generation,
             rx,
             kick: kick_rx,
-            stream_message: st.stream_message.clone(),
+            stream_messages: st.stream_messages.iter().map(|(_, m)| m.clone()).collect(),
         })
     }
 
@@ -766,6 +773,24 @@ impl Session {
         self.state.lock().unwrap().quality = quality;
     }
 
+    /// The client's quality message on socket `generation`: the level of the streams that
+    /// follow, acknowledged on that socket with [`crate::tunnel::quality_echo`] of the level
+    /// now in force (also when it was unchanged). The level is set before the echo is
+    /// queued, so a `strm s` after the echo is at it, and a client that seeks only once it
+    /// has the echo cannot race the change. A socket too slow for the echo is kicked, as
+    /// for any message.
+    pub fn apply_quality(self: &Arc<Self>, generation: u64, quality: crate::live::Quality) {
+        let mut st = self.state.lock().unwrap();
+        st.quality = quality;
+        if !Self::is_current(&st, generation) {
+            return;
+        }
+        let echo = crate::tunnel::quality_echo(st.quality);
+        let detached = self.text_to_client(&mut st, echo);
+        drop(st);
+        self.hold_detached(detached);
+    }
+
     /// The relay for stream `n`, created on first use. A stream chosen for re-encoding at
     /// its `strm` goes through `live_ffmpeg` ([`crate::live`]); otherwise, with
     /// `strip_flac`, a stream LMS announced as FLAC has its artwork and padding dropped
@@ -1013,8 +1038,8 @@ impl Session {
     /// (the same moment as [`Self::ensure_proxied_streaming`]). LMS starts every player it
     /// has never seen at 50; these players are meant to start at 100. Only a device that
     /// has never had it (see `Accounts::needs_initial_level`), and it is recorded only once
-    /// LMS has accepted it, so a failure is tried again at the next chance (this session or
-    /// a later one) and a success is never repeated, whatever the owner sets afterwards.
+    /// LMS has accepted it, so a failure is tried again in the next session and a success
+    /// is never repeated, whatever the owner sets afterwards.
     fn ensure_initial_level(self: &Arc<Self>, gw: &crate::AppState) {
         {
             let mut st = self.state.lock().unwrap();
@@ -1026,10 +1051,13 @@ impl Session {
         let (gw, session) = (gw.clone(), Arc::clone(self));
         tokio::spawn(async move {
             let ok = session.set_initial_level(&gw).await;
+            // A failure is not tried again in this session: LMS sends a frame every second
+            // or so (`strm t`), and a retry on each, while LMS is unwell, would only add to
+            // its load. The next session tries again.
             session.state.lock().unwrap().initial_level = if ok {
                 PrefState::Done
             } else {
-                PrefState::NotYet
+                PrefState::Failed
             };
         });
     }
@@ -1046,8 +1074,11 @@ impl Session {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        match gw.lms_command(&mac, &cmd).await {
-            Ok(_) => {
+        // Done only when LMS says it carried the command out (its JSON-RPC answer has a
+        // `result` object): an error body, or no answer at all, sent with status 200 is a
+        // failure.
+        match gw.lms_command_accepted(&mac, &cmd).await {
+            Ok(()) => {
                 gw.db(move |a| a.mark_initial_level_set(device)).await;
                 info!(mac = %mac, "new player: LMS volume set to 100");
                 true
@@ -1165,7 +1196,7 @@ impl Session {
     /// Sent now to an attached socket, and kept to send again after a resume greeting.
     /// Nothing for a stream that is no longer the current one.
     pub fn announce_stream(
-        &self,
+        self: &Arc<Self>,
         n: u64,
         flac: Option<crate::stream_info::FlacFormat>,
         sent: crate::stream_info::Sent,
@@ -1184,11 +1215,45 @@ impl Session {
         };
         let msg = crate::stream_info::message(n, &served, sent);
         debug!(mac = %self.device.mac_string(), stream = n, message = %msg, "stream message");
-        st.stream_message = Some(msg.clone());
-        if let Some(a) = &st.attached {
-            // A socket too slow for this is kicked by the frames behind it; its resume
-            // greeting brings the message again.
-            let _ = a.tx.try_send(Outbound::Text(msg));
+        // In `seq` order: only the current stream is announced, and `seq` only grows.
+        st.stream_messages.retain(|(seq, _)| *seq < n);
+        st.stream_messages.push_back((n, msg.clone()));
+        while st.stream_messages.len() > HELD_STREAM_MESSAGES {
+            st.stream_messages.pop_front();
+        }
+        // A socket too slow for it is kicked and held for its resume, whose greeting
+        // brings the message again.
+        let detached = self.text_to_client(&mut st, msg);
+        drop(st);
+        self.hold_detached(detached);
+    }
+
+    /// Queue a text message (never logged for redelivery, never counted in `received`) for
+    /// the attached socket, if any. A socket whose queue is full is kicked with 1013 and
+    /// detached, exactly as [`Self::deliver`] does for a frame, and one whose writer has
+    /// gone is detached: the generation to hold for resume (with the state lock released,
+    /// see [`Self::hold_detached`]) is returned.
+    fn text_to_client(&self, st: &mut State, msg: String) -> Option<u64> {
+        let a = st.attached.as_ref()?;
+        let generation = a.generation;
+        match a.tx.try_send(Outbound::Text(msg)) {
+            Ok(()) => return None,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                warn!(mac = %self.device.mac_string(), "client too slow; detaching socket");
+                a.kick(1013, "client too slow");
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                info!(mac = %self.device.mac_string(), "player socket gone; holding session for resume");
+            }
+        }
+        st.attached = None;
+        Some(generation)
+    }
+
+    /// Hold the session for the resume of a socket [`Self::text_to_client`] detached.
+    fn hold_detached(self: &Arc<Self>, detached: Option<u64>) {
+        if let (Some(generation), Some(gw)) = (detached, self.gw.upgrade()) {
+            self.hold_for_resume(&gw, generation);
         }
     }
 }
@@ -1370,6 +1435,63 @@ mod tests {
         let s = Arc::new(Session::new(device, wr, std::sync::Weak::new()));
         let g = s.attach(0).unwrap().generation;
         (s, g)
+    }
+
+    /// Make stream `n` the current one, as a `strm s` for an MP3 would.
+    fn current_stream(s: &Session, n: u64) {
+        let mut st = s.state.lock().unwrap();
+        st.stream_seq = n;
+        st.stream_served = Some(crate::stream_info::Served {
+            codec: "mp3",
+            rate: None,
+            bits: None,
+            channels: None,
+            gain_db: None,
+        });
+    }
+
+    /// Reliability: a stream message for a socket whose queue is full is not dropped
+    /// silently. The socket is kicked with 1013 and detached, exactly as for a frame, and
+    /// the message is kept for its resume greeting.
+    #[tokio::test]
+    async fn a_stream_message_to_a_full_queue_kicks_the_socket() {
+        let (s, _) = session().await;
+        let mut a = s.attach(0).unwrap();
+        // Fill the queue to the brim (nothing reads it): its capacity, as `attach` made it.
+        let n = (OUTBOUND_QUEUE + 8) as u64;
+        for i in 0..n {
+            assert!(
+                matches!(
+                    s.deliver(frame(b"vers", b"9.1.1"), usize::MAX),
+                    Delivery::Ok
+                ),
+                "frame {i}"
+            );
+        }
+        assert!(a.kick.borrow().is_none());
+        assert!(!s.is_detached());
+        current_stream(&s, 1);
+        s.announce_stream(1, None, crate::stream_info::Sent::Passthrough);
+        assert_eq!(*a.kick.borrow_and_update(), Some((1013, "client too slow")));
+        assert!(s.is_detached(), "held for its resume");
+        // Kept for the resume greeting.
+        let resumed = s.attach(n).unwrap();
+        assert_eq!(resumed.stream_messages.len(), 1, "the message is kept");
+        assert!(resumed.stream_messages[0].contains(r#""seq":1"#));
+        // Room in the queue: delivered, nobody kicked.
+        let mut b = resumed.rx;
+        current_stream(&s, 2);
+        s.announce_stream(2, None, crate::stream_info::Sent::Passthrough);
+        assert!(resumed.kick.borrow().is_none());
+        match b.try_recv() {
+            Ok(Outbound::Text(t)) => assert!(t.contains(r#""seq":2"#), "{t}"),
+            other => panic!("{other:?}"),
+        }
+        // A writer that has gone: detached too (held for its resume), never a panic.
+        drop(b);
+        current_stream(&s, 3);
+        s.announce_stream(3, None, crate::stream_info::Sent::Passthrough);
+        assert!(s.is_detached());
     }
 
     fn frame(op: &[u8; 4], payload: &[u8]) -> Vec<u8> {

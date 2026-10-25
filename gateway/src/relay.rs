@@ -338,18 +338,24 @@ pub async fn stream(
                         .map(|r| r.map_err(std::io::Error::other))
                         .boxed();
                     // The stream message, before any of the stream is passed on (or to the
-                    // encoder): a FLAC stream's format is read from its first bytes, which
-                    // then go on unchanged.
-                    let (flac, body) = if sess.stream_format(n) == Some(b'f') {
-                        let (head, rest) = tokio::select! {
-                            p = peek(body, STREAMINFO_LEN, relay.read_timeout) => p,
-                            _ = cancelled(&mut cancel) => {
-                                return StatusCode::NOT_FOUND.into_response();
-                            }
-                        };
-                        (crate::stream_info::flac_streaminfo(&head), rest)
+                    // encoder). A FLAC stream's format is read from its first bytes, which
+                    // then go on unchanged: inside the stream, on its first read, so the
+                    // relay is opened now. A client that gives up while LMS is slow to
+                    // start then carries on with this upstream when it asks again, rather
+                    // than having LMS asked for the stream a second time.
+                    let body = if sess.stream_format(n) == Some(b'f') {
+                        announcing(
+                            body,
+                            Arc::downgrade(&sess),
+                            n,
+                            relay.sent,
+                            relay.read_timeout,
+                        )
                     } else {
-                        (None, body)
+                        // Queued on the player socket before this response is returned,
+                        // so before any of the stream's bytes are sent.
+                        sess.announce_stream(n, None, relay.sent);
+                        body
                     };
                     up.stream = Some(match (&relay.live, &relay.flac) {
                         (Some(live), _) => {
@@ -381,9 +387,6 @@ pub async fn stream(
                         (None, None) => body.boxed(),
                     });
                     up.opened = true;
-                    // Queued on the player socket before this response is returned, so
-                    // before any of the stream's bytes are sent.
-                    sess.announce_stream(n, flac, relay.sent);
                 }
                 Ok(Ok(resp)) => {
                     warn!(status = %resp.status(), "LMS stream status");
@@ -474,6 +477,28 @@ async fn peek(mut body: Upstream, want: usize, timeout: Duration) -> (Vec<u8>, U
         read.chain(body).boxed()
     };
     (head, rest)
+}
+
+/// A FLAC `body` that sends stream `n`'s message on its first read: it reads the first
+/// [`STREAMINFO_LEN`] bytes ([`peek`]), queues the message with the format they give on
+/// the player socket, and only then yields them, unchanged, and the rest. The session is
+/// held weakly: it owns the relay that holds this stream.
+fn announcing(
+    body: Upstream,
+    sess: std::sync::Weak<crate::session::Session>,
+    n: u64,
+    sent: crate::stream_info::Sent,
+    timeout: Duration,
+) -> Upstream {
+    futures_util::stream::once(async move {
+        let (head, rest) = peek(body, STREAMINFO_LEN, timeout).await;
+        if let Some(s) = sess.upgrade() {
+            s.announce_stream(n, crate::stream_info::flac_streaminfo(&head), sent);
+        }
+        rest
+    })
+    .flatten()
+    .boxed()
 }
 
 struct Cursor {

@@ -59,6 +59,16 @@ fn command_label(cmd: &[String]) -> String {
     }
 }
 
+/// Whether LMS's JSON-RPC answer is a success: it has a `result` object. What it said
+/// otherwise is not passed on (it is LMS's text, not ours to log).
+fn accepted(answer: &Value) -> Result<(), String> {
+    match answer.get("result") {
+        Some(Value::Object(_)) => Ok(()),
+        _ if answer.get("error").is_some() => Err("LMS refused the command".into()),
+        _ => Err("LMS's answer has no result".into()),
+    }
+}
+
 /// What to log about a finished LMS exchange, if anything: failures always, successes only
 /// when they took [`SLOW_LMS`] or longer.
 fn exchange_note(
@@ -508,7 +518,33 @@ impl crate::Gateway {
         }
     }
 
+    /// A command whose effect matters: `Ok` only when LMS's JSON-RPC answer is a success,
+    /// with a `result` object. An answer without one (an `error`, `null`, or anything
+    /// else), even with status 200, is a failure.
+    pub(crate) async fn lms_command_accepted(
+        &self,
+        player: &str,
+        cmd: &[String],
+    ) -> Result<(), String> {
+        let v = self
+            .lms_answer_once(player, cmd, LMS_TIMEOUT)
+            .await
+            .map_err(|f| f.message)?;
+        accepted(&v)
+    }
+
     async fn lms_command_once(
+        &self,
+        player: &str,
+        cmd: &[String],
+        limit: Duration,
+    ) -> Result<Value, LmsFailure> {
+        let v = self.lms_answer_once(player, cmd, limit).await?;
+        Ok(v.get("result").cloned().unwrap_or_else(|| json!({})))
+    }
+
+    /// LMS's whole JSON-RPC answer to one command.
+    async fn lms_answer_once(
         &self,
         player: &str,
         cmd: &[String],
@@ -552,9 +588,7 @@ impl crate::Gateway {
             warn!(cmd = %cmd, "LMS request {note}");
         }
         let bytes = outcome?;
-        let v: Value =
-            serde_json::from_slice(&bytes).map_err(|e| LmsFailure::fatal(e.to_string()))?;
-        Ok(v.get("result").cloned().unwrap_or_else(|| json!({})))
+        serde_json::from_slice(&bytes).map_err(|e| LmsFailure::fatal(e.to_string()))
     }
 
     /// The cheapest question for LMS, asked while it seems blocked: its answer ends the stall.
@@ -597,6 +631,30 @@ mod tests {
 
     fn words(w: &[&str]) -> Vec<String> {
         w.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Only the JSON-RPC success shape, a `result` object, counts as LMS having carried a
+    /// command out.
+    #[test]
+    fn only_a_result_object_is_an_accepted_command() {
+        assert_eq!(accepted(&json!({"id": 1, "result": {}})), Ok(()));
+        assert_eq!(accepted(&json!({"result": {"_volume": 100}})), Ok(()));
+        for bad in [
+            json!({}),
+            json!(null),
+            json!([]),
+            json!("ok"),
+            json!({"id": 1}),
+            json!({"id": 1, "result": null}),
+            json!({"id": 1, "result": []}),
+            json!({"id": 1, "result": "done"}),
+            json!({"id": 1, "result": 1}),
+            json!({"id": 1, "error": "Invalid command"}),
+            json!({"id": 1, "error": {"code": -32601, "message": "\u{202e}x"}}),
+        ] {
+            let e = accepted(&bad).unwrap_err();
+            assert!(e.is_ascii() && !e.contains('x'), "{bad}: {e}");
+        }
     }
 
     /// The label names the command and, for groups, what it does, and nothing else: no

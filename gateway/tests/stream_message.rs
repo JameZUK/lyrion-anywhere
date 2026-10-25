@@ -3,10 +3,11 @@
 //! gateway sent. It is never a frame (not counted in `received`) and comes again after a
 //! resume greeting.
 //!
-//! Ordering: the gateway reads a FLAC stream's first 42 bytes and queues the message on the
-//! player socket before it answers the stream request, so the message is on its way before
-//! any of the body is. The tests check it is there to be read once the response headers
-//! are in, before a byte of the body is read (two connections give no stronger order).
+//! Ordering: the gateway queues the message on the player socket before it passes on any of
+//! the stream: at once for most streams, and for FLAC once it has read the first 42 bytes
+//! (on the response body's first read, so the relay is open even while LMS is slow to
+//! start). The tests check it is there to be read once the response headers are in, before
+//! a byte of the body is read (two connections give no stronger order).
 
 mod common;
 use common::flac::*;
@@ -257,6 +258,49 @@ async fn a_headerless_flac_is_relayed_untouched() {
     }
 }
 
+/// LMS slow to send a FLAC stream's first bytes (a spun-down disk, its own transcoder
+/// starting) and a client that gives up waiting and asks again: the second request
+/// carries on with the same upstream. LMS is asked for the stream once, the client gets
+/// all of it from its start, and the message once.
+#[tokio::test]
+async fn a_client_that_leaves_while_lms_is_slow_to_start_gets_the_same_upstream() {
+    let mut h = harness().await;
+    let file = flac_24_96(20);
+    *h.lms.stream_body.lock().unwrap() = Some(Arc::new(file.clone()));
+    *h.lms.stream_first_delay.lock().unwrap() = Some(Duration::from_millis(1000));
+    let mut p = open(&mut h).await;
+    p.lms_sends(&strm_s(h.mac_a, b'f', UNKNOWN, 0)).await;
+    // The client gives up before LMS's first bytes, headers or not.
+    let url = h.url(&format!("/v1/stream/{}/1", p.sid));
+    let gave_up = tokio::time::timeout(Duration::from_millis(300), async {
+        let r = reqwest::Client::new()
+            .get(&url)
+            .bearer_auth(&h.tok_a)
+            .send()
+            .await
+            .unwrap();
+        r.bytes().await
+    })
+    .await;
+    assert!(gave_up.is_err(), "nothing to read yet");
+    let (m, body) = fetch(&h, &mut p, 1).await;
+    assert_eq!(m["seq"], 1);
+    assert_eq!(m["served"]["rate"], 96000);
+    // From its start (its padding dropped on the way, as for any FLAC).
+    assert!(
+        body.len() > 1000 && body[..42] == file[..42],
+        "from its start"
+    );
+    let asked: Vec<String> = h
+        .lms
+        .http_paths()
+        .into_iter()
+        .filter(|p| p.starts_with("/stream.mp3"))
+        .collect();
+    assert_eq!(asked.len(), 1, "LMS asked once: {asked:?}");
+    quiet(&mut p.ws).await;
+}
+
 /// `seq` counts the `strm s` frames of the session: a seek and a track change each make a
 /// new stream. A stream never fetched gets no message.
 #[tokio::test]
@@ -332,14 +376,69 @@ async fn a_resume_gets_the_message_again_and_it_is_never_a_frame() {
     assert_eq!(p.frames, 3);
     let (m, _) = fetch(&h, &mut p, 3).await;
     assert_eq!(m["seq"], 3);
-    // Resumed again, the newest is the one sent.
+    // Resumed again: both streams relayed, in order.
     p.ws = h.dial().await;
     p.ws.send(resume(&h.tok_a, &p, p.frames)).await.unwrap();
     greeting(&mut p.ws).await;
+    for seq in [2, 3] {
+        assert_eq!(
+            stream_message(&next(&mut p.ws).await).expect("the stream message")["seq"],
+            seq
+        );
+    }
+    quiet(&mut p.ws).await;
+}
+
+/// A client with a read-ahead stream (the next track fetched while the current one plays)
+/// that resumes still gets the message for the track it is hearing: the last four streams'
+/// messages come again after the greeting, oldest first, and none is a frame, so the
+/// count of frames is unchanged and a further resume with it is accepted.
+#[tokio::test]
+async fn a_resume_gets_the_recent_streams_messages_in_order() {
+    let mut h = harness().await;
+    *h.lms.stream_body.lock().unwrap() = Some(Arc::new(flac_24_96(5)));
+    let mut p = open(&mut h).await;
+    // The track playing and the next one, read ahead.
+    p.lms_sends(&strm_s(h.mac_a, b'f', UNKNOWN, 0)).await;
+    let (one, _) = fetch(&h, &mut p, 1).await;
+    p.lms_sends(&strm_s(h.mac_a, b'm', UNKNOWN, 0)).await;
+    let (two, _) = fetch(&h, &mut p, 2).await;
     assert_eq!(
-        stream_message(&next(&mut p.ws).await).expect("the stream message")["seq"],
-        3
+        (one["seq"].clone(), two["seq"].clone()),
+        (json!(1), json!(2))
     );
+    assert_eq!(p.frames, 2);
+    for _ in 0..2 {
+        p.ws.close(None).await.ok();
+        p.ws = h.dial().await;
+        p.ws.send(resume(&h.tok_a, &p, p.frames)).await.unwrap();
+        assert_eq!(greeting(&mut p.ws).await["resumed"], true);
+        assert_eq!(
+            stream_message(&next(&mut p.ws).await).expect("the first"),
+            one
+        );
+        assert_eq!(
+            stream_message(&next(&mut p.ws).await).expect("the second"),
+            two
+        );
+        quiet(&mut p.ws).await;
+    }
+    // At most four: the oldest go first.
+    for n in 3..=6u64 {
+        p.lms_sends(&strm_s(h.mac_a, b'm', UNKNOWN, 0)).await;
+        assert_eq!(fetch(&h, &mut p, n).await.0["seq"], n);
+    }
+    p.ws.close(None).await.ok();
+    p.ws = h.dial().await;
+    p.ws.send(resume(&h.tok_a, &p, p.frames)).await.unwrap();
+    greeting(&mut p.ws).await;
+    for seq in 3..=6u64 {
+        assert_eq!(
+            stream_message(&next(&mut p.ws).await).expect("a message")["seq"],
+            seq
+        );
+    }
+    quiet(&mut p.ws).await;
 }
 
 /// A resumed session with no stream relayed yet: nothing after the greeting. A stream
