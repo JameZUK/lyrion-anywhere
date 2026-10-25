@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-10-25: Tests: the trusted-networks test's "host bits set" address depended on the runner's own address
+
+The android-v1.17.1 tag run failed once on `gateway/tests/trusted_networks.rs::several_networks_are_accepted_and_normalised`; the same commit was green on main and in the plugin's tag run minutes earlier, and the release went out on the re-run. The test writes a /24 "with host bits set" by adding 200 to the runner's last octet, and a runner at .56 wrapped that to .0, the network address itself, so the check that the log shows the normalised form rather than the typed one could not pass. The host octet is now never 0. No product change.
+
 ## 2026-10-25: The README as a landing page, two set-up walkthroughs, every screenshot retaken; the mini player's chip; the signal path as a row on a desktop
 
 The owner asked for a README an ordinary person can use, with the complex material on its own pages, screenshots of the new signal path and of setting up a connection with and without a VPN, in British English, reading as though a person wrote it.

@@ -295,9 +295,11 @@ fn several_networks_are_accepted_and_normalised() {
     let IpAddr::V4(v4) = lan else {
         panic!("an IPv4 LAN address");
     };
-    // A /24 written with host bits set, holding this host's address, plus two others.
-    let [a, b, c, _] = v4.octets();
-    let with_host_bits = format!("{a}.{b}.{c}.{}/24", 200u8.wrapping_add(v4.octets()[3]));
+    // A /24 written with host bits set, holding this host's address, plus two others. The
+    // host octet is never 0: a runner at .56 once wrapped 200 + 56 to .0, the network address
+    // itself, and the "normalised, not as typed" check below failed (android-v1.17.1's tag run).
+    let [a, b, c, d] = v4.octets();
+    let with_host_bits = format!("{a}.{b}.{c}.{}/24", 200u8.wrapping_add(d).max(1));
     let mut gw = start(
         public,
         public,
