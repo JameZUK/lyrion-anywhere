@@ -752,6 +752,10 @@
     <string name="up_next_label">Up next: %1$s</string>
     <string name="up_next_open_queue">Open the queue</string>
     <string name="up_next_remove">Remove from the queue</string>
+    <string name="badge_hi_res">Hi-Res</string>
+    <string name="badge_lossless">Lossless</string>
+    <string name="badge_transcoded">Transcoded</string>
+    <string name="badge_lossy">Lossy</string>
     <string name="quality_show_path">%1$s. Show the signal path</string>
     <string name="signal_path_other">Playing on %1$s: its decoding, volume and output are set by that player. The file is all that is known here.</string>
     <string name="block_lowers">this step lowers the quality</string>

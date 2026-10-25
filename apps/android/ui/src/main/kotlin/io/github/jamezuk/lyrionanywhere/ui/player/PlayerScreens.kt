@@ -86,6 +86,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -97,6 +98,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import io.github.jamezuk.lyrionanywhere.core.Player
 import io.github.jamezuk.lyrionanywhere.core.PlayerStatus
@@ -273,8 +275,12 @@ fun MiniPlayer(
 /**
  * The mini player's second line: the artist, and, while another player is controlled, its
  * name ("on Lounge", with a speaker). This phone's own name is left out (it would say
- * nothing new). Then the quality badge's text, as on Now playing (what is heard exists
- * only for the playing track).
+ * nothing new). Then the quality badge's verdict word as a compact chip (the full badge is
+ * on Now playing; what is heard exists only for the playing track).
+ *
+ * The text keeps its space: the chip goes after it, the text is ellipsised only when both
+ * cannot fit, and the chip is left out rather than leave the text less than 40% of the line
+ * (so the artist is never cut to a letter while the chip stays).
  */
 @Composable
 internal fun MiniPlayerLine(artist: String?, otherPlayer: String?, quality: DiagramBadge? = null) {
@@ -290,18 +296,49 @@ internal fun MiniPlayerLine(artist: String?, otherPlayer: String?, quality: Diag
         }
         // One line, the player first: with large text the artist is what gets cut short.
         val line = listOfNotNull(otherPlayer?.let { stringResource(R.string.mini_on_player, it) }, artist).joinToString(" · ")
-        if (line.isNotEmpty()) {
+        val text: @Composable () -> Unit = {
             Text(
                 line,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodySmall,
                 color = colour,
-                modifier = (if (otherPlayer != null) Modifier.testTag("mini-player-on") else Modifier).weight(1f, fill = false),
+                modifier = if (otherPlayer != null) Modifier.testTag("mini-player-on") else Modifier,
             )
         }
-        if (quality != null) {
-            QualityChip(quality, Modifier.padding(start = if (line.isNotEmpty()) 6.dp else 0.dp))
+        when {
+            quality == null -> if (line.isNotEmpty()) text()
+            line.isEmpty() -> QualityChip(quality)
+            else -> TextThenChip(text, { QualityChip(quality) })
+        }
+    }
+}
+
+/** The least share of the mini player's second line the text keeps beside the quality chip. */
+internal const val TEXT_SHARE = 0.4f
+
+/**
+ * [text], then [chip] 6 dp after it, on one line. The text gets all the room the chip leaves
+ * and is ellipsised only when both do not fit; when the chip would leave the text less than
+ * its full width and less than [TEXT_SHARE] of the line, the chip is not shown.
+ */
+@Composable
+private fun TextThenChip(text: @Composable () -> Unit, chip: @Composable () -> Unit) {
+    Layout(contents = listOf(text, chip)) { (textM, chipM), constraints ->
+        val gap = 6.dp.roundToPx()
+        val loose = constraints.copy(minWidth = 0)
+        val chipP = chipM.firstOrNull()?.measure(loose)
+        val t = textM.first()
+        val full = t.maxIntrinsicWidth(constraints.maxHeight)
+        val max = constraints.maxWidth
+        val room = if (chipP == null) max else (max - chipP.width - gap).coerceAtLeast(0)
+        val showChip = chipP != null && (max == Constraints.Infinity || room >= minOf(full, (max * TEXT_SHARE).toInt()))
+        val textP = t.measure(loose.copy(maxWidth = if (showChip) room else max))
+        val width = textP.width + if (showChip) gap + chipP!!.width else 0
+        val height = maxOf(textP.height, if (showChip) chipP!!.height else 0)
+        layout(width.coerceIn(constraints.minWidth, max), height.coerceAtLeast(constraints.minHeight)) {
+            textP.placeRelative(0, (height - textP.height) / 2)
+            if (showChip) chipP!!.placeRelative(textP.width + gap, (height - chipP.height) / 2)
         }
     }
 }
