@@ -17,7 +17,7 @@ You need Lyrion Music Server 9 or later and one of two ways of reaching it from 
 <p align="center">
   <img src="docs/images/android/now-playing.png" alt="Now playing in the Android app: the album cover, the title, the artist and album with a badge reading Hi-Res, FLAC 24/96, a waveform seek bar and the transport controls" width="250">
   &nbsp;
-  <img src="docs/images/android/signal-path.png" alt="The signal path in the Android app as three blocks: File, FLAC 24/96; Lyrion gateway, tinted amber, re-encoded to Opus 160 kb/s on mobile data, with Original, High and Data saver buttons beneath; This phone" width="250">
+  <img src="docs/images/android/signal-path.png" alt="The signal path in the Android app as three blocks: File, FLAC 24/96; Lyrion gateway, tinted amber, re-encoded to Opus 160 kb/s on mobile data, with Original, High and Data saver buttons beneath; This device, Opus 48 kHz on the phone speaker" width="250">
   &nbsp;
   <img src="docs/images/web/now-playing-phone.png" alt="Now playing in the web app on a phone: the cover, the title with a rating star, the quality badge, the waveform seek bar and large transport controls" width="250">
 </p>

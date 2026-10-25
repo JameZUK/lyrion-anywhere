@@ -39,13 +39,13 @@ Every screenshot in the documentation, with what it shows. The library, players,
 
 <p align="center">
   <img src="images/android/now-playing.png" alt="Now playing: the cover, the title with a rating star, the artist and album with the badge Hi-Res, FLAC 24/96, the current lyric line, the waveform seek bar, transport controls and an Up next line" width="200">
-  <img src="images/android/signal-path.png" alt="The signal path as three blocks: File, FLAC 24/96; Lyrion gateway, tinted amber, re-encoded to Opus 160 kb/s on mobile data, with Original, High and Data saver buttons; This phone" width="200">
-  <img src="images/android/signal-path-hires.png" alt="The signal path for a FLAC 24/96 passed through to a USB DAC: no block tinted, the phone block saying bit-perfect" width="200">
+  <img src="images/android/signal-path.png" alt="The signal path as three blocks: File, FLAC 24/96; Lyrion gateway, tinted amber, re-encoded to Opus 160 kb/s on mobile data, with Original, High and Data saver buttons; This device on the phone speaker" width="200">
+  <img src="images/android/signal-path-hires.png" alt="The signal path for a FLAC 24/96 passed through to a USB DAC: nothing tinted, Original selected and the device block saying bit-perfect" width="200">
   <img src="images/android/play-on.png" alt="The Play on sheet: this phone, ready with minutes buffered ahead, then every player at home and Group players" width="200">
 </p>
 <p align="center">
   <img src="images/android/home.png" alt="Home: recently played, stations and recently added shelves" width="200">
-  <img src="images/android/mini-player.png" alt="The library with the mini player along the bottom, its second line carrying the quality badge" width="200">
+  <img src="images/android/mini-player.png" alt="The library with the mini player along the bottom, its second line carrying the artist and the badge's verdict word" width="200">
   <img src="images/android/queue.png" alt="The queue: the player and track count, then rows with cover, title, length and a drag handle" width="200">
   <img src="images/android/downloads.png" alt="Downloads: storage used, downloads in progress with Pause all and Cancel all, and downloaded albums" width="200">
 </p>
