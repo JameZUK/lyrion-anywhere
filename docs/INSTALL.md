@@ -284,7 +284,7 @@ Then:
 
 What to expect:
 
-- **The Android app** accepts `http://` only to a literal private address, never to a name (a name could lead somewhere public and carry your password in clear). Before signing in it warns that the connection isn't encrypted and asks you to confirm, and while you are signed in *Settings* shows an **Unencrypted** badge beside the server.
+- **The Android app needs the IP address over `http://`, never a name.** `http://10.8.0.1:9443` works; `http://lms.local:9443` is refused with a message saying so, even though a browser on the same phone takes the name happily (a name could lead somewhere public and carry your password in clear; over `https://` either is fine). Set the Public URL to the address, as above, so the QR code and pairing links carry it too. Before signing in the app warns that the connection isn't encrypted and asks you to confirm, and while you are signed in *Settings* shows an **Unencrypted** badge beside the server.
 - **Browsers** show a banner saying the connection is unencrypted. Over plain HTTP they withhold features from any page that isn't on `localhost`: the web app can't be installed, can't keep music for offline use, and plays through the browser's media element (as on the iPad), not its background-capable player. Everything else works. For the full set, use one of the HTTPS ways above.
 - **What crosses the VPN in clear:** passwords when signing in, sign-in tokens and pairing codes, two-step codes, your library, playlists and artwork, and the music itself. LMS's own ports still never need to be reachable.
 - **Off the VPN**, nothing changes: a plain-HTTP request from any address outside the trusted networks (other than the LMS machine itself) is refused with `403 TLS required`, as before.
@@ -446,6 +446,7 @@ From a phone **off your Wi-Fi** (on mobile data):
 
 | Symptom | Likely cause and fix |
 |---|---|
+| **The Android app refuses the server address, but a browser on the same phone connects** | Over `http://` the app takes only the server's IP address, such as `http://10.8.0.1:9443`, never a name: a name could lead somewhere public and carry your password in clear, and a browser does not check. Enter the address instead, and set the plugin's Public URL to it so the QR code and pairing links carry it too. Over `https://` a name is fine. |
 | The settings page shows **gateway exited: …** | The message after the colon is the gateway's own reason: usually a port already in use, or a bad *Listen address*. Fix it, then click **Restart gateway** (and again to confirm). |
 | **403 TLS required** (in the browser or the app, over your VPN) | The gateway only serves plain HTTP to devices inside a *Trusted network*. Either the device's address isn't inside one (check the VPN's subnet against the setting, and that the device really is on the VPN), or the request carried proxy headers (`X-Forwarded-For`, `X-Forwarded-Proto`): a proxy in between must use HTTPS and be listed under *Trusted proxies*. |
 | **Trusted networks not saved: … is not a private network** (or *includes loopback*, *is not a network*) | Only private networks can be trusted: within `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `100.64.0.0/10`, `fc00::/7` or `fe80::/10`, written like `10.8.0.0/24`. Loopback is always allowed, so leave it out. Nothing is saved until every entry is valid. |

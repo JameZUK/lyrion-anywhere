@@ -1252,7 +1252,7 @@
     <string name="error_sign_out_first">Sign out before choosing another server.</string>
     <string name="error_choose_server_first">Choose your server first.</string>
     <string name="error_no_server">Scan the QR code, or enter your server’s address first.</string>
-    <string name="error_plain_http">Use https://, or http:// with a private address such as http://10.8.0.1:9443 for a server on your own VPN.</string>
+    <string name="error_plain_http">Over http:// this app needs the server’s IP address, not a name: for example http://10.8.0.1:9443. Ask for the Public URL under LMS › Settings › Lyrion Anywhere to be set to that address (the QR code then carries it too), or use https://. A name could lead somewhere public and carry your password in clear.</string>
     <string name="error_confirm_unencrypted">Confirm the unencrypted connection to continue.</string>
     <string name="error_menu_too_deep">This menu is too deep to pin.</string>
     <string name="error_queue_changed">The queue changed in the meantime. Try again.</string>

@@ -177,17 +177,22 @@ pub fn parse_server_url(input: &str) -> Result<Url, ApiError> {
     match url.scheme() {
         "https" => {}
         "http" if is_loopback(&host) || is_private_literal(&host) => {}
+        // A browser takes http:// to a name; this app does not, and says so plainly, with
+        // where the address is set (a forum report, 2026-10-25: "I can connect my phone via
+        // a browser but not using the Android app").
         "http" if matches!(host, Host::Domain(_)) => {
             return Err(ApiError::invalid(
-                "use https://, or http:// with a private address such as \
-                 http://10.8.0.1:9443 for a server on your own VPN (not a name: \
-                 it could lead anywhere)",
+                "over http:// this app needs the server's IP address, not a name: for \
+                 example http://10.8.0.1:9443. Set the Public URL under LMS › Settings › \
+                 Lyrion Anywhere to that address (the QR code then carries it too), or use \
+                 https://. A name could lead somewhere public and carry your password in clear",
             ));
         }
         "http" => {
             return Err(ApiError::invalid(
                 "use https:// — that address is not a private address, so an \
-                 unencrypted connection to it is not allowed",
+                 unencrypted connection to it is not allowed (over http:// only a private \
+                 address such as http://10.8.0.1:9443, on your own VPN, is)",
             ));
         }
         _ => return Err(ApiError::invalid("the address must start with https://")),
@@ -580,8 +585,13 @@ mod tests {
         ] {
             match parse_server_url(s) {
                 Err(ApiError::InvalidInput { detail }) => {
-                    assert!(detail.contains("private address"), "{s}: {detail}");
+                    // What to do instead, in the words a person needs: the IP address,
+                    // where it is set, and https:// as the other way.
+                    assert!(detail.contains("IP address, not a name"), "{s}: {detail}");
+                    assert!(detail.contains("http://10.8.0.1:9443"), "{s}: {detail}");
+                    assert!(detail.contains("Public URL"), "{s}: {detail}");
                     assert!(detail.contains("https://"), "{s}: {detail}");
+                    assert!(detail.contains("password"), "{s}: {detail}");
                 }
                 other => panic!("{s} was not refused: {other:?}"),
             }
