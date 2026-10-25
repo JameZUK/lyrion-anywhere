@@ -353,6 +353,8 @@ pub struct Gateway {
     lms_health: lms_health::LmsHealth,
     /// The built-in Cloudflare Tunnel.
     tunnel: Arc<cftunnel::Tunnel>,
+    /// Devices refused as too old lately (audited once an hour each).
+    too_old: tunnel::TooOldSeen,
 }
 
 /// Renames a device may make of itself per [`RENAME_WINDOW`] (`PATCH /v1/devices/self`).
@@ -438,6 +440,7 @@ impl Gateway {
             live_slots: Arc::new(tokio::sync::Semaphore::new(cfg.live_transcode_jobs)),
             lms_health: lms_health::LmsHealth::new(cfg.lms_stall_after),
             tunnel: cftunnel::Tunnel::new(cfg.tunnel.clone(), cfg.tunnel_overrides.clone()),
+            too_old: Default::default(),
             cfg,
         });
         // The watchdog needs a runtime; a gateway built outside one (some unit tests) has none.

@@ -14,15 +14,16 @@ fn refused() -> Vec<(Option<&'static str>, &'static str)> {
     vec![
         (None, "none"),
         (Some("1"), "1"),
-        (Some(r#""2""#), r#""2""#),
-        (Some("2.0"), "2.0"),
+        (Some(r#""2""#), "string"),
+        (Some("\"\\u202e2\""), "string"),
+        (Some("2.0"), "float"),
         (Some("-1"), "-1"),
         (Some("0"), "0"),
-        (Some("99999999999999999999"), "1e+20"),
-        (Some("true"), "true"),
+        (Some("99999999999999999999"), "float"),
+        (Some("true"), "bool"),
         (Some("null"), "null"),
-        (Some("[2]"), "[2]"),
-        (Some("{}"), "{}"),
+        (Some("[2]"), "array"),
+        (Some("{}"), "object"),
     ]
 }
 
@@ -81,21 +82,19 @@ async fn me_says_the_protocol() {
 
 /// Without `protocol`, below 2, or anything but a whole JSON number: closed with 4426
 /// `update the app`, after the token was checked and before any session is opened (LMS
-/// never hears of it), with an audit event saying what was given.
+/// never hears of it), with an audit event saying what was given: a whole number, or only
+/// its type. (A gateway each: a device is audited once an hour.)
 #[tokio::test]
 async fn an_old_or_malformed_protocol_is_told_to_update() {
-    let mut h = harness().await;
-    let mut cases: Vec<(String, &str)> = refused()
+    let mut cases: Vec<(Option<&str>, &str, &str)> = refused()
         .into_iter()
-        .map(|(p, given)| (form(&h.tok_a, p, ""), given))
+        .map(|(p, given)| (p, "", given))
         .collect();
-    // The bare token (protocol 1's form) and a form with other fields but no protocol.
-    cases.push((h.tok_a.clone(), "none"));
-    cases.push((
-        form(&h.tok_a, None, r#""quality":"high","keepalive":true"#),
-        "none",
-    ));
-    for (i, (text, given)) in cases.iter().enumerate() {
+    // A form with other fields but no protocol.
+    cases.push((None, r#""quality":"high","keepalive":true"#, "none"));
+    for (p, rest, given) in cases {
+        let mut h = harness().await;
+        let text = form(&h.tok_a, p, rest);
         let mut ws = h.dial().await;
         ws.send(Message::Text(text.clone().into())).await.unwrap();
         assert_eq!(
@@ -105,12 +104,22 @@ async fn an_old_or_malformed_protocol_is_told_to_update() {
         );
         h.lms.assert_no_conn().await;
         let events = too_old_events(&h);
-        assert_eq!(events.len(), i + 1, "{text}");
-        let e = &events[0]; // newest first
+        assert_eq!(events.len(), 1, "{text}");
+        let e = &events[0];
         assert_eq!(e.username.as_deref(), Some("alice"));
         assert_eq!(e.device_id, Some(h.dev_a));
-        assert_eq!(e.detail, *given, "{text}");
+        assert_eq!(e.detail, given, "{text}");
+        assert!(e.detail.is_ascii());
     }
+    // The bare token (protocol 1's form).
+    let mut h = harness().await;
+    let mut ws = h.dial().await;
+    ws.send(Message::Text(h.tok_a.clone().into()))
+        .await
+        .unwrap();
+    assert_eq!(close_of(&mut ws).await.0, 4426);
+    h.lms.assert_no_conn().await;
+    assert_eq!(too_old_events(&h)[0].detail, "none");
 }
 
 /// The token is checked first: a bad token with an old protocol is unauthorised, as ever,
@@ -173,9 +182,12 @@ async fn a_resume_form_must_give_the_protocol_too() {
             .await
             .unwrap();
         assert_eq!(close_of(&mut ws).await, (4426, "update the app".into()));
+        // Audited the first time (once an hour per device).
         let events = too_old_events(&h);
-        assert_eq!(events.len(), i + 1);
-        assert_eq!(events[0].detail, given);
+        assert_eq!(events.len(), 1);
+        if i == 0 {
+            assert_eq!(events[0].detail, given);
+        }
     }
     h.lms.assert_no_conn().await;
     for p in ["2", "3"] {
@@ -297,13 +309,16 @@ async fn devices_show_the_protocol_they_last_attached_with() {
         vec![("alice".into(), Value::Null), ("bob".into(), Value::Null)]
     );
     assert_eq!(own_protocol(&h, &h.tok_a).await, Value::Null);
-    // A refused attach records what it spoke, when that is a protocol at all: the old
-    // forms without a number are protocol 1, so an admin sees who is behind.
+    // A refused attach records what it spoke: the old forms without a number are
+    // protocol 1, and anything that is not a protocol at all is 0, so an admin sees who
+    // is behind whatever it sent.
     for (given, want) in [
         (Some("0"), json!(0)),
         (None, json!(1)),
-        (Some(r#""2""#), json!(1)), // junk: not a protocol, left as it was
-        (Some("2.0"), json!(1)),
+        (Some(r#""2""#), json!(0)),
+        (None, json!(1)),
+        (Some("2.0"), json!(0)),
+        (Some("-1"), json!(0)),
     ] {
         let mut ws = h.dial().await;
         ws.send(Message::Text(form(&h.tok_a, given, "").into()))
