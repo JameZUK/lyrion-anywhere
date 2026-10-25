@@ -40,6 +40,10 @@ enum PrefState {
 
 /// Refused direct streams replayed through LMS, at most, in a row.
 const MAX_REPLAYS: u8 = 3;
+/// After a failure, the proxied-streaming pref is tried again no sooner than this (it is
+/// still needed for a station to play, so it is retried, but not on every LMS frame while
+/// LMS's JSON-RPC is unwell).
+const PROXIED_RETRY_AFTER: Duration = Duration::from_secs(30);
 use crate::relay::Relay;
 use crate::{AppState, Gateway};
 
@@ -168,6 +172,8 @@ struct State {
     /// Whether LMS has been told to proxy internet streams for this player (its
     /// `mp3StreamingMethod` player pref), see [`Session::ensure_proxied_streaming`].
     proxied_pref: PrefState,
+    /// When a failed proxied-streaming pref may be tried again.
+    proxied_retry_at: Option<Instant>,
     /// Whether the device's player has been given its initial LMS volume this session (see
     /// [`Session::ensure_initial_level`]).
     initial_level: PrefState,
@@ -262,6 +268,7 @@ impl Session {
                 sent_upto: 0,
                 seen_helo: false,
                 proxied_pref: PrefState::NotYet,
+                proxied_retry_at: None,
                 initial_level: PrefState::NotYet,
                 refused_direct: false,
                 replays: 0,
@@ -997,8 +1004,14 @@ impl Session {
     fn ensure_proxied_streaming(self: &Arc<Self>, gw: &crate::AppState) {
         {
             let mut st = self.state.lock().unwrap();
-            if !st.seen_helo || st.proxied_pref != PrefState::NotYet {
+            if !st.seen_helo {
                 return;
+            }
+            match st.proxied_pref {
+                PrefState::NotYet => {}
+                // A failure is tried again, after a pause: not on every frame.
+                PrefState::Failed if st.proxied_retry_at.is_none_or(|at| Instant::now() >= at) => {}
+                _ => return,
             }
             st.proxied_pref = PrefState::Pending;
         }
@@ -1008,8 +1021,9 @@ impl Session {
         });
     }
 
-    /// The `playerpref` command itself; the outcome is remembered so a failure is retried
-    /// at the next chance and a success is not repeated.
+    /// The `playerpref` command itself; the outcome is remembered so a success is not
+    /// repeated and a failure is retried, after [`PROXIED_RETRY_AFTER`] (the replay of a
+    /// refused direct stream sets it again regardless, see [`Self::replay_refused`]).
     async fn set_proxied_pref(&self, gw: &Gateway) -> bool {
         let mac = self.device.mac_string();
         let cmd: Vec<String> = ["playerpref", "mp3StreamingMethod", "1"]
@@ -1026,11 +1040,14 @@ impl Session {
                 false
             }
         };
-        self.state.lock().unwrap().proxied_pref = if ok {
+        let mut st = self.state.lock().unwrap();
+        st.proxied_pref = if ok {
             PrefState::Done
         } else {
-            PrefState::NotYet
+            st.proxied_retry_at = Some(Instant::now() + PROXIED_RETRY_AFTER);
+            PrefState::Failed
         };
+        drop(st);
         ok
     }
 

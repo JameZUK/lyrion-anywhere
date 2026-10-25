@@ -2031,6 +2031,26 @@ async fn a_failed_initial_volume_is_tried_again_next_session() {
     assert_eq!(calls_for(&h, &me, &initial_level()), 2);
 }
 
+/// The proxied-streaming pref is retried after a failure (a station needs it), but not on
+/// every LMS frame while LMS's JSON-RPC is unwell: within its pause, more frames add no call.
+#[tokio::test]
+async fn a_failed_proxied_pref_is_not_retried_on_every_frame() {
+    let mut h = harness().await;
+    let me = format_mac(&h.mac_a);
+    let proxied = serde_json::json!(["playerpref", "mp3StreamingMethod", "1"]);
+    h.lms.fail_rpc.lock().unwrap().insert("playerpref".into());
+    let (mut ws, mut lms) = attach_and_let_lms_speak(&mut h).await;
+    assert_eq!(wait_calls(&h, &me, &proxied, 1).await, 1);
+    for _ in 0..5 {
+        lms.write_all(&encode_server_frame(*b"vers", b"9.1.1"))
+            .await
+            .unwrap();
+        let _ = next(&mut ws).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(calls_for(&h, &me, &proxied), 1, "one try, then a pause");
+}
+
 /// LMS answering 200 without carrying the command out (an empty body, an `error`, no
 /// `result`): a failure, not done; the next session tries again, and only a real success
 /// (a `result` object) marks the device done.
