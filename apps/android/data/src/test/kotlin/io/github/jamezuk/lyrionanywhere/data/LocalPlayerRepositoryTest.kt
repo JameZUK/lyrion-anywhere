@@ -510,6 +510,84 @@ class LocalPlayerRepositoryTest {
         assertFalse(PlayerConnection.Connected.ended)
     }
 
+    /**
+     * The engine itself found the server's protocol below 2 (or not given) and stopped for good
+     * (UpdatePlugin): the phone is blocked as for an old plugin, the player has ended, and it is
+     * never started again (not by a network flap, a level change or the setting switched again).
+     */
+    @Test
+    fun theEngineFindingAnOldPluginBlocksThePhoneForGood() = runTest {
+        val r = repo()
+        sessions.value = Session(NoHandle)
+        r.setEnabled(true)
+        handles.single().observer!!.onStatus(status(connection = PlayerConnection.UpdatePlugin))
+        val s = r.state.value
+        assertEquals(PhoneBlock.UPDATE_PLUGIN, s.phoneBlocked)
+        assertTrue(s.pluginTooOld)
+        assertFalse(s.appTooOld)
+        assertFalse(s.running)
+        assertNull("nothing offered while blocked", s.offlineControls)
+        assertTrue(PlayerConnection.UpdatePlugin.ended)
+        // Never retried: no new engine on a network flap or a level change.
+        network.value = NetworkKind.OFFLINE
+        network.value = NetworkKind.WIFI
+        r.setQualityOverride(StreamQuality.LOW)
+        assertEquals(1, handles.size)
+        assertFalse(handles.single().stopped)
+        assertEquals(PhoneBlock.UPDATE_PLUGIN, r.state.value.phoneBlocked)
+        // Off: no block shown.
+        settings.setPlayOnPhone(false)
+        assertNull(r.state.value.phoneBlocked)
+    }
+
+    /**
+     * The engine's setStreamQuality blocks until the gateway echoes the level (at most 2 s):
+     * the override is passed to it off the caller's thread, and returns only once it has
+     * returned, so the seek that follows (in the view model) asks for the new level's stream.
+     */
+    @Test
+    fun theOverrideReturnsOnlyOnceTheEngineHasApplied() {
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(2) { Thread(it, "test-io") }
+        val io = pool.asCoroutineDispatcher()
+        val job = kotlinx.coroutines.SupervisorJob()
+        val scope = CoroutineScope(job + kotlinx.coroutines.Dispatchers.Unconfined)
+        val made = java.util.Collections.synchronizedList(mutableListOf<FakeHandle>())
+        try {
+            kotlinx.coroutines.runBlocking {
+                val r = RustLocalPlayerRepository(
+                    sessions, settings, scope, io, factory = { FakeHandle().also { made += it } },
+                    nowMs = { clockMs }, network = network, serverProtocol = { 2u },
+                )
+                sessions.value = Session(NoHandle)
+                r.setEnabled(true)
+                kotlinx.coroutines.withTimeout(5_000) { while (made.firstOrNull()?.observer == null) kotlinx.coroutines.delay(5) }
+                val h = made.single()
+                val entered = java.util.concurrent.CountDownLatch(1)
+                val release = java.util.concurrent.CountDownLatch(1)
+                var thread: String? = null
+                h.onQuality = { q ->
+                    if (q == StreamQuality.LOW) {
+                        thread = Thread.currentThread().name
+                        entered.countDown()
+                        release.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                    }
+                }
+                val sheet = launch(kotlinx.coroutines.Dispatchers.Default) { r.setQualityOverride(StreamQuality.LOW) }
+                assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                assertEquals("off the caller's thread, on io", "test-io", thread?.substringBefore(" @"))
+                // The engine is waiting for the echo: the override has not returned.
+                kotlinx.coroutines.delay(200)
+                assertFalse("returned before the engine had the level", sheet.isCompleted)
+                release.countDown()
+                kotlinx.coroutines.withTimeout(5_000) { sheet.join() }
+                assertEquals(StreamQuality.LOW, h.qualities.last())
+            }
+        } finally {
+            job.cancel()
+            pool.shutdownNow()
+        }
+    }
+
     /** The replay cache's size reaches a new engine before it starts, and a running one at once. */
     @Test
     fun theQueueSnapshotAndTheOfflineControlsReachTheEngine() = runTest {

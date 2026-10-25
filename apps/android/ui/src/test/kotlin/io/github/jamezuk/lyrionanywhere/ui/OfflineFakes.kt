@@ -22,9 +22,16 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 
-fun dlTrack(n: Int, albumId: Long? = 7, trackNumber: Int? = n) = OfflineTrack(
+fun dlTrack(
+    n: Int,
+    albumId: Long? = 7,
+    trackNumber: Int? = n,
+    format: DownloadFormat = DownloadFormat.ORIGINAL,
+    codec: String = "flc",
+    original: io.github.jamezuk.lyrionanywhere.core.QualityFile? = null,
+) = OfflineTrack(
     "%064x".format(n), 100L + n, "Song $n", "Band", "Record", albumId, trackNumber?.toUInt(), 125.0,
-    DownloadFormat.ORIGINAL, "flc", "flac", 2_000_000uL, 1_800_000_000uL, DownloadOrigin.MANUAL,
+    format, codec, original, if (format == DownloadFormat.ORIGINAL) "flac" else codec, 2_000_000uL, 1_800_000_000uL, DownloadOrigin.MANUAL,
 )
 
 fun dlAlbum(ref: String = "a7", title: String = "Record", tracks: Int = 2) =

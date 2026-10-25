@@ -125,12 +125,18 @@ data class LocalPlayerState(
     /** The server needs a newer app (it closed the player socket with 4426). */
     val appTooOld: Boolean get() = status?.connection is PlayerConnection.UpdateApp
 
+    /**
+     * The server's plugin is too old for this phone, as the app checked it ([serverTooOld]) or
+     * as the engine found it itself (it stopped for good in [PlayerConnection.UpdatePlugin]).
+     */
+    val pluginTooOld: Boolean get() = serverTooOld || status?.connection is PlayerConnection.UpdatePlugin
+
     /** Why this phone can't be a player on this server (null: it can). */
     val phoneBlocked: PhoneBlock?
         get() = when {
             !enabled -> null
             appTooOld -> PhoneBlock.UPDATE_APP
-            serverTooOld -> PhoneBlock.UPDATE_PLUGIN
+            pluginTooOld -> PhoneBlock.UPDATE_PLUGIN
             else -> null
         }
 
@@ -150,8 +156,12 @@ enum class PhoneBlock {
     UPDATE_PLUGIN,
 }
 
-/** The player has ended for good: stopped, refused, or the server needs a newer app. */
-val PlayerConnection.ended: Boolean get() = this is PlayerConnection.Stopped || this is PlayerConnection.UpdateApp
+/**
+ * The player has ended for good: stopped, refused, the server needs a newer app, or the
+ * server's plugin is too old for this app.
+ */
+val PlayerConnection.ended: Boolean
+    get() = this is PlayerConnection.Stopped || this is PlayerConnection.UpdateApp || this is PlayerConnection.UpdatePlugin
 
 /** A control used on this phone while the server can't be reached (see [OfflineControls]). */
 sealed interface LocalControl {

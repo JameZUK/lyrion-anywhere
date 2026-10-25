@@ -258,17 +258,20 @@ class OfflinePlayerViewModel(
     val state: StateFlow<OfflinePlayerUi> = _state.asStateFlow()
 
     /** What the diagram was last built from, and the diagram. */
-    private var diagramOf: Triple<io.github.jamezuk.lyrionanywhere.core.SignalPathInfo?, io.github.jamezuk.lyrionanywhere.core.DownloadFormat, String>? = null
+    private var diagramOf: Pair<io.github.jamezuk.lyrionanywhere.core.SignalPathInfo?, io.github.jamezuk.lyrionanywhere.core.OfflineTrack>? = null
     private var diagram: io.github.jamezuk.lyrionanywhere.core.QualityDiagram? = null
 
-    /** The download's diagram: its format (the original, or what it was saved as) and the engine's path. */
+    /**
+     * The download's diagram: the track (its format, and the original it was made from) and
+     * the engine's path.
+     */
     private fun diagramFor(s: OfflinePlayerState): io.github.jamezuk.lyrionanywhere.core.QualityDiagram? {
         val describer = quality ?: return null
         val t = s.current ?: return null
-        val key = Triple(s.signalPath, t.format, t.codec)
+        val key = s.signalPath to t
         if (key != diagramOf) {
             diagramOf = key
-            diagram = runCatching { describer.offline(s.signalPath, t.format, t.codec) }.getOrNull()
+            diagram = runCatching { describer.offline(s.signalPath, t) }.getOrNull()
         }
         return diagram
     }

@@ -1,6 +1,6 @@
 package io.github.jamezuk.lyrionanywhere.data
 
-import io.github.jamezuk.lyrionanywhere.core.DownloadFormat
+import io.github.jamezuk.lyrionanywhere.core.OfflineTrack
 import io.github.jamezuk.lyrionanywhere.core.QualityDiagram
 import io.github.jamezuk.lyrionanywhere.core.QualityFile
 import io.github.jamezuk.lyrionanywhere.core.QualityInputs
@@ -24,8 +24,12 @@ interface QualityDescriber {
     /** Another player: the file only (the gateway never transcodes for it). */
     fun remote(name: String, file: QualityFile?): QualityDiagram
 
-    /** A download played on this phone: Download → This device. */
-    fun offline(path: SignalPathInfo?, format: DownloadFormat, codec: String): QualityDiagram
+    /**
+     * A download played on this phone: Download → This device, from the download (its format,
+     * and the original it was made from, so an Opus or MP3 copy of a lossless track is
+     * Transcoded; a download recorded before the original was kept reads as before).
+     */
+    fun offline(path: SignalPathInfo?, track: OfflineTrack): QualityDiagram
 }
 
 /** The Rust core's rules (shared with the web app and held to the same vectors). */
@@ -36,8 +40,8 @@ object RustQualityDescriber : QualityDescriber {
     override fun remote(name: String, file: QualityFile?): QualityDiagram =
         describeQuality(QualityInputs(QualityPlayer.Remote(name), file, null, null, null, null, null, false))
 
-    override fun offline(path: SignalPathInfo?, format: DownloadFormat, codec: String): QualityDiagram =
-        offlineQualityDiagram(path, format, codec)
+    override fun offline(path: SignalPathInfo?, track: OfflineTrack): QualityDiagram =
+        offlineQualityDiagram(path, track)
 }
 
 /** The lowest player protocol this app can play from (docs/PROTOCOL.md, *Versions*). */
