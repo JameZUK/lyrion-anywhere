@@ -8,7 +8,13 @@ artwork, and serves each track as generated audio (a WAV of shaped noise) so the
 track analysis has something to analyse. It is not a test double for the gateway's security tests (those live in
 gateway/tests).
 
-    python3 tools/demo/fake_lms.py --port 19000
+It also speaks just enough Slimproto for the browser's own player to play through the
+gateway (with --slimproto-port): a player that says HELO is listed, given the "Night Ferry"
+queue (24-bit/96 kHz) and sent a `strm` for its current track, served as FLAC made with
+ffmpeg, so the gateway's live re-encoding to Opus can be shown. Seeks and track changes start
+the stream again.
+
+    python3 tools/demo/fake_lms.py --port 19000 --slimproto-port 13483
 
 Needs Pillow (python3 -m pip install pillow) for the generated artwork.
 """
@@ -19,6 +25,10 @@ import html
 import io
 import json
 import math
+import shutil
+import socket
+import subprocess
+import threading
 import random
 import re
 import struct
@@ -203,7 +213,9 @@ def status(player, args=()):
     start = st["index"] if args[:1] == ["-"] else int(args[0]) if args[:1] and args[0].isdigit() else 0
     count = int(args[1]) if len(args) > 1 and args[1].isdigit() else len(queue)
     rows = [{**t, "playlist index": i} for i, t in enumerate(queue)][start:start + count]
-    out = {**base, "mode": st["mode"], "time": st["time"], "duration": cur["duration"],
+    # A browser player's position moves on while it plays (the others' stay put, for the shots).
+    elapsed = st["time"] + (time.time() - st["since"] if "since" in st and st["mode"] == "play" else 0)
+    out = {**base, "mode": st["mode"], "time": round(min(elapsed, cur["duration"]), 1), "duration": cur["duration"],
            "playlist_cur_index": str(st["index"]), "playlist_tracks": len(queue), "playlist_loop": rows}
     left = st["sleep_at"] - time.time()
     if left > 0:
@@ -452,6 +464,7 @@ def answer(player, cmd):
         return {"syncgroups_loop": [{"sync_members": ",".join(m), "sync_member_names": ",".join(names[x] for x in m)}
                                     for m in groups.values()]}
     if queue_command(player, c, p):
+        slim_follow(player, op, rest)
         return {}
     if op == "favorites":
         items = [
@@ -854,6 +867,142 @@ def cover(key, size):
     return out.getvalue()
 
 
+# --- Slimproto, for the browser's own player (through the gateway) -----------------------
+
+HTTP_PORT = 19000
+SLIM = {}  # player id -> its connection, for the browser players that said HELO
+SLIM_LOCK = threading.Lock()
+_FLAC = {}
+_FLAC_LOCK = threading.Lock()
+
+
+def slim_frame(op, payload):
+    """A server-to-player frame: a 2-byte length (of opcode and payload), the opcode, the payload."""
+    return struct.pack(">H", 4 + len(payload)) + op + payload
+
+
+def slim_send(player, op, payload):
+    with SLIM_LOCK:
+        sock = SLIM.get(player)
+    if sock:
+        try:
+            sock.sendall(slim_frame(op, payload))
+        except OSError:
+            pass
+
+
+def strm(command, player=""):
+    """A `strm`: `s` starts this player's stream of its current track (FLAC, whose PCM
+    parameters the player reads from the stream); `q`, `p` and `u` stop, pause and unpause."""
+    head = bytearray(24)
+    head[0] = ord(command)
+    head[1] = ord("1" if command == "s" else "0")  # autostart
+    head[2] = ord("f")
+    head[3:7] = b"????"
+    head[7] = 255  # buffer threshold (KB)
+    head[8] = ord("0")  # S/PDIF: auto
+    head[10] = ord("0")  # no transition
+    head[12] = 1  # output threshold
+    head[18:20] = struct.pack(">H", HTTP_PORT)  # the IP stays 0: this server
+    request = f"GET /stream.mp3?player={player} HTTP/1.0\r\n\r\n".encode() if command == "s" else b""
+    return bytes(head) + request
+
+
+def start_stream(player):
+    """Start the player's stream of its current track from its position, as LMS does after a
+    seek or a track change."""
+    st = state_of(player)
+    if not st["queue"] or st["mode"] != "play":
+        return
+    st["since"] = time.time()
+    slim_send(player, b"strm", strm("q"))
+    slim_send(player, b"strm", strm("s", player))
+
+
+def slim_follow(player, op, rest):
+    """A queue or transport command for a browser player: its stream starts, pauses or stops."""
+    if player not in SLIM:
+        return
+    st = state_of(player)
+    if op == "pause":
+        if st["mode"] == "pause":
+            st["time"] += time.time() - st.pop("since", time.time())
+            return slim_send(player, b"strm", strm("p"))
+        st["since"] = time.time()
+        return slim_send(player, b"strm", strm("u"))
+    if op == "stop" or (op == "playlist" and rest[:1] == ["clear"]):
+        st.pop("since", None)
+        return slim_send(player, b"strm", strm("q"))
+    if op in ("time", "play", "playlistcontrol") or (op == "playlist" and rest[:1] == ["index"]):
+        start_stream(player)
+
+
+def flac(tid, seconds):
+    """A track from `seconds` in, as 24-bit/96 kHz stereo FLAC made from its generated audio
+    with ffmpeg, or None without ffmpeg."""
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return None
+    key = (tid, int(seconds))
+    with _FLAC_LOCK:
+        if key not in _FLAC:
+            out = subprocess.run(
+                [ffmpeg, "-v", "error", "-ss", str(int(seconds)), "-f", "wav", "-i", "pipe:0", "-ac", "2", "-ar", "96000",
+                 "-c:a", "flac", "-sample_fmt", "s32", "-bits_per_raw_sample", "24", "-f", "flac", "pipe:1"],
+                input=audio(tid), capture_output=True, check=True)
+            _FLAC.clear()  # one at a time: they are large
+            _FLAC[key] = out.stdout
+        return _FLAC[key]
+
+
+def slim_client(conn):
+    """One player's connection: HELO lists the player (named by its SETD reply) and starts its
+    stream, and its closing takes the player off the list; everything else it says is read and
+    ignored."""
+    player, buf = None, b""
+    try:
+        while data := conn.recv(65536):
+            buf += data
+            while len(buf) >= 8:
+                op, n = buf[:4], struct.unpack(">I", buf[4:8])[0]
+                if n > 1 << 20:
+                    return
+                if len(buf) < 8 + n:
+                    break
+                body, buf = buf[8:8 + n], buf[8 + n:]
+                if op == b"HELO" and len(body) >= 8 and player is None:
+                    player = ":".join(f"{b:02x}" for b in body[2:8])
+                    with SLIM_LOCK:
+                        SLIM[player] = conn
+                    if not any(x["playerid"] == player for x in PLAYERS):
+                        PLAYERS.append({"playerid": player, "name": "This browser", "model": "squeezelite",
+                                        "modelname": "Lyrion Anywhere", "connected": 1, "power": 1, "isplaying": 1})
+                    STATES.setdefault(player, {"queue": album_tracks(1, **HIRES), "index": 0, "time": 0.0, "mode": "play",
+                                               "volume": 100, "shuffle": 0, "repeat": 0, "sleep_at": 0, "power": 1})
+                    conn.sendall(slim_frame(b"setd", b"\x00"))  # what is the player called?
+                    start_stream(player)
+                elif op == b"SETD" and player and body[:1] == b"\x00" and len(body) > 1:
+                    name = body[1:].split(b"\x00")[0].decode("utf-8", "replace")[:64]
+                    for x in PLAYERS:
+                        if x["playerid"] == player and name:
+                            x["name"] = name
+    except OSError:
+        pass
+    finally:
+        with SLIM_LOCK:
+            if player and SLIM.get(player) is conn:
+                del SLIM[player]
+                PLAYERS[:] = [x for x in PLAYERS if x["playerid"] != player]  # gone from the list, as LMS does
+        conn.close()
+
+
+def slim_serve(port):
+    srv = socket.create_server(("127.0.0.1", port))
+    while True:
+        conn, _ = srv.accept()
+        threading.Thread(target=slim_client, args=(conn,), daemon=True).start()
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -884,6 +1033,12 @@ class Handler(BaseHTTPRequestHandler):
                 st = state_of(unquote(q.group(1)).lower()) if q else None
                 key = st["queue"][st["index"]]["coverid"] if st and st["queue"] else key
             return self._send(cover(key, min(int(m.group(2) or 300), 800)), "image/jpeg")
+        m = re.match(r"^/stream\.mp3\?player=([0-9a-f:]{17})$", self.path)
+        st = state_of(m.group(1)) if m and m.group(1) in SLIM else None
+        if st and st["queue"]:
+            body = flac(st["queue"][st["index"]]["id"], st["time"])
+            if body:
+                return self._send(body, "audio/flac")
         m = re.match(r"^/music/(\d+)/download$", self.path)
         if m and any(t["id"] == int(m.group(1)) for t in TRACKS):
             return self._send(audio(int(m.group(1))), "audio/wav")
@@ -907,10 +1062,15 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--port", type=int, default=19000)
+    ap.add_argument("--slimproto-port", type=int, default=0,
+                    help="also speak Slimproto here, for the browser's own player (0: not at all)")
     ap.add_argument("--history-json", action="store_true",
                     help="print invented listening history (for `anywhere-gateway admin demo-seed-history`) and exit")
     a = ap.parse_args()
     if a.history_json:
         print(json.dumps(history_plays(int(time.time()))))
     else:
+        HTTP_PORT = a.port
+        if a.slimproto_port:
+            threading.Thread(target=slim_serve, args=(a.slimproto_port,), daemon=True).start()
         ThreadingHTTPServer(("127.0.0.1", a.port), Handler).serve_forever()

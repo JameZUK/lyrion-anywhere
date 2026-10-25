@@ -8,6 +8,9 @@
 // Needs playwright-core and a Chromium it can drive (npx playwright install chromium).
 // Set PLAYWRIGHT_CORE to its path if it isn't resolvable from here. Every shot waits for its
 // screen's real content (no spinners, "Loading…" or unloaded artwork) before it is taken.
+// Most scenes control the demo's Lounge; the signal-path scenes play in the browser itself
+// (through the gateway, which re-encodes to Opus when High is chosen), so they need ffmpeg
+// with libopus where the demo runs.
 import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
 
@@ -26,25 +29,30 @@ const PHONE = { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isM
 const DESKTOP = { viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 };
 // Artist ids in the demo library (alphabetical).
 const PAPER_LANTERNS = 11;
+// The quality badge on the demo's "Night Ferry" (a 24-bit/96 kHz FLAC release).
+const HIRES_BADGE = 'Hi-Res · FLAC 24/96';
 
-const browser = await pw.chromium.launch({ headless: true });
+// This browser's own player starts without a tap (the signal-path scenes).
+const browser = await pw.chromium.launch({ headless: true, args: ['--autoplay-policy=no-user-gesture-required'] });
 const failures = [];
 
-async function session({ device, scheme, theme = 'material', accent = '#c2410c', signIn = true }) {
+/** A signed-in page. `player`: the player it controls, or 'device' for this browser's own. */
+async function session({ device, scheme, theme = 'material', accent = '#c2410c', signIn = true, player = PLAYER }) {
   const ctx = await browser.newContext({ ...device, colorScheme: scheme, locale: 'en-GB', timezoneId: 'Europe/London', serviceWorkers: 'block' });
   await ctx.addInitScript(installPending);
   const page = await ctx.newPage();
   await page.goto(`${BASE}/`);
   await page.evaluate(
     ([p, prefs]) => {
-      localStorage.setItem('anywhere.player', p);
-      // The demo has no audio server for this browser to play through: control the Lounge
-      // (Settings › This device), so the shots show it playing.
-      localStorage.setItem('anywhere.defaultPlayer.demo', JSON.stringify({ kind: 'player', id: p }));
+      if (p !== 'device') {
+        // Control the Lounge (Settings › This device), so the shots show the demo's rooms.
+        localStorage.setItem('anywhere.player', p);
+        localStorage.setItem('anywhere.defaultPlayer.demo', JSON.stringify({ kind: 'player', id: p }));
+      }
       localStorage.setItem('anywhere.appearance', JSON.stringify(prefs));
       localStorage.setItem('anywhere.playback.mode', 'worklet'); // no self-test noise
     },
-    [PLAYER, { theme, mode: 'auto', accent }],
+    [player, { theme, mode: 'auto', accent }],
   );
   await page.reload();
   if (signIn) {
@@ -148,6 +156,30 @@ async function pickYear(page) {
   await settle(page, '[data-open-story]', 800);
 }
 
+/** Wait until `selector`'s text contains `text` (the quality badge, the signal path's verdict). */
+async function waitForText(page, selector, text, timeout = 30000) {
+  await page.waitForFunction(([sel, t]) => [...document.querySelectorAll(sel)].some((e) => e.textContent.includes(t)), [selector, text], {
+    timeout,
+    polling: 250,
+  });
+}
+
+/**
+ * The signal path of this browser's own stream re-encoded by the gateway: the browser plays the
+ * demo's "Night Ferry" (FLAC 24/96), the badge opens the sheet, High is chosen on the gateway
+ * block, and the stream starts again as Opus 160 (the verdict says Transcoded, in amber).
+ */
+async function transcodedPath(page) {
+  await waitForText(page, '[data-quality-badge]', HIRES_BADGE);
+  await settle(page, null, 1500);
+  await page.locator('[data-quality-badge]').first().click();
+  await settle(page, '[data-quality-switch]');
+  await page.click('[data-quality-switch] [data-level="high"]');
+  await waitForText(page, '[data-signal-path] .verdict', 'Transcoded · Opus 160');
+  await waitForText(page, '[data-signal-path] [data-origin]', 'High');
+  await settle(page, null, 1000);
+}
+
 // --- Phone, signed out -----------------------------------------------------------------
 
 await group(['sign-in-phone'], async () => {
@@ -165,6 +197,7 @@ await group(['now-playing-desktop', 'library-desktop', 'album-desktop', 'artist-
   const { ctx, page } = await session({ device: DESKTOP, scheme: 'light' });
   await go(page, '#/', '[data-page-tab], .np, main.content');
   await page.waitForSelector('canvas, [data-waveform], .wave', { timeout: 10000 }).catch(() => {});
+  await waitForText(page, '[data-quality-badge]', HIRES_BADGE);
   await settle(page, null, 1500);
   await shot(page, 'now-playing-desktop');
 
@@ -193,6 +226,7 @@ await group(['now-playing-desktop', 'library-desktop', 'album-desktop', 'artist-
 await group(['now-playing-desktop-dark'], async () => {
   const { ctx, page } = await session({ device: DESKTOP, scheme: 'dark', accent: '#1f5fbf' });
   await go(page, '#/', 'main.content');
+  await waitForText(page, '[data-quality-badge]', HIRES_BADGE);
   await settle(page, null, 1500);
   await shot(page, 'now-playing-desktop-dark');
   await ctx.close();
@@ -216,6 +250,7 @@ await group(['admin-desktop'], async () => {
 await group(['now-playing-phone-light'], async () => {
   const { ctx, page } = await session({ device: PHONE, scheme: 'light' });
   await go(page, '#/', '[data-np-phone]');
+  await waitForText(page, '[data-quality-badge]', HIRES_BADGE);
   await settle(page, null, 1500);
   await shot(page, 'now-playing-phone-light');
   await ctx.close();
@@ -226,6 +261,7 @@ await group(['now-playing-phone-light'], async () => {
 await group(['now-playing-phone', 'play-on-phone', 'lyrics-phone', 'home-phone', 'library-phone', 'search-phone', 'queue-phone', 'year-story-phone', 'settings-phone'], async () => {
   const { ctx, page } = await session({ device: PHONE, scheme: 'dark', accent: '#6750a4' });
   await go(page, '#/', '[data-np-phone]');
+  await waitForText(page, '[data-quality-badge]', HIRES_BADGE);
   await settle(page, null, 1500);
   await shot(page, 'now-playing-phone');
 
@@ -281,6 +317,26 @@ await group(['now-playing-phone', 'play-on-phone', 'lyrics-phone', 'home-phone',
   await go(page, '#/settings', '[data-settings-index]');
   await settle(page, null, 600);
   await shot(page, 'settings-phone');
+  await ctx.close();
+});
+
+// --- This browser playing (last: its player leaves the demo's list when it closes) --------
+
+await group(['signal-path-phone'], async () => {
+  const { ctx, page } = await session({ device: PHONE, scheme: 'dark', accent: '#6750a4', player: 'device' });
+  await go(page, '#/', '[data-np-phone]');
+  await transcodedPath(page);
+  await shot(page, 'signal-path-phone');
+  await ctx.close();
+});
+
+// The sheet is a dialog at most 460 px wide on a desktop, so its blocks stack there too (the
+// row with arrows needs 600 px: a sheet on a tablet-width window).
+await group(['signal-path-desktop'], async () => {
+  const { ctx, page } = await session({ device: DESKTOP, scheme: 'light', player: 'device' });
+  await go(page, '#/', 'main.content');
+  await transcodedPath(page);
+  await shot(page, 'signal-path-desktop');
   await ctx.close();
 });
 
