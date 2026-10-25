@@ -848,6 +848,13 @@ async fn wifi_only_waits_on_mobile_data_and_formats_follow_the_network() {
     assert!(log.iter().any(|(p, ..)| p == "/v1/download/track/5"));
     assert_eq!(s.lib.tracks()[0].format, DownloadFormat::Opus);
     assert_eq!(s.lib.tracks()[0].ext, "opus");
+    // The original's type is kept beside the download's own, for the quality badge.
+    let t = s.lib.tracks()[0].clone();
+    assert_eq!(t.codec, "opus");
+    assert_eq!(
+        t.original.as_ref().and_then(|f| f.kind.as_deref()),
+        Some("flc")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
