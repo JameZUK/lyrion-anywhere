@@ -20,7 +20,9 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 reqwest = { version = "0.13", default-features = false, features = ["stream", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 webpki-root-certs = "1"
-base64 = "0.23"
+# Scalar engine only: 0.23 adds a default-on `simd-unsafe` feature (runtime-detected AVX2/NEON
+# engines in unsafe code), which a token parser does not need.
+base64 = { version = "0.23", default-features = false, features = ["std"] }
 futures-util = "0.3"
 bytes = "1"
 serde = { version = "1", features = ["derive"] }
