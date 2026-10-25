@@ -39,6 +39,13 @@ Every change ships with tests for security, stability and reliability. Security 
 
 All tests run in CI on every push. Don't call work done while any tests are failing or skipped.
 
+## Standing rule: doing it properly overrules backwards compatibility
+
+When a clean design and a compatibility shim conflict, choose the clean design (owner's decision, 2026-10-25). Do not keep two code paths, feature flags or inferred fallbacks only so that old clients or servers keep working:
+- bump the protocol version (`protocol` in `GET /v1/me` and in the player socket's sign-in form) and record the step in `docs/PROTOCOL.md` under *Versions*;
+- the gateway closes a too-old client with a dedicated close code and a reason the apps map to a plain message ("update the app"); an app refuses to play against a too-old server with a message naming the plugin version it needs, and still controls other players where nothing else changed;
+- the release notes of both sides open with "update both", naming the versions.
+
 ## Conventions
 
 - British English in docs and UI strings.
