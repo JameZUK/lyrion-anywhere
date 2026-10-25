@@ -89,6 +89,11 @@ pub struct Device {
 pub struct SignedIn {
     pub user: User,
     pub device: Device,
+    /// The gateway's player-protocol version from `GET /v1/me` (`None`: not given, an old
+    /// gateway, or not known: sign-in answers don't carry it; see
+    /// [`crate::Session::server_protocol`]).
+    #[uniffi(default = None)]
+    pub protocol: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -211,6 +216,10 @@ pub struct Track {
     /// The quality badge for Now playing ("FLAC 24/96 · Hi-Res"), when LMS gave a type.
     #[uniffi(default = None)]
     pub quality: Option<Quality>,
+    /// The file's format as LMS reports it, for the quality diagram
+    /// ([`crate::quality::describe_quality`]); `None` without a usable `type`.
+    #[uniffi(default = None)]
+    pub file_format: Option<crate::quality::QualityFile>,
 }
 
 /// The quality badge (Wave 1 §5): codec and resolution, and whether it is Hi-Res (more than
@@ -504,7 +513,24 @@ pub(crate) fn track_from(v: &Value) -> Track {
             .filter(|y| *y > 0 && *y < 10_000)
             .map(|y| y as i32),
         quality: quality_of(v),
+        file_format: file_format_of(v),
     }
+}
+
+/// The file's format for the quality diagram: LMS's `type` (a short alphanumeric token,
+/// lower-cased) and its numbers, each in range or left out.
+pub(crate) fn file_format_of(v: &Value) -> Option<crate::quality::QualityFile> {
+    let kind = v["type"].as_str()?.trim().to_ascii_lowercase();
+    if kind.is_empty() || kind.len() > 12 || !kind.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return None;
+    }
+    Some(crate::quality::QualityFile {
+        kind: Some(kind),
+        rate: whole_in(&v["samplerate"], 1000, 50_000_000),
+        bits: whole_in(&v["samplesize"], 1, 64),
+        kbps: kbps_of(&v["bitrate"]),
+        channels: whole_in(&v["channels"], 1, 64),
+    })
 }
 
 /// The quality badge for a track's format details, or `None` without a usable type.
@@ -901,6 +927,7 @@ pub(crate) fn search_from(v: &Value) -> SearchResults {
                 format: None,
                 year: None,
                 quality: None,
+                file_format: None,
             })
         })
         .collect();
@@ -1162,6 +1189,46 @@ fn next_of(v: &Value) -> Option<Track> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The file's format for the quality diagram: LMS's tags as numbers in range, the type
+    /// lower-cased; junk left out, and no format at all without a usable type.
+    #[test]
+    fn the_file_format_for_the_diagram() {
+        let f = file_format_of(
+            &json!({"type": "FLC", "samplerate": "96000", "samplesize": 24,
+            "bitrate": "3021kbps", "channels": "2"}),
+        )
+        .unwrap();
+        assert_eq!(
+            f,
+            crate::quality::QualityFile {
+                kind: Some("flc".into()),
+                rate: Some(96_000),
+                bits: Some(24),
+                kbps: Some(3021),
+                channels: Some(2),
+            }
+        );
+        let f = file_format_of(
+            &json!({"type": "mp3", "samplerate": "-1", "samplesize": "NaN",
+            "bitrate": "<b>", "channels": 999}),
+        )
+        .unwrap();
+        assert_eq!(
+            (f.rate, f.bits, f.kbps, f.channels),
+            (None, None, None, None)
+        );
+        for bad in [
+            json!({}),
+            json!({"type": ""}),
+            json!({"type": 5}),
+            json!({"type": "fl c"}),
+            json!({"type": "a-very-long-type"}),
+            json!({"type": "flc\u{202e}"}),
+        ] {
+            assert_eq!(file_format_of(&bad), None, "{bad}");
+        }
+    }
 
     /// The quality badge: the web app's vectors (web/app/tests/quality.test.ts).
     #[test]

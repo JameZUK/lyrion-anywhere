@@ -80,6 +80,8 @@ pub struct Features {
     pub stream_quality: bool,
     /// The player socket's sign-in takes `grace`.
     pub resume_grace: bool,
+    /// The gateway's player-protocol version (`None`: not given, an old gateway).
+    pub protocol: Option<u32>,
 }
 
 /// The features from `/v1/me` (anything but `true` is off).
@@ -88,7 +90,17 @@ pub fn parse_features(me: &Value) -> Features {
     Features {
         stream_quality: on("stream_quality"),
         resume_grace: on("resume_grace"),
+        protocol: parse_protocol(me),
     }
+}
+
+/// `protocol` from `GET /v1/me`: a positive whole JSON number that fits a `u32`; anything
+/// else (absent, a string, a fraction, zero, negative, too large) is `None`.
+pub fn parse_protocol(me: &Value) -> Option<u32> {
+    me.get("protocol")?
+        .as_u64()
+        .filter(|n| *n >= 1)
+        .and_then(|n| u32::try_from(n).ok())
 }
 
 /// Hold `frame` for LMS until the session resumes, within `limit` frames (when full, the
@@ -258,9 +270,13 @@ pub fn resume_message(token: &str, session: &str, secret: &str, received: u64) -
     )
 }
 
-/// The first message on the player socket: the token, the session to resume if any, and
-/// the stream level wanted (docs/plans/streaming-quality.md). A bare token for a new
-/// session at the original level, as before; gateways ignore a level they don't know.
+/// The player protocol this client speaks (docs/PROTOCOL.md, *Versions*): 2 since Android
+/// 1.17.0 (the version in the sign-in form, the stream message, close 4426).
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// The first message on the player socket: the protocol version, the token, the session to
+/// resume if any, and the stream level wanted (docs/plans/streaming-quality.md). Always a
+/// JSON object: the gateway closes a form without `protocol` with 4426.
 pub fn sign_in_message(
     token: &str,
     resume: Option<(&str, &str, u64)>,
@@ -278,10 +294,7 @@ pub fn sign_in_message_with_grace(
     quality: StreamQuality,
     grace: Option<u64>,
 ) -> String {
-    if resume.is_none() && quality == StreamQuality::Original && grace.is_none() {
-        return token.to_string();
-    }
-    let mut v = json!({ "token": token });
+    let mut v = json!({ "token": token, "protocol": PROTOCOL_VERSION });
     if let Some((session, secret, received)) = resume {
         v["resume"] = json!({ "session": session, "secret": secret, "received": received });
     }
@@ -300,6 +313,153 @@ pub fn quality_message(quality: StreamQuality) -> String {
     json!({ "quality": quality.as_str() }).to_string()
 }
 
+/// Largest stream message accepted (the gateway's are at most 512 bytes).
+pub const MAX_STREAM_MESSAGE: usize = 512;
+
+/// The gateway's stream message (protocol 2): what LMS served and what the gateway sent
+/// for the `seq`-th `strm s` of this session (docs/PROTOCOL.md, "The stream message").
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamMessage {
+    /// The count of `strm s` frames in this session, from 1: the stream's number.
+    pub seq: u64,
+    pub served: anywhere_core::quality::Served,
+    pub sent: anywhere_core::quality::Sent,
+}
+
+/// Parse a stream message strictly: one `stream` object with exactly `seq` (a positive
+/// whole number), `served` (`codec` a short lower-case token; `rate`, `bits`, `channels`
+/// whole numbers in range or `null`; `gain_db` finite and within ±100 dB, or absent) and
+/// `sent` (`{"mode":"passthrough"}` or `{"mode":"opus","kbps":…,"level":"high"|"low"}`).
+/// `None` for anything else, including unknown fields.
+pub fn parse_stream_message(text: &str) -> Option<StreamMessage> {
+    use anywhere_core::quality::{OpusLevel, Sent, Served};
+    if text.len() > MAX_STREAM_MESSAGE {
+        return None;
+    }
+    let v: Value = serde_json::from_str(text).ok()?;
+    let top = v.as_object()?;
+    if top.len() != 1 {
+        return None;
+    }
+    let m = top.get("stream")?.as_object()?;
+    let only = |o: &serde_json::Map<String, Value>, keys: &[&str]| {
+        o.keys().all(|k| keys.contains(&k.as_str()))
+    };
+    if m.len() != 3 || !only(m, &["seq", "served", "sent"]) {
+        return None;
+    }
+    let seq = m
+        .get("seq")?
+        .as_u64()
+        .filter(|n| (1..=1u64 << 53).contains(n))?;
+    let served = m.get("served")?.as_object()?;
+    if !only(served, &["codec", "rate", "bits", "channels", "gain_db"]) {
+        return None;
+    }
+    let codec = served.get("codec")?.as_str().filter(|c| {
+        (1..=16).contains(&c.len())
+            && c.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    })?;
+    // Absent or `null`: unknown. Anything else must be a whole number in range.
+    let whole = |key: &str, lo: u64, hi: u64| -> Result<Option<i64>, ()> {
+        match served.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(v) => v
+                .as_u64()
+                .filter(|n| (lo..=hi).contains(n))
+                .map(|n| Some(n as i64))
+                .ok_or(()),
+        }
+    };
+    let rate = whole("rate", 1_000, 1_000_000).ok()?;
+    let bits = whole("bits", 1, 64).ok()?;
+    let channels = whole("channels", 1, 64).ok()?;
+    let gain_db = match served.get("gain_db") {
+        None | Some(Value::Null) => None,
+        Some(g) => Some(g.as_f64().filter(|g| g.is_finite() && g.abs() <= 100.0)?),
+    };
+    let sent = m.get("sent")?.as_object()?;
+    let sent = match sent.get("mode")?.as_str()? {
+        "passthrough" if sent.len() == 1 => Sent::Passthrough,
+        "opus" if sent.len() == 3 && only(sent, &["mode", "kbps", "level"]) => {
+            let kbps = sent
+                .get("kbps")?
+                .as_u64()
+                .filter(|k| (8..=1_000).contains(k))?;
+            let level = match sent.get("level")?.as_str()? {
+                "high" => OpusLevel::High,
+                "low" => OpusLevel::Low,
+                _ => return None,
+            };
+            Sent::Opus {
+                kbps: Some(kbps as i64),
+                level: Some(level),
+            }
+        }
+        _ => return None,
+    };
+    Some(StreamMessage {
+        seq,
+        served: Served {
+            codec: Some(codec.to_string()),
+            rate,
+            bits,
+            channels,
+            gain_db,
+        },
+        sent,
+    })
+}
+
+/// The stream messages of a session, by stream number: the latest for each of the most
+/// recent few streams. A message re-sent after a resume replaces its earlier copy.
+#[derive(Debug, Default)]
+pub struct StreamBook {
+    entries: VecDeque<StreamMessage>,
+}
+
+/// Stream messages remembered (by stream number); the decoder never holds more than a few
+/// streams at once.
+pub const STREAM_BOOK_LIMIT: usize = 8;
+
+impl StreamBook {
+    /// Keep `m` (replacing any earlier message for the same stream). False if it changed
+    /// nothing (the same message again).
+    pub fn insert(&mut self, m: StreamMessage) -> bool {
+        if let Some(e) = self.entries.iter_mut().find(|e| e.seq == m.seq) {
+            if *e == m {
+                return false;
+            }
+            *e = m;
+            return true;
+        }
+        self.entries.push_back(m);
+        while self.entries.len() > STREAM_BOOK_LIMIT {
+            // The oldest stream number goes first.
+            let oldest = self
+                .entries
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, e)| e.seq)
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            self.entries.remove(oldest);
+        }
+        true
+    }
+
+    /// The message for stream number `n` (the core's track `seq` + 1).
+    pub fn get(&self, n: u64) -> Option<&StreamMessage> {
+        self.entries.iter().find(|e| e.seq == n)
+    }
+
+    /// A new session: stream numbers start again.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
 /// A stream acknowledgement.
 pub fn ack_message(stream: u64, bytes: u64) -> String {
     json!({ "ack": { "stream": stream, "bytes": bytes } }).to_string()
@@ -316,6 +476,9 @@ pub enum CloseAction {
     NewSession,
     /// Reconnect and resume the session.
     Resume,
+    /// The gateway needs a newer app (close 4426): stop, never retry with the same form,
+    /// and tell the user to update the app.
+    UpdateApp,
 }
 
 /// Close codes (docs/PROTOCOL.md, "Close codes"). `None`: no close frame (connection lost).
@@ -323,6 +486,7 @@ pub fn close_action(code: Option<u16>, reason: &str) -> CloseAction {
     match code {
         Some(1008) if reason == "unauthorised" => CloseAction::Reauthenticate,
         Some(1008) | Some(4000) => CloseAction::Stop,
+        Some(4426) => CloseAction::UpdateApp,
         Some(4404) | Some(1001) => CloseAction::NewSession,
         _ => CloseAction::Resume,
     }
@@ -1246,6 +1410,294 @@ mod tests {
         assert_eq!(close_action(None, ""), CloseAction::Resume);
     }
 
+    /// 4426: the gateway needs a newer app. Whatever the reason says, it is never a
+    /// resume, a new session or a retry with renewed credentials.
+    #[test]
+    fn close_4426_means_update_the_app() {
+        for reason in ["update the app", "", "unauthorised", "anything"] {
+            assert_eq!(close_action(Some(4426), reason), CloseAction::UpdateApp);
+        }
+        // Its neighbours are not it.
+        assert_eq!(close_action(Some(4425), ""), CloseAction::Resume);
+        assert_eq!(close_action(Some(4427), ""), CloseAction::Resume);
+    }
+
+    /// Every sign-in form carries `"protocol": 2`, new or resumed, at any level.
+    #[test]
+    fn the_sign_in_form_carries_the_protocol() {
+        for (resume, q, grace) in [
+            (None, StreamQuality::Original, None),
+            (None, StreamQuality::High, Some(600)),
+            (Some(("s", "k", 3)), StreamQuality::Low, None),
+            (Some(("s", "k", 0)), StreamQuality::Original, Some(60)),
+        ] {
+            let v: Value =
+                serde_json::from_str(&sign_in_message_with_grace("tok", resume, q, grace)).unwrap();
+            assert_eq!(v["protocol"], json!(2), "{v}");
+            assert_eq!(v["token"], "tok");
+        }
+        let v: Value = serde_json::from_str(&resume_message("t", "s", "x", 1)).unwrap();
+        assert_eq!(v["protocol"], json!(PROTOCOL_VERSION));
+        // Never the bare token any more: an old gateway's form.
+        let v: Value =
+            serde_json::from_str(&sign_in_message("tok", None, StreamQuality::Original)).unwrap();
+        assert_eq!(v, json!({"protocol": 2, "token": "tok"}));
+    }
+
+    #[test]
+    fn the_protocol_in_v1_me_is_read_strictly() {
+        assert_eq!(parse_protocol(&json!({"protocol": 2})), Some(2));
+        assert_eq!(parse_protocol(&json!({"protocol": 3})), Some(3));
+        assert_eq!(parse_protocol(&json!({"protocol": 1})), Some(1));
+        assert_eq!(parse_features(&json!({"protocol": 2})).protocol, Some(2));
+        for bad in [
+            json!({}),
+            json!({"protocol": null}),
+            json!({"protocol": "2"}),
+            json!({"protocol": 2.0}),
+            json!({"protocol": 2.5}),
+            json!({"protocol": 0}),
+            json!({"protocol": -2}),
+            json!({"protocol": 99_999_999_999u64}),
+            json!({"protocol": [2]}),
+            json!({"protocol": {"v": 2}}),
+            json!({"protocol": true}),
+            json!(null),
+            json!([{"protocol": 2}]),
+        ] {
+            assert_eq!(parse_protocol(&bad), None, "{bad}");
+        }
+    }
+
+    const STREAM_FLAC: &str = r#"{"stream":{"seq":12,"served":{"codec":"flac","rate":96000,"bits":24,"channels":2,"gain_db":-3.2},"sent":{"mode":"opus","kbps":160,"level":"high"}}}"#;
+
+    #[test]
+    fn a_good_stream_message_is_read() {
+        use anywhere_core::quality::{OpusLevel, Sent, Served};
+        let m = parse_stream_message(STREAM_FLAC).unwrap();
+        assert_eq!(m.seq, 12);
+        assert_eq!(
+            m.served,
+            Served {
+                codec: Some("flac".into()),
+                rate: Some(96_000),
+                bits: Some(24),
+                channels: Some(2),
+                gain_db: Some(-3.2),
+            }
+        );
+        assert_eq!(
+            m.sent,
+            Sent::Opus {
+                kbps: Some(160),
+                level: Some(OpusLevel::High)
+            }
+        );
+        // Pass-through, unknowns as null, no gain.
+        let m = parse_stream_message(
+            r#"{"stream":{"seq":1,"served":{"codec":"unknown","rate":null,"bits":null,"channels":null},"sent":{"mode":"passthrough"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(m.sent, Sent::Passthrough);
+        assert_eq!(
+            (
+                m.served.rate,
+                m.served.bits,
+                m.served.channels,
+                m.served.gain_db
+            ),
+            (None, None, None, None)
+        );
+        let m = parse_stream_message(
+            r#"{"stream":{"seq":3,"served":{"codec":"mp3"},"sent":{"mode":"opus","kbps":96,"level":"low"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            m.sent,
+            Sent::Opus {
+                kbps: Some(96),
+                level: Some(OpusLevel::Low)
+            }
+        );
+    }
+
+    /// Each malformed shape is ignored, never half-read.
+    #[test]
+    fn malformed_stream_messages_are_ignored() {
+        let good: Value = serde_json::from_str(STREAM_FLAC).unwrap();
+        let with = |f: &dyn Fn(&mut Value)| {
+            let mut v = good.clone();
+            f(&mut v);
+            v.to_string()
+        };
+        let bad: Vec<String> = vec![
+            String::new(),
+            "null".into(),
+            "[]".into(),
+            r#"{"keepalive":true}"#.into(),
+            r#""stream""#.into(),
+            r#"{"stream":null}"#.into(),
+            r#"{"stream":[]}"#.into(),
+            with(&|v| v["extra"] = json!(1)),
+            with(&|v| v["stream"]["extra"] = json!(1)),
+            with(&|v| v["stream"]["seq"] = json!(0)),
+            with(&|v| v["stream"]["seq"] = json!(-1)),
+            with(&|v| v["stream"]["seq"] = json!(1.5)),
+            with(&|v| v["stream"]["seq"] = json!(12.0)),
+            with(&|v| v["stream"]["seq"] = json!("12")),
+            with(&|v| v["stream"]["seq"] = json!(null)),
+            with(&|v| v["stream"]["seq"] = json!(u64::MAX)),
+            with(&|v| {
+                v["stream"].as_object_mut().unwrap().remove("seq");
+            }),
+            with(&|v| {
+                v["stream"].as_object_mut().unwrap().remove("served");
+            }),
+            with(&|v| {
+                v["stream"].as_object_mut().unwrap().remove("sent");
+            }),
+            with(&|v| v["stream"]["served"] = json!(null)),
+            with(&|v| v["stream"]["served"] = json!("flac")),
+            with(&|v| v["stream"]["served"]["codec"] = json!("FLAC")),
+            with(&|v| v["stream"]["served"]["codec"] = json!("")),
+            with(&|v| v["stream"]["served"]["codec"] = json!("fl ac")),
+            with(&|v| v["stream"]["served"]["codec"] = json!("a-very-long-codec-name")),
+            with(&|v| v["stream"]["served"]["codec"] = json!("fl\u{202e}ac")),
+            with(&|v| v["stream"]["served"]["codec"] = json!(null)),
+            with(&|v| v["stream"]["served"]["codec"] = json!(5)),
+            with(&|v| v["stream"]["served"]["rate"] = json!(-96000)),
+            with(&|v| v["stream"]["served"]["rate"] = json!(96000.5)),
+            with(&|v| v["stream"]["served"]["rate"] = json!(1e300)),
+            with(&|v| v["stream"]["served"]["rate"] = json!(10)),
+            with(&|v| v["stream"]["served"]["rate"] = json!(50_000_000)),
+            with(&|v| v["stream"]["served"]["rate"] = json!("96000")),
+            with(&|v| v["stream"]["served"]["bits"] = json!(0)),
+            with(&|v| v["stream"]["served"]["bits"] = json!(65)),
+            with(&|v| v["stream"]["served"]["channels"] = json!(0)),
+            with(&|v| v["stream"]["served"]["channels"] = json!(1000)),
+            with(&|v| v["stream"]["served"]["gain_db"] = json!("-3")),
+            with(&|v| v["stream"]["served"]["gain_db"] = json!(1e9)),
+            with(&|v| v["stream"]["served"]["gain_db"] = json!(-101.0)),
+            with(&|v| v["stream"]["served"]["gain_db"] = json!([1])),
+            with(&|v| v["stream"]["served"]["volume"] = json!(1)),
+            with(&|v| v["stream"]["sent"] = json!(null)),
+            with(&|v| v["stream"]["sent"] = json!("opus")),
+            with(&|v| v["stream"]["sent"]["mode"] = json!("mp3")),
+            with(&|v| v["stream"]["sent"]["mode"] = json!("OPUS")),
+            with(&|v| v["stream"]["sent"]["mode"] = json!(null)),
+            with(&|v| v["stream"]["sent"]["level"] = json!("original")),
+            with(&|v| v["stream"]["sent"]["level"] = json!("High")),
+            with(&|v| v["stream"]["sent"]["level"] = json!(null)),
+            with(&|v| v["stream"]["sent"]["kbps"] = json!(0)),
+            with(&|v| v["stream"]["sent"]["kbps"] = json!(160.5)),
+            with(&|v| v["stream"]["sent"]["kbps"] = json!("160")),
+            with(&|v| v["stream"]["sent"]["kbps"] = json!(100_000)),
+            with(&|v| {
+                v["stream"]["sent"].as_object_mut().unwrap().remove("kbps");
+            }),
+            with(&|v| {
+                v["stream"]["sent"].as_object_mut().unwrap().remove("level");
+            }),
+            with(&|v| v["stream"]["sent"]["extra"] = json!(1)),
+            r#"{"stream":{"seq":1,"served":{"codec":"flac"},"sent":{"mode":"passthrough","kbps":160}}}"#.into(),
+            // Over the size limit, however well formed.
+            format!(
+                r#"{{"stream":{{"seq":1,"served":{{"codec":"flac"}},"sent":{{"mode":"passthrough"}}}}}}{}"#,
+                " ".repeat(MAX_STREAM_MESSAGE)
+            ),
+        ];
+        for b in &bad {
+            assert_eq!(parse_stream_message(b), None, "{b}");
+        }
+        assert!(parse_stream_message(&good.to_string()).is_some());
+    }
+
+    #[test]
+    fn arbitrary_stream_messages_never_panic() {
+        let alphabet: Vec<char> = "{}[]\":,.-0123456789eEstrmqvdpaouhilgnkbf\\é "
+            .chars()
+            .collect();
+        let mut seed = 0x0bad_cafe_1234_5678u64;
+        for _ in 0..30_000 {
+            let len = (seed % 200) as usize;
+            let mut s = String::new();
+            for _ in 0..len {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                s.push(alphabet[(seed % alphabet.len() as u64) as usize]);
+            }
+            if let Some(m) = parse_stream_message(&s) {
+                assert!(m.seq >= 1);
+            }
+        }
+        let good = STREAM_FLAC.as_bytes();
+        for i in 0..good.len() {
+            for b in [b'"', b'x', b'0', b'}', b'-', b'.', 0xff] {
+                let mut m = good.to_vec();
+                m[i] = b;
+                if let Ok(s) = std::str::from_utf8(&m)
+                    && let Some(msg) = parse_stream_message(s)
+                {
+                    assert!(msg.seq >= 1);
+                }
+            }
+        }
+    }
+
+    /// The book ties each message to its stream by number: a seek's new stream (the next
+    /// number) gets its own; a re-sent message after a resume replaces the earlier copy; a
+    /// new session starts again.
+    #[test]
+    fn the_stream_book_ties_messages_by_number() {
+        let msg = |seq: u64, mode: &str| {
+            let sent = if mode == "opus" {
+                r#"{"mode":"opus","kbps":160,"level":"high"}"#
+            } else {
+                r#"{"mode":"passthrough"}"#
+            };
+            parse_stream_message(&format!(
+                r#"{{"stream":{{"seq":{seq},"served":{{"codec":"flac","rate":96000,"bits":24,"channels":2}},"sent":{sent}}}}}"#
+            ))
+            .unwrap()
+        };
+        let mut b = StreamBook::default();
+        assert!(b.insert(msg(1, "opus")));
+        assert!(b.get(2).is_none(), "the next stream has none yet");
+        // A seek (or a quality change and a seek): a new stream number, its own message.
+        assert!(b.insert(msg(2, "passthrough")));
+        assert_eq!(
+            b.get(1).unwrap().sent,
+            anywhere_core::quality::Sent::Opus {
+                kbps: Some(160),
+                level: Some(anywhere_core::quality::OpusLevel::High)
+            }
+        );
+        assert_eq!(
+            b.get(2).unwrap().sent,
+            anywhere_core::quality::Sent::Passthrough
+        );
+        // Re-sent after a resume: the same message again changes nothing.
+        assert!(!b.insert(msg(2, "passthrough")));
+        // Corrected: replaced in place.
+        assert!(b.insert(msg(2, "opus")));
+        assert!(matches!(
+            b.get(2).unwrap().sent,
+            anywhere_core::quality::Sent::Opus { .. }
+        ));
+        // Bounded: the oldest numbers go.
+        for n in 3..20 {
+            b.insert(msg(n, "passthrough"));
+        }
+        assert!(b.get(1).is_none() && b.get(19).is_some());
+        assert_eq!(b.entries.len(), STREAM_BOOK_LIMIT);
+        // A message for a long-gone stream doesn't evict a newer one.
+        b.insert(msg(1, "opus"));
+        assert!(b.get(1).is_none() && b.get(12).is_some());
+        b.clear();
+        assert!(b.get(19).is_none());
+    }
+
     #[test]
     fn stream_failures_retry_only_when_transient() {
         assert!(stream_should_retry(0));
@@ -1346,10 +1798,14 @@ mod tests {
 
     #[test]
     fn grace_is_asked_for_only_when_wanted() {
-        assert_eq!(
-            sign_in_message_with_grace("tok", None, StreamQuality::Original, None),
-            "tok"
-        );
+        let v: Value = serde_json::from_str(&sign_in_message_with_grace(
+            "tok",
+            None,
+            StreamQuality::Original,
+            None,
+        ))
+        .unwrap();
+        assert_eq!(v, json!({"token": "tok", "protocol": 2}));
         let v: Value = serde_json::from_str(&sign_in_message_with_grace(
             "tok",
             None,
@@ -1357,7 +1813,7 @@ mod tests {
             Some(GRACE_ASK),
         ))
         .unwrap();
-        assert_eq!(v, json!({"token": "tok", "grace": 600}));
+        assert_eq!(v, json!({"token": "tok", "protocol": 2, "grace": 600}));
         let v: Value = serde_json::from_str(&sign_in_message_with_grace(
             "tok",
             Some(("s", "k", 4)),

@@ -95,7 +95,9 @@ fun OfflineApp(
 ) {
     val nav = rememberNavController()
     var askSignOut by rememberSaveable { mutableStateOf(false) }
-    val playerVm = viewModel(key = "offline-player") { OfflinePlayerViewModel(container.offlinePlayer, offlineClock, container.settings) }
+    val playerVm = viewModel(key = "offline-player") {
+        OfflinePlayerViewModel(container.offlinePlayer, offlineClock, container.settings, io.github.jamezuk.lyrionanywhere.data.RustQualityDescriber)
+    }
     val player by playerVm.state.collectAsStateWithLifecycle()
     val offline by container.offline.state.collectAsStateWithLifecycle()
     val context = LocalContext.current

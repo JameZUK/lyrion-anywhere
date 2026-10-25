@@ -296,7 +296,7 @@ class NowPlayingTidyTests {
 
     private fun withQuality(s: PlayerUiState): PlayerUiState {
         val st = s.status!!
-        return s.copy(status = st.copy(current = st.current!!.copy(quality = flac)))
+        return s.copy(status = st.copy(current = st.current!!.copy(quality = flac)), diagram = QualityVectors.expected("FLAC 16/44.1 passed through"))
     }
 
     @Test

@@ -156,6 +156,7 @@ fn parse_who(v: &Value) -> Result<SignedIn, ApiError> {
                 .map(str::to_ascii_lowercase)
                 .unwrap_or_default(),
         },
+        protocol: crate::player::protocol::parse_protocol(v),
     })
 }
 
@@ -714,6 +715,14 @@ impl Session {
         Ok(who)
     }
 
+    /// The gateway's player-protocol version (`protocol` in `GET /v1/me`; `None`: an older
+    /// gateway that doesn't say, which can't take this phone as a player). The app opens
+    /// the player socket only when it is at least 2 (docs/PROTOCOL.md, *Versions*).
+    pub async fn server_protocol(&self) -> Result<Option<u32>, ApiError> {
+        let v = self.core.get_json("v1/me").await?;
+        Ok(crate::player::protocol::parse_protocol(&v))
+    }
+
     /// `GET /v1/account`: account settings (two-step, downloads).
     pub async fn account(&self) -> Result<AccountInfo, ApiError> {
         let v = self.core.get_json("v1/account").await?;
@@ -894,6 +903,36 @@ mod tests {
     }
 
     use super::*;
+
+    /// `GET /v1/me` with and without `protocol` (and with junk in it): only a positive
+    /// whole number is the gateway's version.
+    #[test]
+    fn v1_me_carries_the_protocol_when_given() {
+        let me = |p: Option<Value>| {
+            let mut v = json!({
+                "user": {"username": "alice", "role": "listener"},
+                "device": {"id": 3, "name": "Phone"},
+                "features": {},
+            });
+            if let Some(p) = p {
+                v["protocol"] = p;
+            }
+            parse_who(&v).unwrap().protocol
+        };
+        assert_eq!(me(Some(json!(2))), Some(2));
+        assert_eq!(me(Some(json!(3))), Some(3));
+        assert_eq!(me(None), None, "an old gateway");
+        for junk in [
+            json!("2"),
+            json!(2.0),
+            json!(-1),
+            json!(0),
+            json!(null),
+            json!([2]),
+        ] {
+            assert_eq!(me(Some(junk.clone())), None, "{junk}");
+        }
+    }
 
     #[test]
     fn tokens_must_be_header_safe() {

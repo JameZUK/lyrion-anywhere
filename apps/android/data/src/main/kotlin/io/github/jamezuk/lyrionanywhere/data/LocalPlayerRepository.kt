@@ -23,6 +23,8 @@ import io.github.jamezuk.lyrionanywhere.core.checkEqProfile
 import io.github.jamezuk.lyrionanywhere.core.clearStreamCache
 import io.github.jamezuk.lyrionanywhere.core.removeStreamSpools
 import io.github.jamezuk.lyrionanywhere.core.streamCacheTotals
+import io.github.jamezuk.lyrionanywhere.core.QualityOrigin
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -53,8 +55,19 @@ data class LocalPlayerState(
     val error: AppError? = null,
     /** The Sound settings (DSP and bit-perfect output). */
     val sound: SoundSettings = SoundSettings(),
-    /** The live stream's level now (by the network and the Streaming quality setting). */
+    /** The live stream's level now (the override, else the Streaming quality setting for the network). */
     val streamQuality: StreamQuality = StreamQuality.ORIGINAL,
+    /** The Streaming quality setting for this network. */
+    val streamSetting: StreamQuality = StreamQuality.ORIGINAL,
+    /**
+     * A level chosen in the signal-path sheet for now (null: none): in memory only, gone when
+     * the app restarts or the network type changes (Wi-Fi ↔ mobile data).
+     */
+    val qualityOverride: StreamQuality? = null,
+    /** The server's player protocol from `GET /v1/me` (null: not given, an old plugin). */
+    val serverProtocol: UInt? = null,
+    /** [serverProtocol] has been read for this sign-in (false: not yet, or it couldn't be). */
+    val protocolChecked: Boolean = false,
     /** On mobile data (a metered network). */
     val metered: Boolean = false,
     /** Where the sound goes now (null: not known yet), for per-output EQ (Wave 2 §5.3). */
@@ -73,7 +86,7 @@ data class LocalPlayerState(
      * buffered ahead": only while the player reads ahead, and null when nothing is.
      */
     val cushionMs: Long?
-        get() = status?.takeIf { it.readAhead && it.connection !is PlayerConnection.Stopped }
+        get() = status?.takeIf { it.readAhead && !it.connection.ended }
             ?.cushionMs?.toLong()?.takeIf { it >= 1_000 }
 
     /**
@@ -96,7 +109,28 @@ data class LocalPlayerState(
 
     /** Connected (or reconnecting) to LMS as a player. */
     val running: Boolean
-        get() = enabled && status != null && status.connection !is PlayerConnection.Stopped
+        get() = enabled && status != null && !status.connection.ended
+
+    /** Why the level in force is in force (for the gateway block and the quality switch). */
+    val qualityOrigin: QualityOrigin get() = qualityOrigin(qualityOverride, streamSetting, metered)
+
+    /**
+     * The server's plugin is too old to play on this phone (protocol below 2, or not given):
+     * the player socket is never opened; other players can still be controlled.
+     */
+    val serverTooOld: Boolean get() = protocolChecked && (serverProtocol ?: 0u) < MIN_PLAYER_PROTOCOL
+
+    /** The server needs a newer app (it closed the player socket with 4426). */
+    val appTooOld: Boolean get() = status?.connection is PlayerConnection.UpdateApp
+
+    /** Why this phone can't be a player on this server (null: it can). */
+    val phoneBlocked: PhoneBlock?
+        get() = when {
+            !enabled -> null
+            appTooOld -> PhoneBlock.UPDATE_APP
+            serverTooOld -> PhoneBlock.UPDATE_PLUGIN
+            else -> null
+        }
 
     /**
      * While the player can't reach the server: what this phone can still do by itself
@@ -104,6 +138,18 @@ data class LocalPlayerState(
      */
     val offlineControls: OfflineControls? get() = status?.offlineControls?.takeIf { running }
 }
+
+/** Why this phone's player can't run with this server (docs/PROTOCOL.md, *Versions*). */
+enum class PhoneBlock {
+    /** The server needs a newer app (close 4426): "Update the app". */
+    UPDATE_APP,
+
+    /** The server's plugin is too old for this app (protocol below 2): "update the plugin". */
+    UPDATE_PLUGIN,
+}
+
+/** The player has ended for good: stopped, refused, or the server needs a newer app. */
+val PlayerConnection.ended: Boolean get() = this is PlayerConnection.Stopped || this is PlayerConnection.UpdateApp
 
 /** A control used on this phone while the server can't be reached (see [OfflineControls]). */
 sealed interface LocalControl {
@@ -140,6 +186,13 @@ interface LocalPlayerRepository {
 
     /** Empty the replay cache (Settings' "Clear"). */
     suspend fun clearReplayCache() {}
+
+    /**
+     * Override the stream level for now ([level]; null: back to the setting), until the app
+     * restarts or the network type changes. Returns once the engine has it, so a seek that
+     * follows asks for the new stream at the new level.
+     */
+    suspend fun setQualityOverride(level: StreamQuality?) {}
 
     /** Turn "Play on this phone" on or off (remembered across restarts). */
     suspend fun setEnabled(on: Boolean): ApiResult<Unit>
@@ -287,6 +340,9 @@ fun rustClearSpools(cacheDir: String) {
 fun rustCacheTotals(session: Session, cacheDir: String): ReplayCacheUsage =
     streamCacheTotals(session, cacheDir).let { ReplayCacheUsage(it.bytes.toLong(), it.count.toLong()) }
 
+/** The server's player protocol (`GET /v1/me`); null when the server doesn't say. Throws when it can't be asked. */
+suspend fun rustServerProtocol(session: Session): UInt? = session.serverProtocol()
+
 /** Empty the signed-in user's replay cache, ignoring what can't be done. */
 fun rustCacheClear(session: Session, cacheDir: String) {
     runCatching { clearStreamCache(session, cacheDir) }
@@ -416,6 +472,12 @@ class RustLocalPlayerRepository(
      * never reads downloads.
      */
     private val downloadsDir: String? = null,
+    /**
+     * The server's player protocol for a session (a seam for tests): below 2, or not given,
+     * the player socket is never opened. Throws when the server can't be asked (then the
+     * player starts: an unreachable server can't be playing, and the engine stops on 4426).
+     */
+    private val serverProtocol: suspend (Session) -> UInt? = ::rustServerProtocol,
 ) : LocalPlayerRepository {
     private val _state = MutableStateFlow(LocalPlayerState())
     override val state: StateFlow<LocalPlayerState> = _state.asStateFlow()
@@ -426,6 +488,14 @@ class RustLocalPlayerRepository(
     @Volatile private var sound = SoundSettings()
     @Volatile private var negotiator: OutputNegotiator? = null
     @Volatile private var quality = StreamQuality.ORIGINAL
+    /** The Streaming quality setting for this network, and the override chosen in the sheet. */
+    @Volatile private var setting = StreamQuality.ORIGINAL
+    @Volatile private var override: StreamQuality? = null
+    /** Whether on mobile data, as last seen (null: not yet). */
+    private var lastMetered: Boolean? = null
+    /** The session whose protocol was read, and what it said (read, the value). */
+    private var protocolOf: Session? = null
+    private var protocol: Pair<Boolean, UInt?> = false to null
     @Volatile private var visualiser = false
     @Volatile private var output: AudioOutput? = null
     @Volatile private var bypass = false
@@ -490,9 +560,12 @@ class RustLocalPlayerRepository(
             combine(settings.settings.map { it.streaming }, metered) { s, m -> m to streamQualityFor(m, s) }
                 .distinctUntilChanged()
                 .collect { (m, q) ->
-                    quality = q
-                    _state.update { it.copy(streamQuality = q, metered = m) }
-                    withContext(io) { handle?.setStreamQuality(q) }
+                    // A change of network type (Wi-Fi ↔ mobile data) ends an override: the
+                    // setting for the new network applies again.
+                    if (lastMetered != null && lastMetered != m) override = null
+                    lastMetered = m
+                    setting = q
+                    applyQuality(m)
                 }
         }
         scope.launch {
@@ -545,10 +618,18 @@ class RustLocalPlayerRepository(
         handleSession = null
         // Signed out, revoked, or another server or user: nothing of the old stream stays.
         if (changed) cacheDir?.let(clearSpools)
+        if (signedIn !== protocolOf) {
+            protocolOf = signedIn
+            protocol = false to null
+        }
         _state.value = LocalPlayerState(
             enabled = enabled,
             sound = sound,
             streamQuality = quality,
+            streamSetting = setting,
+            qualityOverride = override,
+            serverProtocol = protocol.second,
+            protocolChecked = protocol.first,
             metered = _state.value.metered,
             output = output,
             eqBypass = bypass,
@@ -558,7 +639,24 @@ class RustLocalPlayerRepository(
         )
         // Signed out or another account: what the cache holds now (nothing, once cleared).
         if (changed) refreshReplayCache()
+        // What the server's plugin speaks, once per sign-in (also for Settings › About).
+        if (signedIn != null && !protocol.first) {
+            val read = try {
+                true to serverProtocol(signedIn)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Not known (the server can't be asked now): asked again next time.
+                false to null
+            }
+            if (signedIn === protocolOf) {
+                protocol = read
+                _state.update { it.copy(serverProtocol = read.second, protocolChecked = read.first) }
+            }
+        }
         if (session == null) return@withContext
+        // An old plugin can't take this phone as a player (protocol 2): the socket is never opened.
+        if (_state.value.serverTooOld) return@withContext
         try {
             val h = factory?.invoke(session) ?: RustHandle(session, cacheDir, readAhead, cacheBytes, downloadsDir)
             handle = h
@@ -583,6 +681,19 @@ class RustLocalPlayerRepository(
             handleSession = null
             _state.update { it.copy(error = e.toAppError()) }
         }
+    }
+
+    /** The level in force (the override, else the setting) to the state and the engine. */
+    private suspend fun applyQuality(metered: Boolean = _state.value.metered) {
+        val q = override ?: setting
+        quality = q
+        _state.update { it.copy(streamQuality = q, streamSetting = setting, qualityOverride = override, metered = metered) }
+        withContext(io) { handle?.setStreamQuality(q) }
+    }
+
+    override suspend fun setQualityOverride(level: StreamQuality?) {
+        override = level
+        applyQuality()
     }
 
     override suspend fun refreshReplayCache() {

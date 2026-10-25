@@ -26,6 +26,9 @@ import io.github.jamezuk.lyrionanywhere.data.VisualFrame
 import io.github.jamezuk.lyrionanywhere.data.VisualStyle
 import io.github.jamezuk.lyrionanywhere.core.Credit
 import io.github.jamezuk.lyrionanywhere.data.NowPlayingHub
+import io.github.jamezuk.lyrionanywhere.data.QualityDescriber
+import io.github.jamezuk.lyrionanywhere.core.QualityDiagram
+import io.github.jamezuk.lyrionanywhere.core.StreamQuality
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import io.github.jamezuk.lyrionanywhere.data.DefaultPlayer
@@ -136,6 +139,14 @@ data class PlayerUiState(
      * the engine its own): no LMS-only controls (rating, sleep timer, queue edits).
      */
     val downloads: Boolean = false,
+    /**
+     * The quality badge and signal-path diagram of what plays (docs/plans/signal-path-redesign.md):
+     * this phone's from its signal path, another player's from the file, the downloads' from
+     * the download (null: nothing playing, or not known).
+     */
+    val diagram: QualityDiagram? = null,
+    /** The downloads engine's signal path, while [downloads] (for the sheet's Details). */
+    val downloadsPath: io.github.jamezuk.lyrionanywhere.core.SignalPathInfo? = null,
 ) {
     /** Whether the server can be reached. */
     val reachability: Reachability get() = connection.reachability
@@ -255,6 +266,8 @@ class PlayerViewModel(
     private val library: io.github.jamezuk.lyrionanywhere.data.LibraryRepository? = null,
     /** Downloaded track ids (the queue's marks; none without). */
     private val downloaded: Flow<Set<Long>> = flowOf(emptySet()),
+    /** The quality badge's and signal path's rules (none: no badge, as in tests that don't need one). */
+    private val quality: QualityDescriber? = null,
     private val clock: () -> Long,
 ) : ViewModel(), VisualSource {
     /** The last removal, for Undo (only for the player it was removed from). */
@@ -410,6 +423,14 @@ class PlayerViewModel(
             }
             launch {
                 downloaded.distinctUntilChanged().collect { ids -> _state.update { it.copy(downloaded = ids) } }
+            }
+            launch {
+                // The badge and diagram, built again only when what they come from changes.
+                val describer = quality ?: return@launch
+                state.map(::diagramKey).distinctUntilChanged().collect { key ->
+                    val d = key?.let { runCatching { buildDiagram(it, describer) }.getOrNull() }
+                    _state.update { if (diagramKey(it) == key) it.copy(diagram = d) else it }
+                }
             }
             launch {
                 // The queue as last read, for this phone's player to work on while the
@@ -585,7 +606,9 @@ class PlayerViewModel(
                 val local = localPlayer.state.value
                 val current = _state.value.selectedId?.takeIf { id -> list.any { it.id == id } }
                 var waiting = false
-                val phoneAvailable = local.enabled && local.error == null
+                // A protocol mismatch (an old plugin, or a server that needs a newer app)
+                // keeps the phone's player off: another player is chosen instead.
+                val phoneAvailable = local.enabled && local.error == null && local.phoneBlocked == null
                 val phoneListed = local.playerId?.takeIf { id -> list.any { it.id == id } }
                 val chosen = current ?: if (selectLocalWhenReady && phoneAvailable) {
                     // "Back to this phone" is pending: the phone, once LMS lists it.
@@ -1362,6 +1385,32 @@ class PlayerViewModel(
                 PlaybackMode.PLAYING -> players.seek(id, seconds)
                 PlaybackMode.PAUSED -> players.seek(id, seconds).then { players.setPaused(id, false) }
                 else -> players.play(id).then { players.seek(id, seconds) }
+            }
+        }
+    }
+
+    /**
+     * Override this phone's stream level from the signal-path sheet ([level]; null: back to
+     * automatic, the setting for the network). The gateway is told, then the track is sought
+     * to where it is, so the new stream starts there within a second or two. A stream that
+     * can't be sought (radio) changes from the next track. Kept until the app restarts or
+     * the network type changes; a track change keeps it.
+     */
+    fun overrideQuality(level: StreamQuality?) {
+        val s = _state.value
+        if (!s.localSelected || s.downloads) return
+        viewModelScope.launch {
+            // Returns once the engine has it: the seek's new stream is asked for at the new level.
+            localPlayer.setQualityOverride(level)
+            val now = _state.value
+            val status = now.status ?: return@launch
+            val id = now.selectedId ?: return@launch
+            if (!now.localSelected || !status.canSeek || status.current == null || status.mode == PlaybackMode.STOPPED) return@launch
+            val at = elapsedAt(now, clock())
+            changeGeneration++
+            when (val r = players.seek(id, at)) {
+                is ApiResult.Err -> if (!quietFailure(r.error)) _messages.trySend(PlayerMessage.Failed(r.error))
+                is ApiResult.Ok -> Unit
             }
         }
     }

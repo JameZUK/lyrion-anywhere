@@ -206,6 +206,10 @@ class LocalPlayerRepositoryTest {
     private var cacheUsage = ReplayCacheUsage(0, 0)
     private val cacheCleared = mutableListOf<String>()
 
+    /** What `GET /v1/me` says the server's player protocol is (an exception: it can't be asked). */
+    private var protocolAnswer: () -> UInt? = { 2u }
+    private var protocolReads = 0
+
     private fun TestScope.repo(): RustLocalPlayerRepository {
         val d = UnconfinedTestDispatcher(testScheduler)
         val scope = CoroutineScope(backgroundScope.coroutineContext + d)
@@ -217,7 +221,136 @@ class LocalPlayerRepositoryTest {
             cacheClear = { _, dir ->
                 cacheCleared += dir
                 cacheUsage = ReplayCacheUsage(0, 0)
+            },
+            serverProtocol = {
+                protocolReads++
+                protocolAnswer()
             })
+    }
+
+    /**
+     * The override from the signal-path sheet: it reaches the engine at once, is in memory
+     * only, survives the engine's own updates (a track change) and a restart of the engine,
+     * and ends when the network type changes; "back to automatic" restores the setting.
+     */
+    @Test
+    fun theQualityOverrideLastsUntilTheNetworkTypeChanges() = runTest {
+        val r = repo()
+        sessions.value = Session(NoHandle)
+        network.value = NetworkKind.MOBILE
+        r.setEnabled(true)
+        val h = handles.single()
+        assertEquals(StreamQuality.HIGH, h.qualities.last())
+        assertEquals(io.github.jamezuk.lyrionanywhere.core.QualityOrigin.Setting(io.github.jamezuk.lyrionanywhere.core.QualityNetwork.MOBILE, StreamQuality.HIGH), r.state.value.qualityOrigin)
+        r.setQualityOverride(StreamQuality.ORIGINAL)
+        assertEquals(StreamQuality.ORIGINAL, h.qualities.last())
+        assertEquals(StreamQuality.ORIGINAL, r.state.value.streamQuality)
+        assertEquals(StreamQuality.HIGH, r.state.value.streamSetting)
+        assertEquals(StreamQuality.ORIGINAL, r.state.value.qualityOverride)
+        assertEquals(io.github.jamezuk.lyrionanywhere.core.QualityOrigin.Override(StreamQuality.ORIGINAL), r.state.value.qualityOrigin)
+        // The engine's updates (the next track starting) leave it alone.
+        h.observer!!.onStatus(status())
+        h.observer!!.onSignalPath(null)
+        assertEquals(StreamQuality.ORIGINAL, r.state.value.qualityOverride)
+        // A change of the setting doesn't end it either.
+        settings.setStreaming(StreamingSettings(mobile = StreamQuality.LOW))
+        assertEquals(StreamQuality.ORIGINAL, h.qualities.last())
+        // A new engine starts with it.
+        r.setEnabled(false)
+        r.setEnabled(true)
+        assertEquals(listOf(StreamQuality.ORIGINAL), handles.last().qualities)
+        // Back to automatic: the setting for this network.
+        r.setQualityOverride(null)
+        assertEquals(StreamQuality.LOW, handles.last().qualities.last())
+        assertNull(r.state.value.qualityOverride)
+        // Overridden again, then the network type changes: the override is gone.
+        r.setQualityOverride(StreamQuality.HIGH)
+        assertEquals(StreamQuality.HIGH, handles.last().qualities.last())
+        network.value = NetworkKind.WIFI
+        assertNull(r.state.value.qualityOverride)
+        assertEquals(StreamQuality.ORIGINAL, handles.last().qualities.last())
+        assertEquals(io.github.jamezuk.lyrionanywhere.core.QualityOrigin.Setting(io.github.jamezuk.lyrionanywhere.core.QualityNetwork.WIFI, StreamQuality.ORIGINAL), r.state.value.qualityOrigin)
+    }
+
+    /**
+     * `GET /v1/me`'s protocol: below 2, or not given (a plugin before 0.7.3), the player
+     * socket is never opened and the state says why; 2 or more plays; a server that can't
+     * be asked doesn't stop the player (it can't be playing, and the engine stops on 4426).
+     */
+    @Test
+    fun anOldPluginNeverGetsThePlayerSocket() = runTest {
+        protocolAnswer = { null }
+        val r = repo()
+        sessions.value = Session(NoHandle)
+        r.setEnabled(true)
+        assertTrue("no player socket", handles.isEmpty())
+        assertTrue(r.state.value.serverTooOld)
+        assertEquals(PhoneBlock.UPDATE_PLUGIN, r.state.value.phoneBlocked)
+        assertNull(r.state.value.serverProtocol)
+    }
+
+    @Test
+    fun protocolOneIsTooOld() = runTest {
+        protocolAnswer = { 1u }
+        val r = repo()
+        sessions.value = Session(NoHandle)
+        r.setEnabled(true)
+        assertTrue(handles.isEmpty())
+        assertEquals(1u, r.state.value.serverProtocol)
+        assertEquals(PhoneBlock.UPDATE_PLUGIN, r.state.value.phoneBlocked)
+    }
+
+    @Test
+    fun protocolTwoOrMorePlays() = runTest {
+        protocolAnswer = { 3u }
+        val r = repo()
+        sessions.value = Session(NoHandle)
+        r.setEnabled(true)
+        assertEquals(1, handles.size)
+        assertFalse(r.state.value.serverTooOld)
+        assertNull(r.state.value.phoneBlocked)
+    }
+
+    @Test
+    fun aServerThatCantBeAskedStillPlays() = runTest {
+        protocolAnswer = { throw ApiException.Network("test: no route") }
+        val r = repo()
+        sessions.value = Session(NoHandle)
+        r.setEnabled(true)
+        assertEquals(1, handles.size)
+        assertFalse(r.state.value.protocolChecked)
+        assertFalse(r.state.value.serverTooOld)
+    }
+
+    /** Read once per sign-in, and known for About even with the player off. */
+    @Test
+    fun theProtocolIsReadOncePerSignIn() = runTest {
+        val r = repo()
+        sessions.value = Session(NoHandle)
+        assertEquals(1, protocolReads)
+        assertEquals(2u, r.state.value.serverProtocol)
+        assertTrue(r.state.value.protocolChecked)
+        r.setEnabled(true)
+        assertEquals(1, protocolReads)
+        assertEquals(2u, r.state.value.serverProtocol)
+        // Another sign-in asks again.
+        sessions.value = Session(NoHandle)
+        assertEquals(2, protocolReads)
+    }
+
+    /** Close 4426 (the server needs a newer app): the player has ended and says why. */
+    @Test
+    fun updateAppEndsThePlayerWithItsOwnReason() = runTest {
+        val r = repo()
+        sessions.value = Session(NoHandle)
+        r.setEnabled(true)
+        handles.single().observer!!.onStatus(status(connection = PlayerConnection.UpdateApp))
+        val s = r.state.value
+        assertTrue(s.appTooOld)
+        assertFalse(s.running)
+        assertEquals(PhoneBlock.UPDATE_APP, s.phoneBlocked)
+        assertTrue(PlayerConnection.UpdateApp.ended)
+        assertFalse(PlayerConnection.Connected.ended)
     }
 
     /** The replay cache's size reaches a new engine before it starts, and a running one at once. */

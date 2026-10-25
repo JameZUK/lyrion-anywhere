@@ -188,6 +188,7 @@ mod tests {
             format: None,
             year: None,
             quality: None,
+            file_format: None,
         }
     }
 

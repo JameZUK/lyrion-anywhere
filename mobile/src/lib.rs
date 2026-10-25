@@ -52,6 +52,7 @@ pub mod model;
 pub mod offline;
 pub mod player;
 pub mod players;
+pub mod quality;
 pub mod routine;
 pub mod server;
 pub mod session;
@@ -101,6 +102,12 @@ pub use player::{
     remove_stream_spools, stream_cache_totals, stream_quality_for,
 };
 pub use players::{Players, SaveQueueOutcome};
+pub use quality::{
+    DiagramBadge, DiagramBlock, DiagramBlockKind, DiagramSwitch, DiagramVerdict, QualityDecoded,
+    QualityDevice, QualityDiagram, QualityFile, QualityInputs, QualityNetwork, QualityOrigin,
+    QualityPlayer, StreamSent, StreamServed, describe_quality, local_quality_diagram,
+    offline_quality_diagram,
+};
 pub use routine::{
     AlarmChange, AlarmInfo, AlarmListing, AlarmSound, QueuedRating, RatingStyle,
     RatingsSyncOutcome, Routine, TrackRating, next_alarm_in, sync_ratings,

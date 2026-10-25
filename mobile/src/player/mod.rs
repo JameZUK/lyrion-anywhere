@@ -115,6 +115,9 @@ pub enum PlayerConnection {
     Stopped {
         reason: String,
     },
+    /// Ended for good because the gateway needs a newer app (close 4426): the app asks
+    /// the user to update it. Never retried; other players can still be controlled.
+    UpdateApp,
 }
 
 /// What the output is doing (LMS decides; this reflects it).
@@ -282,6 +285,23 @@ pub struct SignalPathInfo {
     /// the network, the rest from the download, whose audio was checked to be the same).
     #[uniffi(default = false)]
     pub from_downloads: bool,
+    /// The DSP chain the listener turned on (preamp, levelling, EQ, crossfeed, limiter)
+    /// changes samples; unlike [`Self::dsp_active`], resampling and dithering don't count.
+    #[uniffi(default = false)]
+    pub dsp_chain: bool,
+    /// What the engine decodes, for the quality diagram (`None`: not probed yet).
+    #[uniffi(default = None)]
+    pub decoded: Option<crate::quality::QualityDecoded>,
+    /// The output device and the route's verdicts, for the quality diagram.
+    #[uniffi(default = None)]
+    pub device: Option<crate::quality::QualityDevice>,
+    /// What LMS served for the stream heard, from the gateway's stream message (`None`:
+    /// not (yet) said, or not playing through the gateway).
+    #[uniffi(default = None)]
+    pub served: Option<crate::quality::StreamServed>,
+    /// What the gateway did with it, from the same message.
+    #[uniffi(default = None)]
+    pub sent: Option<crate::quality::StreamSent>,
 }
 
 /// What the app knows about the output route (from `AudioManager`). Whether the route is
@@ -726,6 +746,19 @@ impl LocalPlayer {
             .unwrap()
             .as_ref()
             .and_then(|r| r.shared.signal.lock().unwrap().clone())
+    }
+
+    /// The quality badge and signal-path diagram of what this phone plays now, from its
+    /// signal path (the decoder, the output, the gateway's stream message) and what the app
+    /// knows: the file's format from LMS's status, why the level in force is in force, and
+    /// whether the track can be sought (docs/plans/signal-path-redesign.md).
+    pub fn quality_diagram(
+        &self,
+        file: Option<crate::quality::QualityFile>,
+        origin: Option<crate::quality::QualityOrigin>,
+        seekable: bool,
+    ) -> crate::quality::QualityDiagram {
+        crate::quality::local_quality_diagram(self.signal_path(), file, origin, seekable)
     }
 
     /// This player's id in LMS (its MAC), once connected.
