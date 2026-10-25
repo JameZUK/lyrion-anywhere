@@ -313,6 +313,29 @@ pub fn quality_message(quality: StreamQuality) -> String {
     json!({ "quality": quality.as_str() }).to_string()
 }
 
+/// Longest quality echo read (`{"quality":"original"}` is 22 bytes).
+pub const MAX_QUALITY_ECHO: usize = 64;
+
+/// The gateway's answer to [`quality_message`] once the level is applied:
+/// `{"quality":"original"|"high"|"low"}` and nothing else. `None` for anything else (a
+/// second key, another value, a different case, too long).
+pub fn parse_quality_echo(text: &str) -> Option<StreamQuality> {
+    if text.len() > MAX_QUALITY_ECHO {
+        return None;
+    }
+    let v: Value = serde_json::from_str(text).ok()?;
+    let o = v.as_object()?;
+    if o.len() != 1 {
+        return None;
+    }
+    match o.get("quality")?.as_str()? {
+        "original" => Some(StreamQuality::Original),
+        "high" => Some(StreamQuality::High),
+        "low" => Some(StreamQuality::Low),
+        _ => None,
+    }
+}
+
 /// Largest stream message accepted (the gateway's are at most 512 bytes).
 pub const MAX_STREAM_MESSAGE: usize = 512;
 
@@ -326,41 +349,34 @@ pub struct StreamMessage {
     pub sent: anywhere_core::quality::Sent,
 }
 
-/// Parse a stream message strictly: one `stream` object with exactly `seq` (a positive
-/// whole number), `served` (`codec` a short lower-case token; `rate`, `bits`, `channels`
-/// whole numbers in range or `null`; `gain_db` finite and within ±100 dB, or absent) and
-/// `sent` (`{"mode":"passthrough"}` or `{"mode":"opus","kbps":…,"level":"high"|"low"}`).
-/// `None` for anything else, including unknown fields.
+/// Parse a stream message: a `stream` object with `seq` (a positive whole number), `served`
+/// (`codec` a short lower-case token, or `null`/absent for "unknown"; `rate`, `bits`,
+/// `channels` whole numbers in range or `null`; `gain_db` finite and within ±100 dB, or
+/// absent) and `sent` (`mode` `passthrough`, or `opus` with `kbps` and `level`
+/// `high`|`low`). Keys it does not know are ignored at every level (the gateway may add
+/// fields without a protocol step, and the web's parser ignores them too); a known field
+/// out of its bounds, and a message over [`MAX_STREAM_MESSAGE`] bytes, refuse the whole
+/// message (`None`).
 pub fn parse_stream_message(text: &str) -> Option<StreamMessage> {
     use anywhere_core::quality::{OpusLevel, Sent, Served};
     if text.len() > MAX_STREAM_MESSAGE {
         return None;
     }
     let v: Value = serde_json::from_str(text).ok()?;
-    let top = v.as_object()?;
-    if top.len() != 1 {
-        return None;
-    }
-    let m = top.get("stream")?.as_object()?;
-    let only = |o: &serde_json::Map<String, Value>, keys: &[&str]| {
-        o.keys().all(|k| keys.contains(&k.as_str()))
-    };
-    if m.len() != 3 || !only(m, &["seq", "served", "sent"]) {
-        return None;
-    }
+    let m = v.as_object()?.get("stream")?.as_object()?;
     let seq = m
         .get("seq")?
         .as_u64()
         .filter(|n| (1..=1u64 << 53).contains(n))?;
     let served = m.get("served")?.as_object()?;
-    if !only(served, &["codec", "rate", "bits", "channels", "gain_db"]) {
-        return None;
-    }
-    let codec = served.get("codec")?.as_str().filter(|c| {
-        (1..=16).contains(&c.len())
-            && c.bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-    })?;
+    let codec = match served.get("codec") {
+        None | Some(Value::Null) => "unknown",
+        Some(c) => c.as_str().filter(|c| {
+            (1..=16).contains(&c.len())
+                && c.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        })?,
+    };
     // Absent or `null`: unknown. Anything else must be a whole number in range.
     let whole = |key: &str, lo: u64, hi: u64| -> Result<Option<i64>, ()> {
         match served.get(key) {
@@ -381,8 +397,8 @@ pub fn parse_stream_message(text: &str) -> Option<StreamMessage> {
     };
     let sent = m.get("sent")?.as_object()?;
     let sent = match sent.get("mode")?.as_str()? {
-        "passthrough" if sent.len() == 1 => Sent::Passthrough,
-        "opus" if sent.len() == 3 && only(sent, &["mode", "kbps", "level"]) => {
+        "passthrough" => Sent::Passthrough,
+        "opus" => {
             let kbps = sent
                 .get("kbps")?
                 .as_u64()
@@ -425,7 +441,8 @@ pub const STREAM_BOOK_LIMIT: usize = 8;
 
 impl StreamBook {
     /// Keep `m` (replacing any earlier message for the same stream). False if it changed
-    /// nothing (the same message again).
+    /// nothing: the same message again, or one older than every stream kept when the book
+    /// is full (it would be dropped at once).
     pub fn insert(&mut self, m: StreamMessage) -> bool {
         if let Some(e) = self.entries.iter_mut().find(|e| e.seq == m.seq) {
             if *e == m {
@@ -433,6 +450,9 @@ impl StreamBook {
             }
             *e = m;
             return true;
+        }
+        if self.entries.len() >= STREAM_BOOK_LIMIT && self.entries.iter().all(|e| e.seq > m.seq) {
+            return false;
         }
         self.entries.push_back(m);
         while self.entries.len() > STREAM_BOOK_LIMIT {
@@ -1538,8 +1558,6 @@ mod tests {
             r#""stream""#.into(),
             r#"{"stream":null}"#.into(),
             r#"{"stream":[]}"#.into(),
-            with(&|v| v["extra"] = json!(1)),
-            with(&|v| v["stream"]["extra"] = json!(1)),
             with(&|v| v["stream"]["seq"] = json!(0)),
             with(&|v| v["stream"]["seq"] = json!(-1)),
             with(&|v| v["stream"]["seq"] = json!(1.5)),
@@ -1563,7 +1581,6 @@ mod tests {
             with(&|v| v["stream"]["served"]["codec"] = json!("fl ac")),
             with(&|v| v["stream"]["served"]["codec"] = json!("a-very-long-codec-name")),
             with(&|v| v["stream"]["served"]["codec"] = json!("fl\u{202e}ac")),
-            with(&|v| v["stream"]["served"]["codec"] = json!(null)),
             with(&|v| v["stream"]["served"]["codec"] = json!(5)),
             with(&|v| v["stream"]["served"]["rate"] = json!(-96000)),
             with(&|v| v["stream"]["served"]["rate"] = json!(96000.5)),
@@ -1579,7 +1596,6 @@ mod tests {
             with(&|v| v["stream"]["served"]["gain_db"] = json!(1e9)),
             with(&|v| v["stream"]["served"]["gain_db"] = json!(-101.0)),
             with(&|v| v["stream"]["served"]["gain_db"] = json!([1])),
-            with(&|v| v["stream"]["served"]["volume"] = json!(1)),
             with(&|v| v["stream"]["sent"] = json!(null)),
             with(&|v| v["stream"]["sent"] = json!("opus")),
             with(&|v| v["stream"]["sent"]["mode"] = json!("mp3")),
@@ -1598,8 +1614,6 @@ mod tests {
             with(&|v| {
                 v["stream"]["sent"].as_object_mut().unwrap().remove("level");
             }),
-            with(&|v| v["stream"]["sent"]["extra"] = json!(1)),
-            r#"{"stream":{"seq":1,"served":{"codec":"flac"},"sent":{"mode":"passthrough","kbps":160}}}"#.into(),
             // Over the size limit, however well formed.
             format!(
                 r#"{{"stream":{{"seq":1,"served":{{"codec":"flac"}},"sent":{{"mode":"passthrough"}}}}}}{}"#,
@@ -1610,6 +1624,123 @@ mod tests {
             assert_eq!(parse_stream_message(b), None, "{b}");
         }
         assert!(parse_stream_message(&good.to_string()).is_some());
+    }
+
+    /// Fields the gateway may add without a protocol step are ignored at every level, as
+    /// the web's parser does; the known fields read the same. A `null` or absent codec is
+    /// "unknown".
+    #[test]
+    fn unknown_stream_message_fields_are_ignored() {
+        let good: Value = serde_json::from_str(STREAM_FLAC).unwrap();
+        let want = parse_stream_message(STREAM_FLAC).unwrap();
+        let with = |f: &dyn Fn(&mut Value)| {
+            let mut v = good.clone();
+            f(&mut v);
+            v.to_string()
+        };
+        for added in [
+            with(&|v| v["extra"] = json!(1)),
+            with(&|v| v["stream"]["extra"] = json!({"nested": [1, 2, 3]})),
+            with(&|v| v["stream"]["served"]["lossless"] = json!(true)),
+            with(&|v| v["stream"]["served"]["volume"] = json!("loud")),
+            with(&|v| v["stream"]["sent"]["container"] = json!("ogg")),
+            with(&|v| v["stream"]["sent"]["extra"] = json!(null)),
+        ] {
+            assert_eq!(
+                parse_stream_message(&added).as_ref(),
+                Some(&want),
+                "{added}"
+            );
+        }
+        let m = parse_stream_message(
+            r#"{"stream":{"seq":1,"served":{"codec":"flac"},"sent":{"mode":"passthrough","kbps":160}}}"#,
+        )
+        .unwrap();
+        assert_eq!(m.sent, anywhere_core::quality::Sent::Passthrough);
+        for codec in [
+            with(&|v| v["stream"]["served"]["codec"] = json!(null)),
+            with(&|v| {
+                v["stream"]["served"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("codec");
+            }),
+        ] {
+            let m = parse_stream_message(&codec).unwrap();
+            assert_eq!(m.served.codec.as_deref(), Some("unknown"), "{codec}");
+            assert_eq!(m.served.rate, Some(96_000));
+        }
+        // Still bounded: an added field cannot carry a message past the size limit, and
+        // the known fields are still checked.
+        let long = with(&|v| v["stream"]["note"] = json!("x".repeat(MAX_STREAM_MESSAGE)));
+        assert_eq!(parse_stream_message(&long), None);
+        let bad = with(&|v| {
+            v["stream"]["served"]["lossless"] = json!(true);
+            v["stream"]["served"]["rate"] = json!(-1);
+        });
+        assert_eq!(parse_stream_message(&bad), None);
+    }
+
+    /// The gateway's quality echo is read strictly: one key, one of the three levels.
+    #[test]
+    fn the_quality_echo_is_read_strictly() {
+        assert_eq!(
+            parse_quality_echo(r#"{"quality":"original"}"#),
+            Some(StreamQuality::Original)
+        );
+        assert_eq!(
+            parse_quality_echo(r#"{"quality":"high"}"#),
+            Some(StreamQuality::High)
+        );
+        assert_eq!(
+            parse_quality_echo(r#" { "quality" : "low" } "#),
+            Some(StreamQuality::Low)
+        );
+        // What the client sends is what the gateway echoes.
+        for q in [
+            StreamQuality::Original,
+            StreamQuality::High,
+            StreamQuality::Low,
+        ] {
+            assert_eq!(parse_quality_echo(&quality_message(q)), Some(q));
+        }
+        for bad in [
+            "",
+            "null",
+            "[]",
+            r#""high""#,
+            r#"{}"#,
+            r#"{"quality":"High"}"#,
+            r#"{"quality":"medium"}"#,
+            r#"{"quality":""}"#,
+            r#"{"quality":null}"#,
+            r#"{"quality":2}"#,
+            r#"{"quality":["high"]}"#,
+            r#"{"quality":"high","extra":1}"#,
+            r#"{"Quality":"high"}"#,
+            r#"{"keepalive":true}"#,
+            r#"{"quality":"high"}{"quality":"low"}"#,
+            r#"{"stream":{"seq":1,"served":{"codec":"flac"},"sent":{"mode":"passthrough"}}}"#,
+        ] {
+            assert_eq!(parse_quality_echo(bad), None, "{bad}");
+        }
+        let long = format!(r#"{{"quality":"high"}}{}"#, " ".repeat(MAX_QUALITY_ECHO));
+        assert_eq!(parse_quality_echo(&long), None);
+        // Arbitrary text never panics.
+        let alphabet = b"{}\":,qualityhgwornl \\";
+        let mut seed = 0x1234_5678_9abc_def0u64;
+        for _ in 0..10_000 {
+            let len = (seed % 40) as usize;
+            let s: String = (0..len)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    alphabet[(seed % alphabet.len() as u64) as usize] as char
+                })
+                .collect();
+            let _ = parse_quality_echo(&s);
+        }
     }
 
     #[test]
@@ -1691,9 +1822,14 @@ mod tests {
         }
         assert!(b.get(1).is_none() && b.get(19).is_some());
         assert_eq!(b.entries.len(), STREAM_BOOK_LIMIT);
-        // A message for a long-gone stream doesn't evict a newer one.
-        b.insert(msg(1, "opus"));
+        // A message for a long-gone stream doesn't evict a newer one, and says it changed
+        // nothing (so no snapshot is published for it).
+        assert!(!b.insert(msg(1, "opus")));
         assert!(b.get(1).is_none() && b.get(12).is_some());
+        assert_eq!(b.entries.len(), STREAM_BOOK_LIMIT);
+        // A newer one than the oldest kept still goes in, the oldest out.
+        assert!(b.insert(msg(30, "opus")));
+        assert!(b.get(12).is_none() && b.get(30).is_some());
         b.clear();
         assert!(b.get(19).is_none());
     }

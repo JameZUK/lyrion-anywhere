@@ -121,8 +121,9 @@ pub(crate) enum Cmd {
     SetDsp(DspSettings),
     /// The output device or the bit-perfect setting changed: negotiate the output again.
     Renegotiate,
-    /// The stream level for the streams that follow.
-    SetQuality(StreamQuality),
+    /// The stream level for the streams that follow. `applied` is told (or dropped) once
+    /// the gateway has echoed the level, or at once when nothing is sent to it.
+    SetQuality(StreamQuality, Option<std::sync::mpsc::Sender<()>>),
     /// The phone's media volume as an attenuation (dB) for loudness compensation, or
     /// `None` when it isn't known.
     SetLoudnessReference(Option<f64>),
@@ -260,6 +261,11 @@ enum Ev {
         conn: u64,
         message: protocol::StreamMessage,
     },
+    /// The gateway has applied a change of stream level (its echo of `{"quality"}`).
+    QualityEcho {
+        conn: u64,
+        level: StreamQuality,
+    },
     StreamHeaders {
         id: u64,
         content_type: String,
@@ -374,6 +380,9 @@ pub(crate) struct Engine {
     /// until known).
     quality: StreamQuality,
     quality_feature: Option<bool>,
+    /// A caller waiting for the gateway to echo the level sent (one at a time: a newer
+    /// change drops the older waiter, which then returns).
+    quality_waiter: Option<(StreamQuality, std::sync::mpsc::Sender<()>)>,
     /// The gateway takes a resume grace at sign-in (`None` until known).
     grace_feature: Option<bool>,
     /// The first connection waits for the features until then.
@@ -576,6 +585,7 @@ impl Engine {
             timed_start: false,
             quality,
             quality_feature: None,
+            quality_waiter: None,
             session: None,
             received: 0,
             ws_gen: 0,
@@ -657,7 +667,7 @@ impl Engine {
                         self.publish_signal(true);
                     }
                     Some(Cmd::Renegotiate) => self.audio.renegotiate = true,
-                    Some(Cmd::SetQuality(q)) => self.set_quality(q),
+                    Some(Cmd::SetQuality(q, applied)) => self.set_quality(q, applied),
                     Some(Cmd::SetLoudnessReference(db)) => {
                         self.audio.pipeline.set_loudness_reference_db(db);
                         self.publish_signal(true);
@@ -916,19 +926,48 @@ impl Engine {
         self.disconnected_at.is_none_or(|t| t.elapsed() < window)
     }
 
-    fn set_quality(&mut self, q: StreamQuality) {
+    /// A new level for the streams that follow. `applied` hears once the gateway has echoed
+    /// it (so a seek that follows gets a stream at the new level); dropped at once when
+    /// nothing is sent (the same level, no live socket, or a gateway that can't change it
+    /// mid-session: the level is then in the next sign-in form).
+    fn set_quality(&mut self, q: StreamQuality, applied: Option<std::sync::mpsc::Sender<()>>) {
         if q == self.quality {
+            // Still on its way: this caller waits for the same echo.
+            if let (Some(tx), Some((level, _))) = (applied, &self.quality_waiter)
+                && *level == q
+            {
+                self.quality_waiter = Some((q, tx));
+            }
             return;
         }
         self.quality = q;
-        self.send_quality();
+        // A newer change: an older waiter is dropped (and returns).
+        self.quality_waiter = None;
+        if self.send_quality()
+            && let Some(tx) = applied
+        {
+            self.quality_waiter = Some((q, tx));
+        }
     }
 
-    /// Tell the gateway the level now, if it can take it mid-session; otherwise it is asked
-    /// for when the player next connects.
-    fn send_quality(&mut self) {
+    /// Tell the gateway the level now, if it can take it mid-session (true when sent);
+    /// otherwise it is asked for when the player next connects.
+    fn send_quality(&mut self) -> bool {
         if self.open && self.quality_feature == Some(true) {
             self.send_ws(Out::Text(protocol::quality_message(self.quality)));
+            return true;
+        }
+        false
+    }
+
+    /// The gateway's echo of a level: the caller waiting for it returns. An echo of another
+    /// level (an older change's) is not the one awaited.
+    fn on_quality_echo(&mut self, level: StreamQuality) {
+        if let Some((want, _)) = &self.quality_waiter
+            && *want == level
+            && let Some((_, tx)) = self.quality_waiter.take()
+        {
+            let _ = tx.send(());
         }
     }
 
@@ -960,6 +999,8 @@ impl Engine {
         self.ws_gen += 1;
         self.last_connect = Some(Instant::now());
         self.greeted_at = None;
+        // The new sign-in form carries the level: nothing to wait for.
+        self.quality_waiter = None;
         let (out_tx, out_rx) = mpsc::unbounded_channel();
         self.ws_out = Some(out_tx);
         self.open = false;
@@ -1116,6 +1157,8 @@ impl Engine {
         self.open = false;
         self.ws_out = None;
         self.ws_task = None;
+        // No echo can come now; the level goes in the next sign-in form.
+        self.quality_waiter = None;
         self.update_link();
         if was_open || self.disconnected_at.is_none() {
             self.disconnected_at.get_or_insert_with(Instant::now);
@@ -1126,25 +1169,13 @@ impl Engine {
             CloseAction::Stop | CloseAction::UpdateApp => {
                 // Refused, revoked, signed out, replaced or too old for the gateway (4426):
                 // nothing of it is kept, and the same form is never sent again.
-                self.gap = None;
-                self.cancel_restarts();
-                self.close_stream();
-                self.close_output();
-                self.audio.pipeline.unconfigure();
-                self.shared.out.ring.set_hold(true);
-                self.player = None;
-                self.end_takeover();
-                self.acted = false;
-                self.drop_spools();
                 if code == Some(1008)
                     && let Some(c) = &self.cache
                 {
                     // Refused or revoked: nothing of this account's streams stays.
                     c.lock().unwrap().clear();
                 }
-                // Nor are its downloads read again (the app deletes them on revocation).
-                self.downloads = None;
-                self.connection = if action == CloseAction::UpdateApp {
+                self.stop_for_good(if action == CloseAction::UpdateApp {
                     // The app says what to do; the gateway's reason is never shown.
                     PlayerConnection::UpdateApp
                 } else {
@@ -1155,8 +1186,7 @@ impl Engine {
                             protocol::clean_name(reason)
                         },
                     }
-                };
-                self.stopped_by_server();
+                });
                 return;
             }
             CloseAction::Reauthenticate => {
@@ -1194,6 +1224,31 @@ impl Engine {
             delay_ms: delay.as_millis() as u64,
         };
         self.publish_status(true);
+    }
+
+    /// End the player for good, as `connection` says: nothing of the session is kept, no
+    /// connection is tried again, and a socket still open is closed.
+    fn stop_for_good(&mut self, connection: PlayerConnection) {
+        self.close_socket(true);
+        self.open = false;
+        self.connect_at = None;
+        self.reconnect_at = None;
+        self.session = None;
+        self.quality_waiter = None;
+        self.gap = None;
+        self.cancel_restarts();
+        self.close_stream();
+        self.close_output();
+        self.audio.pipeline.unconfigure();
+        self.shared.out.ring.set_hold(true);
+        self.player = None;
+        self.end_takeover();
+        self.acted = false;
+        self.drop_spools();
+        // Nor are its downloads read again (the app deletes them on revocation).
+        self.downloads = None;
+        self.connection = connection;
+        self.stopped_by_server();
     }
 
     fn stopped_by_server(&mut self) {
@@ -1258,10 +1313,29 @@ impl Engine {
             }
             Ev::StreamInfo { conn, message } if conn == self.ws_gen => {
                 // It may arrive just after its stream started, or again after a resume:
-                // kept by stream number, it reaches the snapshot once that stream plays.
-                if self.stream_book.insert(message) {
+                // kept by stream number, it reaches the snapshot once that stream plays
+                // (the next publish picks it up). Published at once only when it is for the
+                // stream heard now and changed what is kept.
+                let seq = message.seq;
+                let heard = self
+                    .player
+                    .as_ref()
+                    .and_then(Player::playing_track)
+                    .is_some_and(|t| u64::from(t) + 1 == seq);
+                if self.stream_book.insert(message) && heard && self.takeover.is_none() {
                     self.publish_signal(true);
                 }
+            }
+            Ev::QualityEcho { conn, level } if conn == self.ws_gen => self.on_quality_echo(level),
+            Ev::Features(Some(f)) if f.protocol.is_none_or(|p| p < protocol::PROTOCOL_VERSION) => {
+                // A gateway too old for this engine's protocol (the app should not have
+                // started the player: this is the second line). Nothing is played from it.
+                log::warn!(
+                    "player: the gateway speaks protocol {:?}; {} needed: not connecting",
+                    f.protocol,
+                    protocol::PROTOCOL_VERSION
+                );
+                self.stop_for_good(PlayerConnection::UpdatePlugin);
             }
             Ev::Features(f) => {
                 let f = f.unwrap_or_default();
@@ -2912,16 +2986,18 @@ async fn socket_task(
                     Message::Binary(b) if greeted => {
                         let _ = tx.send(Ev::WsFrame { conn, bytes: b.to_vec() });
                     }
-                    // Text after the greeting: the stream message (protocol 2), or the text
-                    // keepalive. Anything else is ignored (and said once per connection);
-                    // it is never counted as a frame.
+                    // Text after the greeting: the stream message (protocol 2), the echo of
+                    // a level change, or the text keepalive. Anything else is ignored (and
+                    // said once per connection); it is never counted as a frame.
                     Message::Text(t) => match protocol::parse_stream_message(t.as_str()) {
                         Some(message) => {
                             let _ = tx.send(Ev::StreamInfo { conn, message });
                         }
                         None if t.as_str() == r#"{"keepalive":true}"# => {}
                         None => {
-                            if !junk_logged {
+                            if let Some(level) = protocol::parse_quality_echo(t.as_str()) {
+                                let _ = tx.send(Ev::QualityEcho { conn, level });
+                            } else if !junk_logged {
                                 junk_logged = true;
                                 log::warn!(
                                     "player socket: ignored a text message the protocol doesn't have ({} bytes)",

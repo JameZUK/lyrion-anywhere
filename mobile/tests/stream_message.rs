@@ -5,7 +5,11 @@
 //!   re-sent after the greeting) and a seek, never attached to the wrong stream, and junk
 //!   text is ignored;
 //! - every sign-in form carries `"protocol": 2`;
-//! - close 4426 stops the player for good with `UpdateApp`, never retried.
+//! - close 4426 stops the player for good with `UpdateApp`, never retried;
+//! - a gateway whose `/v1/me` gives no protocol, or one below 2, gets no player socket
+//!   (`UpdatePlugin`);
+//! - a change of level waits for the gateway's echo (at most `QUALITY_ECHO_WAIT`), and
+//!   junk is not the echo.
 
 mod common;
 
@@ -52,6 +56,40 @@ struct Fake {
     stats: Mutex<Vec<String>>,
     /// `GET /v1/me` has no `protocol` (a gateway before 0.7.3).
     old_gateway: AtomicBool,
+    /// `GET /v1/me` says `"protocol": 1`.
+    protocol_one: AtomicBool,
+    /// How the gateway answers a `{"quality"}` control message.
+    echo: Mutex<Echo>,
+    /// The `{"quality"}` control messages received, in order.
+    quality: Mutex<Vec<String>>,
+}
+
+/// How the scripted gateway answers a change of level.
+#[derive(Clone, Copy, Default, PartialEq)]
+enum Echo {
+    /// `{"quality":<the level>}` at once, as the gateway does once applied.
+    #[default]
+    Prompt,
+    /// Nothing.
+    Silent,
+    /// Junk that is not the echo (wrong case, an extra key, another level, the stream
+    /// message's shape) at once, then the real echo after `ms`.
+    JunkThen { ms: u64 },
+    /// Only junk.
+    Junk,
+}
+
+/// What the scripted gateway sends instead of a well-formed echo of `level`.
+fn junk_echoes(level: &str) -> Vec<String> {
+    let other = if level == "low" { "high" } else { "low" };
+    vec![
+        format!(r#"{{"quality":"{}"}}"#, level.to_uppercase()),
+        format!(r#"{{"quality":"{level}","extra":1}}"#),
+        format!(r#"{{"quality":"{other}"}}"#),
+        format!(r#"{{"Quality":"{level}"}}"#),
+        format!(r#"{{"quality":["{level}"]}}"#),
+        "not json".into(),
+    ]
 }
 
 impl Fake {
@@ -145,6 +183,35 @@ async fn socket(fake: Arc<Fake>, mut ws: WebSocket) {
                         up.drain(..8 + len);
                     }
                 }
+                Some(Ok(Message::Text(t))) => {
+                    let v: Value = serde_json::from_str(t.as_str()).unwrap_or(Value::Null);
+                    let Some(level) = v["quality"].as_str().map(str::to_string) else {
+                        continue;
+                    };
+                    fake.quality.lock().unwrap().push(t.to_string());
+                    let echo = json!({ "quality": level }).to_string();
+                    let mode = *fake.echo.lock().unwrap();
+                    let mut send = Vec::new();
+                    if matches!(mode, Echo::Junk | Echo::JunkThen { .. }) {
+                        send.extend(junk_echoes(&level));
+                    }
+                    if mode == Echo::Prompt {
+                        send.push(echo.clone());
+                    }
+                    for s in send {
+                        if ws.send(Message::Text(s.into())).await.is_err() {
+                            return;
+                        }
+                    }
+                    if let Echo::JunkThen { ms } = mode
+                        && let Some(c) = fake.conn.lock().unwrap().clone()
+                    {
+                        tokio::spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(ms)).await;
+                            let _ = c.send(Down::Msg(Message::Text(echo.into())));
+                        });
+                    }
+                }
                 Some(Ok(_)) => {}
                 _ => return,
             },
@@ -189,12 +256,20 @@ async fn start(fake: Arc<Fake>) -> Arc<Session> {
         )
         .fallback(any(move |req: Request| {
             let old = f3.old_gateway.load(Ordering::SeqCst);
+            let one = f3.protocol_one.load(Ordering::SeqCst);
             async move {
                 match (req.method().as_str(), req.uri().path()) {
                     ("GET", "/v1/me") if old => json!({
                     "user": {"username": "alice", "role": "listener"},
                     "device": {"id": 1, "name": "Test phone"},
                     "features": {}})
+                    .to_string()
+                    .into_response(),
+                    ("GET", "/v1/me") if one => json!({
+                    "user": {"username": "alice", "role": "listener"},
+                    "device": {"id": 1, "name": "Test phone", "mac": "02:4c:41:00:00:01"},
+                    "protocol": 1,
+                    "features": {"stream_quality": true, "resume_grace": true}})
                     .to_string()
                     .into_response(),
                     ("POST", "/v1/auth/login" | "/v1/auth/refresh") => json!({
@@ -382,6 +457,26 @@ async fn stream_messages_follow_their_streams_through_a_change_a_resume_and_a_se
         !obs.saw_path(|p| p.served.as_ref().is_some_and(|s| s.rate == Some(192_000))),
         "another stream's message never shows"
     );
+    // Messages for streams not heard (and the playing one's again, unchanged) publish no
+    // snapshot of their own: before, each one forced a publish.
+    let before = obs.paths.lock().unwrap().len();
+    for n in 0..20 {
+        // A stream not heard yet, its message corrected again and again (each one kept).
+        let sent = if n % 2 == 0 {
+            json!({"mode": "passthrough"})
+        } else {
+            opus(96, "low")
+        };
+        fake.text(&stream_message(9, 192_000, 32, sent));
+        fake.text(&stream_message(1, 96_000, 24, opus(160, "high")));
+    }
+    // Something the engine handles after them, so they have all been read.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let published = obs.paths.lock().unwrap().len() - before;
+    assert!(
+        published < 10,
+        "{published} snapshots for 40 messages that change nothing heard"
+    );
 
     // Track 2, then the connection drops before its message came.
     for _ in 0..1000 {
@@ -512,4 +607,139 @@ async fn the_servers_protocol_is_read_from_v1_me() {
     fake.old_gateway.store(true, Ordering::SeqCst);
     assert_eq!(session.server_protocol().await, Ok(None));
     assert_eq!(session.me().await.unwrap().protocol, None);
+}
+
+/// The engine acts on `/v1/me`'s `protocol` itself (a second line behind the app's own
+/// gate): a gateway that gives none, or one below 2, gets no player socket; the player
+/// stops with `UpdatePlugin` and never tries.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_old_gateway_gets_no_player_socket() {
+    for old in [true, false] {
+        let fake = Arc::new(Fake::default());
+        let session = start(fake.clone()).await;
+        if old {
+            fake.old_gateway.store(true, Ordering::SeqCst);
+        } else {
+            fake.protocol_one.store(true, Ordering::SeqCst);
+        }
+        let obs = Arc::new(Obs::default());
+        let (player, stop) = player(session, obs.clone());
+        let o = obs.clone();
+        wait_for("UpdatePlugin", move || {
+            o.statuses
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|s| s.connection == PlayerConnection::UpdatePlugin)
+        })
+        .await;
+        // Longer than the first connection's wait for the features, and a back-off.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(
+            fake.forms.lock().unwrap().is_empty(),
+            "never signed in (old: {old})"
+        );
+        assert_eq!(player.status().connection, PlayerConnection::UpdatePlugin);
+        assert!(
+            !obs.statuses
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|s| s.connection == PlayerConnection::Connected),
+            "never connected (old: {old})"
+        );
+        stop.store(true, Ordering::SeqCst);
+        player.stop();
+    }
+}
+
+/// A connected player on the scripted gateway, ready for a change of level.
+async fn connected(echo: Echo) -> (Arc<Fake>, Arc<LocalPlayer>, Arc<AtomicBool>) {
+    let fake = Arc::new(Fake::default());
+    *fake.echo.lock().unwrap() = echo;
+    let session = start(fake.clone()).await;
+    let obs = Arc::new(Obs::default());
+    let (player, stop) = player(session, obs.clone());
+    let o = obs.clone();
+    wait_for("connected", move || {
+        o.statuses
+            .lock()
+            .unwrap()
+            .last()
+            .is_some_and(|s| s.connection == PlayerConnection::Connected)
+    })
+    .await;
+    (fake, player, stop)
+}
+
+/// `set_stream_quality` as the app calls it (off the async threads), timed.
+async fn change_level(player: &Arc<LocalPlayer>, q: StreamQuality) -> Duration {
+    let p = player.clone();
+    tokio::task::spawn_blocking(move || {
+        let t = std::time::Instant::now();
+        p.set_stream_quality(q);
+        t.elapsed()
+    })
+    .await
+    .unwrap()
+}
+
+/// A change of level waits for the gateway's echo, so the app's seek that follows gets a
+/// stream at the new level: the echo arrives, and it returns promptly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_level_change_returns_once_the_gateway_echoes_it() {
+    let (fake, player, stop) = connected(Echo::Prompt).await;
+    let took = change_level(&player, StreamQuality::Low).await;
+    assert!(took < Duration::from_millis(1000), "took {took:?}");
+    assert_eq!(*fake.quality.lock().unwrap(), [r#"{"quality":"low"}"#]);
+    // The same level again: nothing sent, nothing waited for.
+    let took = change_level(&player, StreamQuality::Low).await;
+    assert!(took < Duration::from_millis(200), "took {took:?}");
+    assert_eq!(fake.quality.lock().unwrap().len(), 1);
+    let took = change_level(&player, StreamQuality::Original).await;
+    assert!(took < Duration::from_millis(1000), "took {took:?}");
+    assert_eq!(fake.quality.lock().unwrap().len(), 2);
+    stop.store(true, Ordering::SeqCst);
+    player.stop();
+}
+
+/// No echo (a gateway that never answers): it returns after the wait, not later.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_level_change_with_no_echo_returns_after_the_wait() {
+    let (fake, player, stop) = connected(Echo::Silent).await;
+    let took = change_level(&player, StreamQuality::High).await;
+    let wait = anywhere_mobile::QUALITY_ECHO_WAIT;
+    assert!(took >= wait - Duration::from_millis(50), "took {took:?}");
+    assert!(took < wait + Duration::from_millis(1500), "took {took:?}");
+    assert_eq!(*fake.quality.lock().unwrap(), [r#"{"quality":"high"}"#]);
+    assert_eq!(player.status().connection, PlayerConnection::Connected);
+    stop.store(true, Ordering::SeqCst);
+    player.stop();
+}
+
+/// Junk is not the echo: neither a malformed one nor another level's ends the wait; the
+/// real echo after it does. Junk alone waits the whole time. The socket stays up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn junk_is_not_the_quality_echo() {
+    let (fake, player, stop) = connected(Echo::JunkThen { ms: 600 }).await;
+    let took = change_level(&player, StreamQuality::Low).await;
+    assert!(
+        took >= Duration::from_millis(550),
+        "returned on junk: {took:?}"
+    );
+    assert!(
+        took < Duration::from_millis(1800),
+        "missed the echo: {took:?}"
+    );
+    *fake.echo.lock().unwrap() = Echo::Junk;
+    let took = change_level(&player, StreamQuality::High).await;
+    assert!(
+        took >= anywhere_mobile::QUALITY_ECHO_WAIT - Duration::from_millis(50),
+        "returned on junk: {took:?}"
+    );
+    assert_eq!(fake.quality.lock().unwrap().len(), 2);
+    assert_eq!(fake.forms.lock().unwrap().len(), 1, "never reconnected");
+    assert_eq!(player.status().connection, PlayerConnection::Connected);
+    stop.store(true, Ordering::SeqCst);
+    player.stop();
 }
