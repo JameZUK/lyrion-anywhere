@@ -3,10 +3,11 @@
 //! gateway sent. It is never a frame (not counted in `received`) and comes again after a
 //! resume greeting.
 //!
-//! Ordering: the gateway reads a FLAC stream's first 42 bytes and queues the message on the
-//! player socket before it answers the stream request, so the message is on its way before
-//! any of the body is. The tests check it is there to be read once the response headers
-//! are in, before a byte of the body is read (two connections give no stronger order).
+//! Ordering: the gateway queues the message on the player socket before it passes on any of
+//! the stream: at once for most streams, and for FLAC once it has read the first 42 bytes
+//! (on the response body's first read, so the relay is open even while LMS is slow to
+//! start). The tests check it is there to be read once the response headers are in, before
+//! a byte of the body is read (two connections give no stronger order).
 
 mod common;
 use common::flac::*;
@@ -255,6 +256,49 @@ async fn a_headerless_flac_is_relayed_untouched() {
         assert_eq!(m["served"]["rate"], Value::Null);
         assert_eq!(got, body);
     }
+}
+
+/// LMS slow to send a FLAC stream's first bytes (a spun-down disk, its own transcoder
+/// starting) and a client that gives up waiting and asks again: the second request
+/// carries on with the same upstream. LMS is asked for the stream once, the client gets
+/// all of it from its start, and the message once.
+#[tokio::test]
+async fn a_client_that_leaves_while_lms_is_slow_to_start_gets_the_same_upstream() {
+    let mut h = harness().await;
+    let file = flac_24_96(20);
+    *h.lms.stream_body.lock().unwrap() = Some(Arc::new(file.clone()));
+    *h.lms.stream_first_delay.lock().unwrap() = Some(Duration::from_millis(1000));
+    let mut p = open(&mut h).await;
+    p.lms_sends(&strm_s(h.mac_a, b'f', UNKNOWN, 0)).await;
+    // The client gives up before LMS's first bytes, headers or not.
+    let url = h.url(&format!("/v1/stream/{}/1", p.sid));
+    let gave_up = tokio::time::timeout(Duration::from_millis(300), async {
+        let r = reqwest::Client::new()
+            .get(&url)
+            .bearer_auth(&h.tok_a)
+            .send()
+            .await
+            .unwrap();
+        r.bytes().await
+    })
+    .await;
+    assert!(gave_up.is_err(), "nothing to read yet");
+    let (m, body) = fetch(&h, &mut p, 1).await;
+    assert_eq!(m["seq"], 1);
+    assert_eq!(m["served"]["rate"], 96000);
+    // From its start (its padding dropped on the way, as for any FLAC).
+    assert!(
+        body.len() > 1000 && body[..42] == file[..42],
+        "from its start"
+    );
+    let asked: Vec<String> = h
+        .lms
+        .http_paths()
+        .into_iter()
+        .filter(|p| p.starts_with("/stream.mp3"))
+        .collect();
+    assert_eq!(asked.len(), 1, "LMS asked once: {asked:?}");
+    quiet(&mut p.ws).await;
 }
 
 /// `seq` counts the `strm s` frames of the session: a seek and a track change each make a
