@@ -170,6 +170,58 @@ is($params->{anywhere_csrf}, $token, 'also after saving');
 	like($html, qr/name="anywhere_allow_http"/, 'the page has the box');
 	like($html, qr/<details class="aw-advanced"[^>]*>\s*<summary>Advanced[^<]*<\/summary>\s*\[% WRAPPER setting title="Gateway path"/, 'the gateway path is under Advanced');
 }
+
+# --- a rejected http:// Public URL stays on the page with its box; the box shows ticked while
+# the saved address is http://; saving one is confirmed (a forum report, 2026-10-25: "the tick
+# disappears when I click Apply") ---------------------------------------------------------
+{
+	# clean(): the typed address comes back in %keep, cleaned as it would have been saved.
+	my ($o, $e, $n, $k) = $clean->({ pref_public_url => ' http://music.example.com/ ' });
+	ok(!exists $o->{pref_public_url}, 'not saved without the box');
+	is($k->{pref_public_url}, 'http://music.example.com', 'but kept for the field, trimmed as it would be saved');
+	like($e->[0], qr/below the address/, 'and the error says where the box is');
+	($o, $e, $n, $k) = $clean->({ pref_public_url => 'http://music.example.com', anywhere_allow_http => 1 });
+	is_deeply($k, {}, 'nothing kept when it is saved');
+	($o, $e, $n, $k) = $clean->({ pref_public_url => 'https://music.example.com' });
+	is_deeply($k, {}, 'nor for https');
+	($o, $e, $n, $k) = $clean->({ pref_public_url => 'http://bad url' });
+	is_deeply($k, {}, 'an address that is not one is not kept either');
+	($o, $e, $n, $k) = $clean->({ pref_listen => 'nonsense' });
+	is_deeply($k, {}, 'other fields are never kept');
+
+	# The handler hands it to the page under its own name, never as a pref_ value LMS would save.
+	require Plugins::LyrionAnywhere::Gateway;
+	no warnings 'redefine';
+	local *Plugins::LyrionAnywhere::Gateway::restart = sub { 1 };
+	local *Plugins::LyrionAnywhere::Gateway::stop = sub { };
+	$prefs->set(enabled => 0);
+	$prefs->set(public_url => '');
+	Plugins::LyrionAnywhere::Gateway::settings_saved();
+	my $p = { saveSettings => 1, anywhere_form_token => $token, pref_public_url => 'http://music.example.com' };
+	@Slim::Web::Settings::HANDLED = ();
+	Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+	is($prefs->get('public_url'), '', 'without the box: not saved');
+	is($p->{anywhere_keep_public_url}, 'http://music.example.com', 'the typed address is handed to the page');
+	ok(!exists $Slim::Web::Settings::HANDLED[-1]{pref_public_url}, 'and not as a pref LMS would save');
+	like($p->{warning}, qr/not saved.*Allow http/, 'with the error');
+	$p = { saveSettings => 1, anywhere_form_token => $token, pref_public_url => 'http://music.example.com', anywhere_allow_http => 1 };
+	Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+	is($prefs->get('public_url'), 'http://music.example.com', 'with the box: saved');
+	ok(!exists $p->{anywhere_keep_public_url}, 'nothing to put back');
+	like($p->{warning}, qr/Public URL saved as http:\/\/music\.example\.com\. Connections to it are unencrypted/, 'and the page says it was saved');
+	$p = {};
+	Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+	ok(!exists $p->{anywhere_keep_public_url}, 'viewing the page: nothing kept');
+	$prefs->set(public_url => '');
+
+	# The template: the field and the warning follow the kept address, the box the saved one.
+	open my $fh, '<', 'Plugins/LyrionAnywhere/HTML/EN/plugins/LyrionAnywhere/settings/basic.html' or die;
+	my $html = do { local $/; <$fh> };
+	like($html, qr/\[% shown_public_url = anywhere_keep_public_url \|\| prefs\.pref_public_url %\]/, 'the shown address is the kept one, else the saved one');
+	like($html, qr/name="pref_public_url"[^>]*value="\[% shown_public_url \| html %\]"/, 'the field shows it, escaped');
+	like($html, qr/id="aw-http-warning"[^>]*\[% UNLESS shown_public_url\.match\('\^\(\?i\)http:\/\/'\) %\] hidden\[% END %\]/, 'the warning is shown for it');
+	like($html, qr/name="anywhere_allow_http"[^>]*\[% IF prefs\.pref_public_url\.match\('\^\(\?i\)http:\/\/'\) %\] checked\[% END %\]/, 'the box is ticked while the saved address is http://');
+}
 {
 	open my $fh, '<', 'Plugins/LyrionAnywhere/HTML/EN/plugins/LyrionAnywhere/settings/basic.html' or die;
 	my $html = do { local $/; <$fh> };
@@ -457,9 +509,13 @@ my $vectors = do {
 	my ($o, $e, $n) = $clean->({ pref_public_url => 'http://music.example.com', anywhere_allow_http => 1 });
 	is($o->{pref_public_url}, 'http://music.example.com', 'an http:// name is saved with the box');
 	like(join(' ', @$n), qr/without a QR code.*private address/, 'with a notice that pairing links need a private address');
+	like($n->[0], qr/^Public URL saved as http:\/\/music\.example\.com\. Connections to it are unencrypted/, 'after saying it is saved and unencrypted');
+	is(scalar @$n, 2, 'those two notices');
 	($o, $e, $n) = $clean->({ pref_public_url => 'http://10.8.0.1:9443', anywhere_allow_http => 1 });
 	is($o->{pref_public_url}, 'http://10.8.0.1:9443', 'an http:// private address is saved with the box');
-	is_deeply($n, [], 'with no notice');
+	is(scalar @$n, 1, 'with one notice');
+	like($n->[0], qr/^Public URL saved as http:\/\/10\.8\.0\.1:9443\. Connections to it are unencrypted/, 'that it is saved and unencrypted');
+	unlike($n->[0], qr/QR code/, 'and nothing about QR codes: a private address pairs');
 	($o, $e, $n) = $clean->({ pref_public_url => 'http://10.8.0.1:9443' });
 	ok(!exists $o->{pref_public_url}, 'still not without the box');
 	$prefs->set(public_url => 'http://music.example.com');

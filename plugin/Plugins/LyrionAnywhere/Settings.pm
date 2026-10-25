@@ -43,11 +43,13 @@ sub _trim {
 	return $s;
 }
 
-# Clean submitted values. Returns (\%clean, \@errors, \@notices); invalid values keep the
-# old pref. Notices point out a setting that is saved but will not work as it stands.
+# Clean submitted values. Returns (\%clean, \@errors, \@notices, \%keep); invalid values keep
+# the old pref. Notices point out a setting that is saved but will not work as it stands.
+# %keep holds a value that is not saved but is put back in its field, so the person can
+# finish what they started (an http:// Public URL waiting for its box to be ticked).
 sub clean {
 	my ($params) = @_;
-	my (%out, @errors, @notices);
+	my (%out, @errors, @notices, %keep);
 	for my $k (qw(listen public_url trusted_proxies trusted_networks client_ip_header gateway_path ffmpeg_path download_cache_mb)) {
 		my $name = "pref_$k";
 		next unless exists $params->{$name};
@@ -72,7 +74,9 @@ sub clean {
 			# Over plain http, passwords and sign-in tokens cross the internet unencrypted:
 			# saved only when the box saying so is ticked as well.
 			if ($v =~ m{\Ahttp://}i && !$params->{anywhere_allow_http}) {
-				push @errors, 'Public URL not saved: an http:// address sends passwords unencrypted. Use https://, or tick "Allow http://" to save it anyway.';
+				push @errors, 'Public URL not saved: an http:// address sends passwords unencrypted. Use https://, or tick "Allow http://" below the address to save it anyway.';
+				# Left in the field, with the box under it, so a retype is not needed.
+				$keep{pref_public_url} = $v;
 				next;
 			}
 		}
@@ -148,13 +152,17 @@ sub clean {
 				. 'Set the Listen address to the VPN interface\'s address, such as 10.8.0.1:9443, so that only the VPN reaches it.';
 		}
 	}
-	# Said once, when such an address is saved.
-	if (exists $out{pref_public_url} && $public ne ($prefs->get('public_url') // '')
-		&& $public =~ m{\Ahttp://}i && !defined Plugins::LyrionAnywhere::Gateway::private_http_origin($public)) {
-		push @notices, 'The Public URL is an http:// address with a host name or a public address, so Add a device '
-			. 'shows codes without a QR code. Pairing links over http:// need a private address, such as http://10.8.0.1:9443.';
+	# Said once, when such an address is saved: the box is a confirmation, not a setting, so
+	# this is what tells the person it worked (the page then shows the box ticked).
+	if (exists $out{pref_public_url} && $public ne ($prefs->get('public_url') // '') && $public =~ m{\Ahttp://}i) {
+		push @notices, "Public URL saved as $public. Connections to it are unencrypted, so keep it to a private "
+			. 'address reached only over your VPN (see Trusted networks).';
+		if (!defined Plugins::LyrionAnywhere::Gateway::private_http_origin($public)) {
+			push @notices, 'It is an http:// address with a host name or a public address, so Add a device '
+				. 'shows codes without a QR code. Pairing links over http:// need a private address, such as http://10.8.0.1:9443.';
+		}
 	}
-	return (\%out, \@errors, \@notices);
+	return (\%out, \@errors, \@notices, \%keep);
 }
 
 # The latest modification time of the settings page's own files, as digits only.
@@ -197,12 +205,15 @@ sub handler {
 	}
 	if ($params->{saveSettings}) {
 		my %before = map { $_ => $prefs->get($_) } qw(enabled listen public_url trusted_proxies trusted_networks client_ip_header gateway_path transcode ffmpeg_path download_cache_mb analysis);
-		my ($clean, $errors, $notices) = clean($params);
+		my ($clean, $errors, $notices, $keep) = clean($params);
 		# Invalid values are not saved; the others are.
 		for my $k (keys %$params) {
 			delete $params->{$k} if $k =~ /^pref_/ && !exists $clean->{$k};
 		}
 		$params->{$_} = $clean->{$_} for keys %$clean;
+		# A rejected http:// Public URL stays in its field (the template reads this, never a
+		# pref_* name, which LMS would save): the warning and its box stay on the page.
+		$params->{anywhere_keep_public_url} = $keep->{pref_public_url} if exists $keep->{pref_public_url};
 		$params->{pref_enabled} //= 0;   # an unticked checkbox is not submitted
 		$params->{pref_transcode} //= 0;
 		$params->{pref_analysis} //= 0;

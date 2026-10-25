@@ -27,11 +27,13 @@
 [% END %]
 
 [% WRAPPER setting title="Public URL" desc="The HTTPS address people use, e.g. https://music.example.com." %]
-	<input type="text" class="stdedit" name="pref_public_url" id="pref_public_url" value="[% prefs.pref_public_url | html %]" placeholder="https://music.example.com" aria-describedby="aw-http-warning aw-tunnel-override-url">
-	<p id="aw-http-warning" class="aw-note aw-warning"[% UNLESS prefs.pref_public_url.match('^(?i)http://') %] hidden[% END %]>
+	[%# A rejected http:// address is shown again (anywhere_keep_public_url), with its box, so it need not be retyped. %]
+	[% shown_public_url = anywhere_keep_public_url || prefs.pref_public_url %]
+	<input type="text" class="stdedit" name="pref_public_url" id="pref_public_url" value="[% shown_public_url | html %]" placeholder="https://music.example.com" aria-describedby="aw-http-warning aw-tunnel-override-url">
+	<p id="aw-http-warning" class="aw-note aw-warning"[% UNLESS shown_public_url.match('^(?i)http://') %] hidden[% END %]>
 		An http:// address sends passwords and sign-ins unencrypted. Use https://, unless this is a private address reached only over your VPN (see Trusted networks below), such as http://10.8.0.1:9443: then pairing links and QR codes work too.
-		<br><input type="checkbox" name="anywhere_allow_http" id="anywhere_allow_http" value="1">
-		<label for="anywhere_allow_http">Allow http:// anyway</label>
+		<br><input type="checkbox" name="anywhere_allow_http" id="anywhere_allow_http" value="1"[% IF prefs.pref_public_url.match('^(?i)http://') %] checked[% END %]>
+		<label for="anywhere_allow_http">Allow http:// anyway (ticked while the saved address is http://)</label>
 	</p>
 	<p id="aw-tunnel-override-url" class="aw-note aw-warning" hidden></p>
 [% END %]
