@@ -36,10 +36,17 @@
 					level: here ? device.quality : null,
 				}),
 	);
-	/** What the last choice on the switch did: started the new stream now, or from the next track. */
-	let applied = $state<'now' | 'next' | 'unchanged' | null>(null);
+	/**
+	 * The stream heard now: the track (its id and place in the queue) and the gateway's stream
+	 * number. A new one is the "next track" a choice applied to.
+	 */
+	const streamKey = $derived(`${app.now?.playlist_loop?.[0]?.id ?? ''}|${app.now?.playlist_cur_index ?? ''}|${here ? (device.detail.stream_seq ?? '') : ''}`);
+	/** What the last choice on the switch did (started the new stream now, or from the next track), and on which stream. */
+	let applied = $state<{ result: 'now' | 'next' | 'unchanged'; on: string } | null>(null);
+	/** "Applies from the next track", until that track has started. */
+	const appliesNext = $derived(applied?.result === 'next' && applied.on === streamKey);
 	function choose(level: Level | null) {
-		applied = device.overrideQuality(level, { seekable: sw?.seekable === true, seconds: app.elapsed });
+		applied = { result: device.overrideQuality(level, { seekable: sw?.seekable === true, seconds: app.elapsed }), on: streamKey };
 	}
 	const detailsAt = $derived(diagram.blocks.findLastIndex((b) => b.kind === 'device' || b.kind === 'player'));
 </script>
@@ -67,7 +74,7 @@
 						{/each}
 					</div>
 					{#if sw.origin_text}<p class="caption" data-origin>{sw.origin_text}</p>{/if}
-					{#if !sw.seekable || applied === 'next'}<p class="caption" data-applies-next>Applies from the next track.</p>{/if}
+					{#if !sw.seekable || appliesNext}<p class="caption" data-applies-next>Applies from the next track.</p>{/if}
 					{#if sw.overridden}<button type="button" class="link back" onclick={() => choose(null)} data-back-to-automatic>Back to automatic</button>{/if}
 				{/if}
 				{#if i === detailsAt && details}

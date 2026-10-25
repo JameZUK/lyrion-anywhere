@@ -169,8 +169,9 @@ test('paging is clamped to what the gateway allows', () => {
 	expect(c.seek(-10)).toEqual(['time', 0]);
 });
 
-// Sent only for this device's own player (the gateway allows nothing else of it), so it is
-// not in the shared fixture of commands for any player.
+// Sent only for this device's own player. The three commands are in the shared fixture
+// (tests/fixtures/commands.json, via `examples`) as player commands, which the gateway's
+// `web_app_commands_are_allowed` admits for the caller's own player only.
 test('this player’s Volume Control: exactly the three values the gateway allows', () => {
 	expect(c.volumeControl('0')).toEqual(['playerpref', 'digitalVolumeControl', '0']);
 	expect(c.volumeControl('1')).toEqual(['playerpref', 'digitalVolumeControl', '1']);
