@@ -17,4 +17,5 @@ pub mod opus;
 pub mod player;
 pub mod privnet;
 pub mod proto;
+pub mod quality;
 pub mod visual;
