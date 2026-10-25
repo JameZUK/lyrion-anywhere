@@ -765,7 +765,7 @@
     <string name="switch_now">A change restarts the stream where it is, after a short gap.</string>
     <string name="player_update_app">This server needs Lyrion Anywhere 1.17.0 or later. Update the app.</string>
     <string name="player_update_plugin">This phone can\'t play from this server until its Lyrion Anywhere plugin is updated to 0.7.3 or later. You can still control other players.</string>
-    <string name="stream_quality_override_note">For now: %1$s, chosen in the signal path. These settings apply again when the app restarts or the network changes.</string>
+    <string name="stream_quality_override_note">For now: %1$s, chosen in the signal path. These settings apply again when the app restarts, the network type changes (Wi-Fi or mobile data) or you sign in again.</string>
     <string name="about_server_protocol">Server: player protocol %1$d (plugin 0.7.3 or later)</string>
     <string name="about_server_protocol_old">Server: player protocol %1$d (plugin 0.7.2 or earlier)</string>
     <string name="about_server_protocol_none">Server: no player protocol given (plugin 0.7.2 or earlier)</string>
@@ -1262,7 +1262,7 @@
     <string name="error_sign_out_first">Sign out before choosing another server.</string>
     <string name="error_choose_server_first">Choose your server first.</string>
     <string name="error_no_server">Scan the QR code, or enter your server’s address first.</string>
-    <string name="error_plain_http">Over http:// this app needs the server’s IP address, not a name: for example http://10.8.0.1:9443. Ask for the Public URL under LMS › Settings › Lyrion Anywhere to be set to that address (the QR code then carries it too), or use https://. A name could lead somewhere public and carry your password in clear.</string>
+    <string name="error_plain_http">Over http:// this app needs the server’s private IP address (such as 10.x.x.x or 192.168.x.x), not a name or a public address: for example http://10.8.0.1:9443. Ask for the Public URL under LMS › Settings › Lyrion Anywhere to be set to that address (the QR code then carries it too), or use https://. A name could lead somewhere public, and a public address is out on the internet: either would carry your password in clear.</string>
     <string name="error_confirm_unencrypted">Confirm the unencrypted connection to continue.</string>
     <string name="error_menu_too_deep">This menu is too deep to pin.</string>
     <string name="error_queue_changed">The queue changed in the meantime. Try again.</string>
