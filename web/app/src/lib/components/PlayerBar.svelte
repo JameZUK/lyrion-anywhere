@@ -294,7 +294,7 @@
 	.sub {
 		display: flex;
 		align-items: center;
-		gap: 0.4rem;
+		gap: 0.3rem;
 		min-width: 0;
 		font-size: 0.85rem;
 	}
@@ -307,12 +307,12 @@
 	   Lossy in the amber tint, as Now playing's badge. */
 	.heard {
 		flex: none;
-		padding: 0 0.35rem;
+		padding: 0 0.3rem;
 		border: 1px solid var(--line);
 		border-radius: 5px;
-		font-family: var(--mono);
-		font-size: 0.68rem;
-		line-height: 1.5;
+		font-size: 0.7rem;
+		font-weight: 650;
+		line-height: 1.45;
 		color: var(--fg);
 		white-space: nowrap;
 	}
