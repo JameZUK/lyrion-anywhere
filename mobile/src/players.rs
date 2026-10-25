@@ -281,6 +281,12 @@ impl Players {
         self.run(&player, commands::volume(volume)).await
     }
 
+    /// Set LMS's "Output level is fixed at 100%" for `player` (on), or give it its volume
+    /// control back (off). The gateway allows this only for the caller's own player.
+    pub async fn set_fixed_output_level(&self, player: String, on: bool) -> Result<(), ApiError> {
+        self.run(&player, commands::fixed_output_level(on)).await
+    }
+
     pub async fn toggle_mute(&self, player: String) -> Result<(), ApiError> {
         self.run(&player, commands::mute_toggle()).await
     }
