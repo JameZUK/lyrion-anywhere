@@ -425,6 +425,7 @@ fun MainScreen(
             library = container.library,
             downloaded = container.offline.state.map { it.downloadedIds },
             quality = io.github.jamezuk.lyrionanywhere.data.RustQualityDescriber,
+            statusSeen = container.fixedLevel::observeStatus,
         )
     }
     // Which controls work follows the link to the server (offline controls).
