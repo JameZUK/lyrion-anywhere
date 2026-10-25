@@ -154,6 +154,21 @@ async fn restream(ws: &mut Ws, lms: &mut OwnedWriteHalf, mac: [u8; 6], format: u
     strm_payload(&next_skipping_stream(ws).await)
 }
 
+/// Send the quality message for `level` and wait for its echo, which must say `want`
+/// (stream messages on the way are skipped).
+async fn set_level(ws: &mut Ws, level: &str, want: &str) {
+    let msg = serde_json::json!({ "quality": level }).to_string();
+    ws.send(Message::Text(msg.into())).await.unwrap();
+    match next_skipping_stream(ws).await {
+        Message::Text(t) => assert_eq!(
+            serde_json::from_str::<serde_json::Value>(t.as_str()).unwrap(),
+            serde_json::json!({ "quality": want }),
+            "{level:?}"
+        ),
+        other => panic!("expected the quality echo, got {other:?}"),
+    }
+}
+
 async fn fetch_all(h: &Harness, sid: &str, n: u64, tok: &str) -> (Vec<u8>, String) {
     let mut resp = h.get_stream(sid, n, Some(tok)).await;
     assert_eq!(resp.status(), 200);
@@ -205,6 +220,67 @@ async fn high_quality_flac_is_re_encoded_and_the_player_is_told_opus() {
     );
 }
 
+/// Protocol 2: each quality message is answered, once the level is applied to the
+/// session, with `{"quality":"original"|"high"|"low"}`, the level now in force (also when
+/// it was unchanged; an unknown level is `original`). The next `strm s` after the echo is
+/// at that level, so a client that seeks only after the echo cannot race the change. The
+/// echo is text, never counted in `received`: a resume with the frames counted is
+/// accepted and nothing is sent again.
+#[tokio::test]
+async fn a_quality_message_is_echoed_once_applied() {
+    let Live { mut h, dir: _dir } = live(None, 4).await;
+    *h.lms.stream_body.lock().unwrap() = Some(Arc::new(library_flac(0, 5)));
+    let tok = h.tok_a.clone();
+    let mut ws = h.dial().await;
+    ws.send(Message::Text(auth(&tok, None).into()))
+        .await
+        .unwrap();
+    let g: serde_json::Value = match next(&mut ws).await {
+        Message::Text(t) => serde_json::from_str(t.as_str()).unwrap(),
+        other => panic!("expected the greeting, got {other:?}"),
+    };
+    let mut lms = h.lms.accept().await;
+    ws.send(Message::Binary(helo(h.mac_a).into()))
+        .await
+        .unwrap();
+    let mut frames = 0u64;
+    for (level, want, format) in [
+        ("low", "low", b'u'),
+        ("low", "low", b'u'),
+        ("high", "high", b'u'),
+        ("ultra", "original", b'f'),
+        ("HIGH", "original", b'f'),
+        ("original", "original", b'f'),
+        ("low", "low", b'u'),
+    ] {
+        set_level(&mut ws, level, want).await;
+        let strm = restream(&mut ws, &mut lms, h.mac_a, b'f').await;
+        frames += 1;
+        assert_eq!(strm[2], format, "{level}");
+    }
+    // Nothing else on the socket: one echo per message.
+    if let Ok(m) = tokio::time::timeout(Duration::from_millis(200), ws.next()).await {
+        panic!("expected nothing, got {m:?}");
+    }
+    ws.close(None).await.ok();
+    let mut ws = h.dial().await;
+    let resume = serde_json::json!({"token": tok, "protocol": 2, "resume":
+        {"session": g["session"], "secret": g["secret"], "received": frames}});
+    ws.send(Message::Text(resume.to_string().into()))
+        .await
+        .unwrap();
+    match next(&mut ws).await {
+        Message::Text(t) => {
+            let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
+            assert_eq!(v["resumed"], true, "{v}");
+        }
+        other => panic!("expected the greeting, got {other:?}"),
+    }
+    if let Ok(m) = tokio::time::timeout(Duration::from_millis(200), ws.next()).await {
+        panic!("nothing was missed, got {m:?}");
+    }
+}
+
 #[tokio::test]
 async fn data_saver_is_96k_and_set_by_a_control_message() {
     let Live { mut h, dir } = live(None, 4).await;
@@ -215,9 +291,7 @@ async fn data_saver_is_96k_and_set_by_a_control_message() {
     let (mut ws, sid, mut lms, strm) = announce(&mut h, auth(&tok, None), A, b'f').await;
     assert_eq!(strm[2], b'f');
     // Mobile data: the next stream is re-encoded.
-    ws.send(Message::Text(r#"{"quality":"low"}"#.into()))
-        .await
-        .unwrap();
+    set_level(&mut ws, "low", "low").await;
     let strm = restream(&mut ws, &mut lms, h.mac_a, b'f').await;
     assert_eq!(strm[2], b'u');
     let (got, _) = fetch_all(&h, &sid, 2, &tok).await;
@@ -229,9 +303,7 @@ async fn data_saver_is_96k_and_set_by_a_control_message() {
         "96k"
     );
     // Back on Wi-Fi.
-    ws.send(Message::Text(r#"{"quality":"original"}"#.into()))
-        .await
-        .unwrap();
+    set_level(&mut ws, "original", "original").await;
     let strm = restream(&mut ws, &mut lms, h.mac_a, b'f').await;
     assert_eq!(strm[2], b'f');
     let (got, _) = fetch_all(&h, &sid, 3, &tok).await;
@@ -452,9 +524,8 @@ async fn no_encoder_means_no_feature_and_no_rewrite() {
 #[tokio::test]
 async fn hostile_control_messages_end_the_session() {
     let bad = [
-        r#"{"quality":"ultra"}"#,
-        r#"{"quality":"HIGH"}"#,
         r#"{"quality":1}"#,
+        r#"{"quality":["low"]}"#,
         r#"{"quality":null}"#,
         r#"{"quality":"low","ack":{"stream":1,"bytes":1}}"#,
         r#"{"quality":"low","x":1}"#,
@@ -743,9 +814,7 @@ async fn the_stream_message_says_what_was_sent_at_each_level() {
         serde_json::json!({"seq": 1, "served": served, "sent": {"mode": "passthrough"}})
     );
     for (n, level, kbps) in [(2u64, "low", 96), (3, "high", 160)] {
-        ws.send(Message::Text(format!(r#"{{"quality":"{level}"}}"#).into()))
-            .await
-            .unwrap();
+        set_level(&mut ws, level, level).await;
         let strm = restream(&mut ws, &mut lms, h.mac_a, b'f').await;
         assert_eq!(strm[2], b'u');
         let (got, _) = fetch_all(&h, &sid, n, &tok).await;

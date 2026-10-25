@@ -773,6 +773,24 @@ impl Session {
         self.state.lock().unwrap().quality = quality;
     }
 
+    /// The client's quality message on socket `generation`: the level of the streams that
+    /// follow, acknowledged on that socket with [`crate::tunnel::quality_echo`] of the level
+    /// now in force (also when it was unchanged). The level is set before the echo is
+    /// queued, so a `strm s` after the echo is at it, and a client that seeks only once it
+    /// has the echo cannot race the change. A socket too slow for the echo is kicked, as
+    /// for any message.
+    pub fn apply_quality(self: &Arc<Self>, generation: u64, quality: crate::live::Quality) {
+        let mut st = self.state.lock().unwrap();
+        st.quality = quality;
+        if !Self::is_current(&st, generation) {
+            return;
+        }
+        let echo = crate::tunnel::quality_echo(st.quality);
+        let detached = self.text_to_client(&mut st, echo);
+        drop(st);
+        self.hold_detached(detached);
+    }
+
     /// The relay for stream `n`, created on first use. A stream chosen for re-encoding at
     /// its `strm` goes through `live_ffmpeg` ([`crate::live`]); otherwise, with
     /// `strip_flac`, a stream LMS announced as FLAC has its artwork and padding dropped

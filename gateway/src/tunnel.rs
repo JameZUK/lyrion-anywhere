@@ -29,7 +29,7 @@ pub const MAX_GRACE_REQUEST: u64 = 3600;
 /// The text messages allowed after authentication, each exactly one of:
 /// - `{"ack":{"stream":n,"bytes":b}}`: bytes of stream `n` the client has received;
 /// - `{"quality":"original"|"high"|"low"}`: the level of the streams that follow
-///   (docs/plans/streaming-quality.md).
+///   (docs/plans/streaming-quality.md), answered with [`quality_echo`] once applied.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ControlMessage {
@@ -43,7 +43,7 @@ enum Control {
 }
 
 /// A control message, or `None` for anything else (too long, malformed, unknown fields,
-/// both or neither field, an unknown level).
+/// both or neither field, a level that is not a string). An unknown level is `original`.
 fn parse_control(t: &str) -> Option<Control> {
     if t.len() > MAX_CONTROL_MESSAGE {
         return None;
@@ -53,10 +53,13 @@ fn parse_control(t: &str) -> Option<Control> {
             ack: Some(a),
             quality: None,
         } => Some(Control::Ack(a)),
+        // An unknown level is `original`, as at sign-in: the echo tells the client so.
         ControlMessage {
             ack: None,
             quality: Some(q),
-        } => crate::live::Quality::parse(&q).map(Control::Quality),
+        } => Some(Control::Quality(
+            crate::live::Quality::parse(&q).unwrap_or_default(),
+        )),
         _ => None,
     }
 }
@@ -546,7 +549,7 @@ async fn read_loop(
                     continue;
                 }
                 Some(Control::Quality(q)) => {
-                    session.set_quality(q);
+                    session.apply_quality(generation, q);
                     continue;
                 }
                 None => return ReadEnd::Policy("unexpected text message".into()),
@@ -594,6 +597,13 @@ struct Keepalive {
 
 /// The text keepalive: never a greeting (no `session`), never a frame (not binary).
 pub const KEEPALIVE_TEXT: &str = r#"{"keepalive":true}"#;
+
+/// The answer to a client's quality message, once the level is applied to the session:
+/// `{"quality":"original"|"high"|"low"}`, the level now in force. Text, so never counted in
+/// `received`; never a greeting (no `session`) or a stream message (no `stream`).
+pub fn quality_echo(level: crate::live::Quality) -> String {
+    serde_json::json!({ "quality": level.name() }).to_string()
+}
 
 async fn write_loop(
     mut sink: futures_util::stream::SplitSink<WebSocket, Message>,
@@ -721,12 +731,18 @@ mod tests {
                 bytes: 100
             }))
         ));
+        // The three levels; an unknown one (any other string) is `original`, as at
+        // sign-in, and the echo says so.
         for (m, q) in [
             ("original", Quality::Original),
             ("high", Quality::High),
             ("low", Quality::Low),
+            ("ultra", Quality::Original),
+            ("High", Quality::Original),
+            ("", Quality::Original),
+            ("\u{202e}low", Quality::Original),
         ] {
-            let msg = format!(r#"{{"quality":"{m}"}}"#);
+            let msg = serde_json::json!({ "quality": m }).to_string();
             assert!(
                 matches!(parse_control(&msg), Some(Control::Quality(x)) if x == q),
                 "{m}"
@@ -737,9 +753,6 @@ mod tests {
             "{}",
             "null",
             "[]",
-            r#"{"quality":"ultra"}"#,
-            r#"{"quality":"High"}"#,
-            r#"{"quality":""}"#,
             r#"{"quality":1}"#,
             r#"{"quality":["low"]}"#,
             r#"{"quality":null}"#,
@@ -756,6 +769,23 @@ mod tests {
             "x".repeat(MAX_CONTROL_MESSAGE)
         );
         assert!(parse_control(&long).is_none());
+        let long = format!(r#"{{"quality":"{}"}}"#, "l".repeat(MAX_CONTROL_MESSAGE));
+        assert!(parse_control(&long).is_none());
+    }
+
+    /// The quality echo is exactly `{"quality":"…"}` with the level's name, and can never
+    /// be taken for a greeting, a stream message, a keepalive or a control message the
+    /// gateway would act on twice.
+    #[test]
+    fn the_quality_echo() {
+        assert_eq!(quality_echo(Quality::Original), r#"{"quality":"original"}"#);
+        assert_eq!(quality_echo(Quality::High), r#"{"quality":"high"}"#);
+        assert_eq!(quality_echo(Quality::Low), r#"{"quality":"low"}"#);
+        for q in [Quality::Original, Quality::High, Quality::Low] {
+            let v: serde_json::Value = serde_json::from_str(&quality_echo(q)).unwrap();
+            assert!(v.get("session").is_none() && v.get("stream").is_none());
+            assert_ne!(quality_echo(q), KEEPALIVE_TEXT);
+        }
     }
 
     #[test]
