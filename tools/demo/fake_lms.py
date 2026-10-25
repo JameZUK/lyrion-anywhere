@@ -37,7 +37,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+# Pillow draws the invented artwork; the protocol side (and its tests) runs without it.
+try:
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+except ImportError:  # pragma: no cover - only without Pillow
+    Image = ImageDraw = ImageFilter = ImageFont = None
 
 from demo_content import BIOS, LYRICS, REVIEWS
 
@@ -724,6 +728,8 @@ def artist_photo(key, size=600):
     h = hashlib.sha256(key.encode()).digest()
     hue = h[0] / 255
     w, ht = size, int(size * 0.75)
+    if Image is None:
+        raise RuntimeError("the demo's artwork needs Pillow (python3 -m pip install pillow)")
     img = Image.new("RGB", (w, ht))
     d = ImageDraw.Draw(img)
     top, bottom = _rgb(hue, 0.32, 0.6), _rgb(hue + 0.06, 0.07, 0.45)
