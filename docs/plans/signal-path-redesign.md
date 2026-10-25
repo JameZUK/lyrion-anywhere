@@ -24,11 +24,11 @@ Playing a 24/96 FLAC on mobile data, the Android app's badge by the track said *
 
 ```rust
 pub enum Verdict { HiRes, Lossless, Transcoded, Lossy }
-pub struct Badge { verdict: Verdict, stream: String }      // "Transcoded", "Opus 160"
+pub struct Badge { verdict: Verdict, stream: String, text: String }   // "Transcoded", "Opus 160", "Transcoded · Opus 160"
 pub enum BlockKind { File, Lms, Gateway, Device, Download, Player }
 pub struct Block { kind, title: String, format: String, note: String, lowers: bool }
 pub struct Diagram { badge: Option<Badge>, blocks: Vec<Block>, switch: Option<Switch> }
-pub struct Switch { levels: [Level; 3], in_force: Level, origin: Origin /* Setting(network) | Override | Auto */, seekable: bool }
+pub struct Switch { levels: [Level; 3], in_force: Level /* the level the current stream was sent at, else the origin's */, origin_text: String, overridden: bool, seekable: bool }
 ```
 
 Inputs (`QualityInputs`): the file's format from status; what LMS served (codec, and bits/rate when the stream is passed through) and whether server gain applied; what the gateway sent (pass-through, or Opus at N kb/s and the level asked); the decoder's format; the output device, rate and route verdicts (today's `SignalPathInfo`); the quality origin. One pure function `describe(&QualityInputs) -> Diagram`. Vectors: `core/tests/fixtures/quality-vectors.json`, each an input and the expected badge, blocks and `lowers` flags, covering: FLAC 24/96 passed through; FLAC 24/96 re-encoded (High on mobile data; Data saver by setting; override); FLAC 16/44.1 passed through; ALAC file served as FLAC (LMS block); FLAC 24/96 downsampled by LMS to 16/44.1 (LMS block, verdict Lossless); MP3 320 as sent (Lossy, no gateway change); Opus radio stream; server ReplayGain only; remote player; offline download original and offline Opus; unknown type (no badge). The web (TypeScript) and the mobile crate run the same vectors; the Android UI tests render from the model.
@@ -53,10 +53,11 @@ _Decided 2026-10-25: no backwards compatibility for the player protocol. Both si
 ```
 
 - `seq` is the count of `strm s` frames the gateway has forwarded in this session, so the client ties the message to the stream it is fetching; both sides count the same frames (replayed frames after a resume are not counted twice, as the client never processes a frame twice).
-- `served` is LMS's stream as it reached the gateway: the codec from the `strm` format byte (`f` FLAC, `p` PCM with rate, depth and channels from the `strm` fields, `m` MP3, `o` Ogg, `a` AAC, `l` ALAC), the rate, depth and channels of a FLAC stream from its STREAMINFO (the gateway reads the first 42 bytes before passing them on or to `ffmpeg`), and the server ReplayGain from the `strm` (`gain_db`, absent when none). Unknown fields are `null`.
+- `served` is LMS's stream as it reached the gateway: the codec from the `strm` format byte (`f` FLAC, `p` PCM with rate, depth and channels from the `strm` fields, `m` MP3, `o` Ogg, `a` AAC, `l` ALAC, `u` Opus), the rate, depth and channels of a FLAC stream from its STREAMINFO (the gateway reads the first 42 bytes before passing them on or to `ffmpeg`), and the server ReplayGain from the `strm` (`gain_db`, absent when none). Unknown fields are `null`.
 - `sent` is what the gateway did: `{"mode":"passthrough"}` or `{"mode":"opus","kbps":160,"level":"high"|"low"}`.
 - It is sent when the gateway has the upstream response (so it knows the codec and can read STREAMINFO), which is after the client asked for the stream; the badge and sheet update when it arrives, within the first second. After a resume greeting the gateway sends it again for the stream in progress, so a resumed client is never without it.
 - It is not a frame (not binary) and is never counted in `received`, like the text keepalive.
+- After the review of 2026-10-25: the gateway re-sends the last 4 messages of the session after a resume greeting, and answers a `{"quality":…}` control message with a `{"quality":<level>}` echo once applied, so a client seeks for an override only after the echo.
 
 **Protocol version.**
 - `GET /v1/me` answers `"protocol": 2` (the gateway's).
