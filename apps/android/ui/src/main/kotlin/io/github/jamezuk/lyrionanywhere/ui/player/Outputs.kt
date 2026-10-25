@@ -155,7 +155,14 @@ private fun RowVolume(room: Room, onVolume: (String, Int) -> Unit) {
     val label = stringResource(R.string.room_volume, room.name)
     Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(Icons.AutoMirrored.Outlined.VolumeUp, contentDescription = null, modifier = Modifier.size(18.dp))
-        Slider(
+        // LMS's "Output level is fixed at 100%" for this player: no volume to set.
+        if (s.fixedLevel) {
+            Text(
+                stringResource(R.string.volume_fixed_level),
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(start = 8.dp, top = 8.dp, bottom = 8.dp).weight(1f).testTag("play-on-volume-fixed-${room.id}"),
+            )
+        } else Slider(
             value = shown,
             onValueChange = {
                 dragging = true

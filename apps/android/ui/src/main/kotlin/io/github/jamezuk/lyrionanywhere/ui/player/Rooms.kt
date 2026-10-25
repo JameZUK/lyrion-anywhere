@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -378,34 +379,50 @@ private fun RoomControls(room: Room, actions: RoomsActions) {
             contentDescription = null,
             modifier = Modifier.padding(start = 4.dp).size(20.dp).alpha(0.7f),
         )
-        var dragging by remember { mutableStateOf(false) }
-        var value by remember { mutableFloatStateOf(0f) }
-        val shown = if (dragging) value else s.volume.toFloat()
-        val label = stringResource(R.string.room_volume, name)
-        val haptics = LocalHapticFeedback.current
-        Slider(
-            value = shown,
-            onValueChange = {
-                if (HapticSteps.crossed(if (dragging) value else shown, it, HapticSteps.VOLUME)) haptics.performHapticFeedback(HapticSteps.tick)
-                dragging = true
-                value = it
-            },
-            onValueChangeFinished = {
-                dragging = false
-                actions.onVolume(room.id, value.toInt())
-            },
-            valueRange = 0f..100f,
-            enabled = s.connected,
-            modifier = Modifier
-                .weight(1f)
-                .padding(end = 12.dp)
-                .testTag("room-volume-${room.id}")
-                .semantics {
-                    contentDescription = label
-                    stateDescription = "${shown.toInt()}%"
-                },
-        )
+        // LMS's "Output level is fixed at 100%" for this player: no volume to set.
+        if (s.fixedLevel) {
+            Text(
+                stringResource(R.string.volume_fixed_level),
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f).padding(start = 8.dp, end = 12.dp).testTag("room-volume-fixed-${room.id}"),
+            )
+        } else {
+            RoomVolume(room, s, actions)
+        }
     }
+}
+
+/** A room's volume slider, named with the room. */
+@Composable
+private fun RowScope.RoomVolume(room: Room, s: io.github.jamezuk.lyrionanywhere.core.PlayerStatus, actions: RoomsActions) {
+    val name = room.name
+    var dragging by remember { mutableStateOf(false) }
+    var value by remember { mutableFloatStateOf(0f) }
+    val shown = if (dragging) value else s.volume.toFloat()
+    val label = stringResource(R.string.room_volume, name)
+    val haptics = LocalHapticFeedback.current
+    Slider(
+        value = shown,
+        onValueChange = {
+            if (HapticSteps.crossed(if (dragging) value else shown, it, HapticSteps.VOLUME)) haptics.performHapticFeedback(HapticSteps.tick)
+            dragging = true
+            value = it
+        },
+        onValueChangeFinished = {
+            dragging = false
+            actions.onVolume(room.id, value.toInt())
+        },
+        valueRange = 0f..100f,
+        enabled = s.connected,
+        modifier = Modifier
+            .weight(1f)
+            .padding(end = 12.dp)
+            .testTag("room-volume-${room.id}")
+            .semantics {
+                contentDescription = label
+                stateDescription = "${shown.toInt()}%"
+            },
+    )
 }
 
 /** Sleep remaining and the next alarm, when there are any. */

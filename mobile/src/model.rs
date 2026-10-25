@@ -411,6 +411,10 @@ pub struct PlayerStatus {
     /// Seconds left on the sleep timer, while one is set.
     #[uniffi(default = None)]
     pub sleep_secs: Option<f64>,
+    /// LMS's "Output level is fixed at 100%" (`digitalVolumeControl` 0) is set for this
+    /// player: LMS plays it at full level and its volume should not be offered as a slider.
+    #[uniffi(default = false)]
+    pub fixed_level: bool,
 }
 
 pub(crate) fn album_from(v: &Value) -> Option<Album> {
@@ -1129,6 +1133,7 @@ pub(crate) fn status_from(v: &Value) -> PlayerStatus {
         current,
         next: next_of(v),
         sleep_secs: float_of(&v["will_sleep_in"]).filter(|s| s.is_finite() && *s > 0.0),
+        fixed_level: int_of(&v["digital_volume_control"]) == Some(0),
     }
 }
 
@@ -1425,6 +1430,20 @@ mod tests {
         assert_eq!(t.title, "Radio");
         assert!(t.artwork.is_some());
         assert_eq!(status_from(&json!("nonsense")).mode, PlaybackMode::Stopped);
+    }
+
+    #[test]
+    fn status_reads_the_fixed_output_level() {
+        // Absent (older servers, or a status without it) means the volume works as usual.
+        assert!(!status_from(&json!({"mode": "play"})).fixed_level);
+        assert!(!status_from(&json!({"digital_volume_control": 1})).fixed_level);
+        assert!(!status_from(&json!({"digital_volume_control": "1"})).fixed_level);
+        assert!(status_from(&json!({"digital_volume_control": 0})).fixed_level);
+        assert!(status_from(&json!({"digital_volume_control": "0"})).fixed_level);
+        // Anything that is not a number is not taken as "fixed".
+        assert!(!status_from(&json!({"digital_volume_control": "x"})).fixed_level);
+        assert!(!status_from(&json!({"digital_volume_control": null})).fixed_level);
+        assert!(!status_from(&json!({"digital_volume_control": [0]})).fixed_level);
     }
 
     #[test]

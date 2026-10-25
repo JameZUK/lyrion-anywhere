@@ -151,6 +151,8 @@ class SoundViewModel(
      */
     fun setPlayerLevel(level: Int) {
         val repo = players ?: return
+        // Fixed at 100 % in LMS: its level isn't this screen's to change.
+        if (_state.value.sound.fixedOutputLevel) return
         val id = local.state.value.playerId ?: return
         val v = level.coerceIn(0, 100)
         _state.update { it.copy(playerLevel = v) }
@@ -162,6 +164,12 @@ class SoundViewModel(
         _state.update { it.copy(sound = s) }
         viewModelScope.launch { local.setSound(s) }
     }
+
+    /**
+     * "Fix output level at 100%": saved here; [io.github.jamezuk.lyrionanywhere.data.FixedLevelKeeper]
+     * sets LMS's preference for this phone's player to match.
+     */
+    fun setFixedOutputLevel(on: Boolean) = change { it.copy(fixedOutputLevel = on) }
 
     fun setPreamp(db: Double) = change { it.copy(preampDb = roundTo(db, 0.5)) }
 
@@ -303,6 +311,9 @@ interface SoundActions {
     /** This phone's player level in LMS (0–100). */
     fun playerLevel(level: Int) {}
 
+    /** "Fix output level at 100%" for this phone's player in LMS. */
+    fun fixedOutputLevel(on: Boolean) {}
+
     fun messageShown() {}
 }
 
@@ -345,6 +356,8 @@ fun SoundViewModel.actions(): SoundActions = object : SoundActions {
     override fun crossfadeSecs(secs: Double) = setCrossfadeSecs(secs)
 
     override fun playerLevel(level: Int) = setPlayerLevel(level)
+
+    override fun fixedOutputLevel(on: Boolean) = setFixedOutputLevel(on)
 
     override fun messageShown() = this@actions.messageShown()
 }
@@ -394,7 +407,16 @@ fun SoundScreen(state: SoundUiState, actions: SoundActions, modifier: Modifier =
         item { HorizontalDivider() }
 
         item { SectionHeader(stringResource(R.string.sound_section_loudness)) }
-        item { PlayerLevel(state.playerLevel, actions::playerLevel) }
+        item {
+            SwitchRow(
+                title = stringResource(R.string.sound_fixed_level),
+                body = stringResource(R.string.sound_fixed_level_body),
+                checked = s.fixedOutputLevel,
+                onChange = actions::fixedOutputLevel,
+                tag = "fixed-output-level",
+            )
+        }
+        item { PlayerLevel(state.playerLevel, s.fixedOutputLevel, actions::playerLevel) }
         item {
             RadioGroup(
                 label = stringResource(R.string.sound_levelling),
@@ -698,12 +720,14 @@ private fun DbSlider(
 /**
  * Settings › Sound › Player level: Lyrion's own level for this phone's player (the software
  * volume LMS sets), normally left at 100 %. Without a player in LMS, a note says how to get one.
+ * While [fixed] ("Fix output level at 100%"), LMS plays it at 100 %: the slider shows that and
+ * is disabled.
  */
 @Composable
-private fun PlayerLevel(level: Int?, onChange: (Int) -> Unit) {
+private fun PlayerLevel(level: Int?, fixed: Boolean, onChange: (Int) -> Unit) {
     var dragging by remember { mutableStateOf(false) }
     var current by remember { mutableFloatStateOf((level ?: 100).toFloat()) }
-    val shown = if (dragging) current.toInt() else level ?: 100
+    val shown = if (fixed) 100 else if (dragging) current.toInt() else level ?: 100
     val name = stringResource(R.string.sound_player_level)
     Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp).testTag("player-level-setting")) {
         Text(
@@ -711,12 +735,19 @@ private fun PlayerLevel(level: Int?, onChange: (Int) -> Unit) {
             style = MaterialTheme.typography.bodyLarge,
         )
         Text(
-            stringResource(if (level == null) R.string.sound_player_level_off else R.string.sound_player_level_body),
+            stringResource(
+                when {
+                    level == null -> R.string.sound_player_level_off
+                    fixed -> R.string.sound_player_level_fixed
+                    else -> R.string.sound_player_level_body
+                },
+            ),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         if (level != null) {
             Slider(
+                enabled = !fixed,
                 value = shown.toFloat(),
                 onValueChange = {
                     dragging = true

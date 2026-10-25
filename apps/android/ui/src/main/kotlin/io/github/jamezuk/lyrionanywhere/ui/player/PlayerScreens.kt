@@ -710,6 +710,7 @@ private fun NowPlayingContent(
             onChange = volume.onChange,
             onDone = volume.onDone,
             onDismiss = close,
+            fixed = volume.fixed,
         )
     }
 }
@@ -728,6 +729,8 @@ internal class VolumeModel(
     val enabled: Boolean,
     val onChange: (Int) -> Unit,
     val onDone: (Int) -> Unit,
+    /** LMS's "Output level is fixed at 100%" for this player: a note, no slider. */
+    val fixed: Boolean = false,
 )
 
 /**
@@ -750,6 +753,17 @@ private fun rememberNowPlayingVolume(state: PlayerUiState, status: PlayerStatus,
         )
     }
     val name = state.selected?.name.orEmpty()
+    if (status.fixedLevel) {
+        return VolumeModel(
+            name = name,
+            note = stringResource(R.string.volume_fixed_level),
+            percent = 100,
+            enabled = false,
+            onChange = {},
+            onDone = {},
+            fixed = true,
+        )
+    }
     return VolumeModel(
         name = name,
         note = name,

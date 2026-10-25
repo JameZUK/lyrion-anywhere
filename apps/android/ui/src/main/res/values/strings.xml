@@ -1142,6 +1142,10 @@
     <string name="sound_player_level_value">Player level: %1$d%%</string>
     <string name="sound_player_level_body">Your music server\'s own level for this phone\'s player, applied before the phone\'s volume; normally left at 100%.</string>
     <string name="sound_player_level_off">Turn on Play on this phone to set its level.</string>
+    <string name="sound_fixed_level" formatted="false">Fix output level at 100%</string>
+    <string name="sound_fixed_level_body" formatted="false">Sets this phone’s player to “Output level is fixed at 100%” in Lyrion, so the phone’s own volume sets the level and no controller can turn it down.</string>
+    <string name="sound_player_level_fixed" formatted="false">Fixed at 100% in Lyrion while Fix output level at 100% is on.</string>
+    <string name="volume_fixed_level" formatted="false">Output level is fixed at 100%</string>
     <!-- Gaps in the signal: reading ahead (rolling cache, Phase A) -->
     <string name="gaps_title">Gaps in the signal</string>
     <string name="gaps_explain">The next track is fetched well before the current one ends, so tunnels and patchy mobile data don\'t stop the music.</string>

@@ -209,6 +209,7 @@ mod tests {
             current: Some(track(7, Some(200.0))),
             next: None,
             sleep_secs: None,
+            fixed_level: false,
         }
     }
 

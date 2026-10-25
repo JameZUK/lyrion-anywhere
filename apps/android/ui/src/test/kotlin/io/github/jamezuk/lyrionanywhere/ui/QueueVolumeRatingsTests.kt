@@ -213,6 +213,24 @@ class QueueVolumeRatingsTests : MainDispatcherTest() {
     }
 
     @Test
+    fun aRemotePlayerWithAFixedLevelIgnoresTheVolumeKeysAndSlider() = vmTest {
+        val players = FakePlayers()
+        players.statusResult = ApiResult.Ok(sampleStatus().copy(fixedLevel = true))
+        val vm = kitchen(players)
+        assertTrue(vm.state.value.status?.fixedLevel == true)
+        // The key is used (the phone's own volume doesn't move either), but nothing is sent.
+        assertTrue(vm.volumeKey(up = true))
+        assertTrue(vm.volumeKey(up = false))
+        vm.setVolume(60)
+        assertFalse(players.commands.any { it.startsWith("volume") })
+        // Its volume control back in LMS: the keys step it again.
+        players.statusResult = ApiResult.Ok(sampleStatus())
+        vm.refresh()
+        assertTrue(vm.volumeKey(up = true))
+        assertTrue("volume 45 $KITCHEN" in players.commands)
+    }
+
+    @Test
     fun volumeKeysAreLeftToTheSystemForThisPhoneOrNoPlayer() = vmTest {
         val players = FakePlayers()
         players.players = players.players + samplePlayer(PHONE)

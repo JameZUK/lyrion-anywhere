@@ -78,6 +78,12 @@ data class SoundSettings(
      * not Android's; bypassed on a bit-perfect route.
      */
     val loudness: Boolean = false,
+    /**
+     * Keep this phone's player at LMS's "Output level is fixed at 100%" (its
+     * `digitalVolumeControl` preference 0): the phone's own volume sets the level and no
+     * controller can turn it down. On by default; [FixedLevelKeeper] keeps LMS in step.
+     */
+    val fixedOutputLevel: Boolean = true,
 ) {
     /** The stages that change samples (empty: bit-perfect). The limiter and dither only
      *  ever act with one of these. */

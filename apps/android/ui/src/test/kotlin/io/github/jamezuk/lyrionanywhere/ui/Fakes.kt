@@ -442,6 +442,8 @@ class FakePlayers : PlayersRepository {
 
     override suspend fun setVolume(player: String, volume: Int) = cmd("volume $volume $player")
 
+    override suspend fun setFixedOutputLevel(player: String, on: Boolean) = cmd("fixed level $on $player")
+
     override suspend fun setShuffle(player: String, mode: ShuffleMode) = cmd("shuffle $mode $player")
 
     override suspend fun setRepeat(player: String, mode: RepeatMode) = cmd("repeat $mode $player")

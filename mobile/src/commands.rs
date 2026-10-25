@@ -686,6 +686,16 @@ pub fn volume(v: u32) -> Command {
     vec![json!("mixer"), json!("volume"), json!(v.min(100))]
 }
 
+/// LMS's per-player "Volume Control" preference: on sets "Output level is fixed at 100%"
+/// (`digitalVolumeControl` 0), off gives the volume back (1). LMS wants the value as a string.
+pub fn fixed_output_level(on: bool) -> Command {
+    vec![
+        json!("playerpref"),
+        json!("digitalVolumeControl"),
+        json!(if on { "0" } else { "1" }),
+    ]
+}
+
 pub fn mute_toggle() -> Command {
     vec![json!("mixer"), json!("muting"), json!("toggle")]
 }
@@ -933,6 +943,22 @@ mod tests {
         assert_eq!(
             volume(250),
             vec![json!("mixer"), json!("volume"), json!(100)]
+        );
+        assert_eq!(
+            fixed_output_level(true),
+            vec![
+                json!("playerpref"),
+                json!("digitalVolumeControl"),
+                json!("0")
+            ]
+        );
+        assert_eq!(
+            fixed_output_level(false),
+            vec![
+                json!("playerpref"),
+                json!("digitalVolumeControl"),
+                json!("1")
+            ]
         );
         assert_eq!(queue(0, 10_000)[2], json!(500));
         assert_eq!(artists(0, 0, None, &none()).unwrap()[2], json!(1));
