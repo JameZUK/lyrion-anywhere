@@ -10,6 +10,7 @@
 	import { textOf } from '#lib/lms/format';
 	import { formatLeft, sleepLeft } from '#lib/lms/sleep';
 	import type { PlayerStatus } from '#lib/lms/types';
+	import { FIXED_LEVEL_NOTE, levelFixed } from '#lib/player/volume';
 	import Art from './Art.svelte';
 	import Icon from './Icon.svelte';
 	import RowMenu, { type RowAction } from './RowMenu.svelte';
@@ -147,7 +148,9 @@
 			<button class="icon-btn" aria-label={playing ? `Pause ${name}` : `Play ${name}`} onclick={onplaypause} disabled={!status || unavailable} data-room-play>
 				<Icon name={playing ? 'pause' : 'play'} size={22} />
 			</button>
-			{#if buttonsOnly}
+			{#if levelFixed(status)}
+				<span class="vol muted small" data-fixed-level-note>{FIXED_LEVEL_NOTE}</span>
+			{:else if buttonsOnly}
 				<span class="vol muted small">Volume on the device</span>
 			{:else}
 				<input

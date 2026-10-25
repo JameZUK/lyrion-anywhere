@@ -188,6 +188,67 @@ export function saveVolumeSetting(s: VolumeSetting, storage: Pick<Storage, 'setI
 	}
 }
 
+// "Fix this player's output level at 100%": LMS's per-player Volume Control preference
+// (`digitalVolumeControl`; 1, LMS's default, lets LMS set the volume; 0 is "Output level is
+// fixed at 100%"). At 0, LMS sends the player full scale, its own interfaces hide that
+// player's volume, and this device's own volume sets the level, so no controller can turn it
+// down. On by default, per browser; it applies to this device's own Lyrion player only.
+
+/** Shown instead of the volume slider for any player whose output level LMS keeps at 100%. */
+export const FIXED_LEVEL_NOTE = 'Output level is fixed at 100%';
+export const FIXED_LEVEL_LABEL = 'Fix this player’s output level at 100%';
+export const FIXED_LEVEL_EXPLANATION =
+	'Sets this player’s Volume Control in Lyrion to “Output level is fixed at 100%”, so this device’s own volume sets the level and no controller can turn it down.';
+/** Why "Volume on this device" can't be chosen while the level is fixed. */
+export const FIXED_LEVEL_NO_FOLLOW = 'Not available while the output level is fixed: there is no LMS volume to follow.';
+
+/** A player's status says LMS keeps its output level at 100% (Volume Control off). */
+export function levelFixed(status: { digital_volume_control?: unknown } | null | undefined): boolean {
+	const v = status?.digital_volume_control;
+	return v === 0 || v === '0';
+}
+
+/** LMS's Volume Control as reported (1 on, 0 fixed), or null when unknown. */
+function reportedControl(v: unknown): 0 | 1 | null {
+	if (v === 0 || v === '0') return 0;
+	if (v === 1 || v === '1') return 1;
+	return null;
+}
+
+/**
+ * What to set `digitalVolumeControl` to, for the setting and what LMS reports: '0' to fix
+ * the level, '1' to give LMS the volume back, or null when they agree or LMS's value is
+ * unknown (nothing is sent on a guess).
+ */
+export function fixedLevelChange(fixed: boolean, reported: unknown): '0' | '1' | null {
+	const r = reportedControl(reported);
+	if (r === null) return null;
+	if (fixed && r === 1) return '0';
+	if (!fixed && r === 0) return '1';
+	return null;
+}
+
+const FIXED_KEY = 'anywhere.device.fixedLevel';
+
+/** On unless turned off in this browser. */
+export function loadFixedLevel(storage: Pick<Storage, 'getItem'> | undefined = safeLocal()): boolean {
+	try {
+		return storage?.getItem(FIXED_KEY) !== 'off';
+	} catch {
+		return true;
+	}
+}
+
+/** Only the off state is stored: the default leaves no key behind. */
+export function saveFixedLevel(on: boolean, storage: Pick<Storage, 'setItem' | 'removeItem'> | undefined = safeLocal()) {
+	try {
+		if (on) storage?.removeItem(FIXED_KEY);
+		else storage?.setItem(FIXED_KEY, 'off');
+	} catch {
+		/* not essential */
+	}
+}
+
 function safeLocal(): Storage | undefined {
 	try {
 		return globalThis.localStorage;

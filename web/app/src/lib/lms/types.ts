@@ -47,6 +47,8 @@ export interface PlayerStatus {
 	time?: number;
 	duration?: number;
 	'mixer volume'?: number;
+	/** LMS's Volume Control for this player: 1 lets LMS set the volume, 0 fixes the output level at 100%. */
+	digital_volume_control?: number;
 	playlist_cur_index?: number | string;
 	playlist_tracks?: number;
 	'playlist shuffle'?: number;

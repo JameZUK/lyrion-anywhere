@@ -6,9 +6,10 @@
 	import { device } from '#lib/player/device.svelte';
 	import { detect } from '#lib/player/capabilities';
 	import { MODE_LABELS, chooseMode, detectEnvironment, loadPreference, savePreference, type ModePreference } from '#lib/player/mode';
-	import { VOLUME_LABELS, canFollow, planVolume, type VolumeSetting } from '#lib/player/volume';
+	import { FIXED_LEVEL_EXPLANATION, FIXED_LEVEL_LABEL, FIXED_LEVEL_NO_FOLLOW, VOLUME_LABELS, canFollow, planVolume, type VolumeSetting } from '#lib/player/volume';
 	import Icon from '#lib/components/Icon.svelte';
 	import PickerRow from '#lib/components/PickerRow.svelte';
+	import Switch from '#lib/components/Switch.svelte';
 
 	// Built in: every browser is checked, and the best playback mode chosen automatically.
 	const caps = detect();
@@ -62,12 +63,14 @@
 		note={`${MODE_LABELS[effective.mode]}: ${effective.reason}`}
 		id="playback-engine"
 	/>
+	<Switch checked={device.fixedLevel} onchange={(on) => device.setFixedLevel(on)} label={FIXED_LEVEL_LABEL} note={FIXED_LEVEL_EXPLANATION} data-fixed-level />
 	<PickerRow
 		label="Volume on this device"
 		value={device.volumeSetting}
 		options={VOLUME_CHOICES.map((v) => ({ value: v, label: VOLUME_LABELS[v], ...(v === 'follow' && !volFollow.ok ? { disabled: true, note: `Not available: ${volFollow.why}` } : {}) }))}
 		onchange={(v) => device.setVolumeSetting(v as VolumeSetting)}
-		note={`${volPlan.follow ? 'Follows LMS' : 'Device buttons'}: ${volPlan.reason}`}
+		note={device.fixedLevel ? FIXED_LEVEL_NO_FOLLOW : `${volPlan.follow ? 'Follows LMS' : 'Device buttons'}: ${volPlan.reason}`}
+		disabled={device.fixedLevel}
 		id="volume-source"
 	/>
 </div>
