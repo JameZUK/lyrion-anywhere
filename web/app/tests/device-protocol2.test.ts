@@ -103,7 +103,7 @@ HTMLMediaElement.prototype.play = async () => {};
 HTMLMediaElement.prototype.pause = () => {};
 HTMLMediaElement.prototype.load = () => {};
 
-const { device } = await import('#lib/player/device.svelte');
+const { device, QUALITY_ECHO_WAIT_MS } = await import('#lib/player/device.svelte');
 
 const settle = async () => {
 	for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
@@ -127,6 +127,7 @@ beforeEach(() => {
 	device.serverTooOld = false;
 	device.protocolGate = null;
 	device.qualityOverride = null;
+	device.applyStatus({});
 });
 
 async function started() {
@@ -154,7 +155,7 @@ describe('the streaming level overridden on the signal path', () => {
 		Object.defineProperty(navigator, 'connection', { value: undefined, configurable: true });
 	});
 
-	test('applies now: the level is sent and the track is sought to where it is', async () => {
+	test('applies now: the level is sent, and once the gateway confirms it the track is sought to where it is', async () => {
 		mobile();
 		device.setQualityPreference('auto');
 		const w = await started();
@@ -163,14 +164,116 @@ describe('the streaming level overridden on the signal path', () => {
 		expect(device.qualityOverride).toBe('original');
 		expect(device.quality).toBe('original');
 		expect(w.cmds('quality').at(-1)).toEqual({ cmd: 'quality', quality: 'original' });
+		// Not before the gateway has applied the level: the new stream would still be at the old one.
+		expect(seeks()).toEqual([]);
+		w.say({ qualityApplied: 'original' });
 		expect(seeks()).toEqual([{ player: MAC, cmd: ['time', 42] }]);
 		// The setting is not changed: the override lives in memory only.
 		expect(localStorage.getItem('anywhere.stream.quality')).toBe('auto');
 		expect(device.qualityPreference).toBe('auto');
 		// Without a position given, the engine's own is used.
-		device.applyStatus({ output: 'Playing', elapsed_ms: 61_500 });
+		device.applyStatus({ output: 'Paused', elapsed_ms: 61_500 });
 		expect(device.overrideQuality('low', { seekable: true })).toBe('now');
+		w.say({ qualityApplied: 'low' });
 		expect(seeks().at(-1)).toEqual({ player: MAC, cmd: ['time', 61.5] });
+		// A later echo of a level already applied seeks nothing more.
+		w.say({ qualityApplied: 'low' });
+		expect(seeks()).toHaveLength(2);
+	});
+
+	test('no echo from the gateway: the stream restarts after the wait anyway, and the log says so', async () => {
+		mobile();
+		const w = await started();
+		vi.useFakeTimers();
+		try {
+			expect(device.overrideQuality('original', { seekable: true, seconds: 10 })).toBe('now');
+			vi.advanceTimersByTime(QUALITY_ECHO_WAIT_MS - 1);
+			expect(seeks()).toEqual([]);
+			vi.advanceTimersByTime(1);
+			expect(seeks()).toEqual([{ player: MAC, cmd: ['time', 10] }]);
+			expect(device.log.some((l) => /didn't confirm the streaming level \(Original\) within 2 s/.test(l))).toBe(true);
+			// An echo arriving late does not seek a second time.
+			w.say({ qualityApplied: 'original' });
+			vi.advanceTimersByTime(QUALITY_ECHO_WAIT_MS * 2);
+			expect(seeks()).toHaveLength(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("junk, and an echo of another level, don't count as the gateway's confirmation", async () => {
+		mobile();
+		const w = await started();
+		vi.useFakeTimers();
+		try {
+			device.overrideQuality('original', { seekable: true, seconds: 7 });
+			for (const junk of ['ultra', 'ORIGINAL', '', 1, null, ['original'], { quality: 'original' }, 'high']) w.say({ qualityApplied: junk });
+			expect(seeks()).toEqual([]);
+			vi.advanceTimersByTime(QUALITY_ECHO_WAIT_MS);
+			expect(seeks()).toEqual([{ player: MAC, cmd: ['time', 7] }]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test('a newer choice supersedes a restart still waiting for its echo; stopping cancels it', async () => {
+		mobile();
+		const w = await started();
+		vi.useFakeTimers();
+		try {
+			device.overrideQuality('original', { seekable: true, seconds: 5 });
+			device.overrideQuality('low', { seekable: true, seconds: 6 });
+			w.say({ qualityApplied: 'original' });
+			expect(seeks()).toEqual([]);
+			w.say({ qualityApplied: 'low' });
+			expect(seeks()).toEqual([{ player: MAC, cmd: ['time', 6] }]);
+			device.overrideQuality('original', { seekable: true, seconds: 8 });
+			device.stop();
+			vi.advanceTimersByTime(QUALITY_ECHO_WAIT_MS * 2);
+			expect(seeks()).toHaveLength(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test('decided by the stream being sent: after a change in Settings mid-track, the level now chosen there still restarts the stream', async () => {
+		mobile();
+		const w = await started();
+		// High on mobile data: the stream in progress is Opus 160.
+		device.applyStatus({ output: 'Playing', elapsed_ms: 20_000, sent: { mode: 'opus', kbps: 160, level: 'high' } });
+		// Settings › Original: applies from the next track; the gateway confirms the level.
+		device.setQualityPreference('original');
+		expect(device.quality).toBe('original');
+		w.say({ qualityApplied: 'original' });
+		expect(seeks()).toEqual([]);
+		// A tap on Original on the signal path: what is heard is High, so it applies now.
+		expect(device.overrideQuality('original', { seekable: true, seconds: 20 })).toBe('now');
+		expect(seeks()).toEqual([{ player: MAC, cmd: ['time', 20] }]);
+	});
+
+	test('the worker already holds the level but the gateway never confirmed it: it is asked again, and the echo seeks', async () => {
+		mobile();
+		const w = await started();
+		device.applyStatus({ output: 'Paused', elapsed_ms: 20_000, sent: { mode: 'opus', kbps: 160, level: 'high' } });
+		device.setQualityPreference('original');
+		const n = w.cmds('quality').length;
+		expect(device.overrideQuality('original', { seekable: true, seconds: 20 })).toBe('now');
+		expect(w.cmds('quality').slice(n)).toEqual([{ cmd: 'quality', quality: 'original', confirm: true }]);
+		expect(seeks()).toEqual([]);
+		w.say({ qualityApplied: 'original' });
+		expect(seeks()).toEqual([{ player: MAC, cmd: ['time', 20] }]);
+	});
+
+	test('the stream being sent is already at the chosen level: unchanged, nothing sought', async () => {
+		mobile();
+		await started();
+		// Settings › High mid-track, while the stream in progress is still passed through.
+		device.applyStatus({ output: 'Playing', elapsed_ms: 5_000, sent: { mode: 'passthrough' } });
+		expect(device.overrideQuality('original', { seekable: true, seconds: 5 })).toBe('unchanged');
+		expect(device.quality).toBe('original');
+		expect(device.overrideQuality('low', { seekable: true, seconds: 5 })).toBe('now');
+		device.applyStatus({ output: 'Playing', elapsed_ms: 6_000, sent: { mode: 'opus', kbps: 96, level: 'low' } });
+		expect(device.overrideQuality('low', { seekable: true, seconds: 6 })).toBe('unchanged');
 	});
 
 	test('an unseekable stream (radio): applies from the next track, no seek', async () => {
@@ -199,6 +302,8 @@ describe('the streaming level overridden on the signal path', () => {
 		expect(device.overrideQuality(null, { seekable: true, seconds: 6 })).toBe('now');
 		expect(device.qualityOverride).toBeNull();
 		expect(w.cmds('quality').at(-1)).toEqual({ cmd: 'quality', quality: 'high' });
+		w.say({ qualityApplied: 'high' });
+		expect(seeks()).toHaveLength(1);
 		expect(seeks().at(-1)!.cmd).toEqual(['time', 6]);
 	});
 

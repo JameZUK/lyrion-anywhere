@@ -295,8 +295,9 @@ onmessage = async (e) => {
     mediaWaiting = false;
   } else if (msg.cmd === 'quality') {
     // From the next stream on (the next track, or a seek).
+    // `confirm`: sent even when unchanged, so the gateway answers with the level it applies.
     const q = sanitiseQuality(msg.quality);
-    if (q !== quality) {
+    if (q !== quality || msg.confirm === true) {
       quality = q;
       sendQuality();
     }
@@ -356,6 +357,9 @@ function connect(resume) {
       frames: onFrames,
       greeting: onGreeting,
       stream: (info) => streamInfo.add(info),
+      // The gateway applied a level (its answer to a `{"quality":…}` message): the page waits
+      // for this before it restarts the stream at the new level.
+      quality: (level) => postMessage({ qualityApplied: level }),
       badStream: () => {
         if (badStreamNoted) return;
         badStreamNoted = true;

@@ -9,11 +9,27 @@ import {
 	connection,
 	effectiveQuality,
 	loadPreference,
+	levelOfSent,
+	qualityEcho,
 	reencoded,
 	sanitisePreference,
 	savePreference,
 	streamOf,
 } from '#lib/player/stream-quality';
+
+test('the level a stream was sent at: passed through is Original, Opus its level; anything else unknown', () => {
+	expect(levelOfSent({ mode: 'passthrough' })).toBe('original');
+	expect(levelOfSent({ mode: 'opus', kbps: 160, level: 'high' })).toBe('high');
+	expect(levelOfSent({ mode: 'opus', kbps: 96, level: 'low' })).toBe('low');
+	for (const bad of [null, undefined, {}, 'passthrough', { mode: 'opus' }, { mode: 'opus', kbps: 160, level: 'original' }, { mode: 'mp3' }, []]) {
+		expect(levelOfSent(bad), JSON.stringify(bad)).toBeNull();
+	}
+});
+
+test("the gateway's echo, as the page takes it: one of the three levels, else nothing", () => {
+	for (const q of ['original', 'high', 'low'] as const) expect(qualityEcho(q)).toBe(q);
+	for (const bad of [undefined, null, '', 'High', 'auto', 'ultra', 2, ['low'], { quality: 'low' }]) expect(qualityEcho(bad), JSON.stringify(bad)).toBeNull();
+});
 
 function memStore() {
 	const m = new Map<string, string>();

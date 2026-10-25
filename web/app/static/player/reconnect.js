@@ -306,6 +306,8 @@ const GREETING_FIELDS = ['session', 'secret', 'mac', 'name', 'resumed', 'grace']
  *   socket is alive: it is not a greeting and carries no sequence number;
  * - { stream }: the stream message (protocol 2), checked by `parseStreamMessage`;
  * - 'bad-stream': a message with a `stream` field that fails those checks;
+ * - { quality }: the gateway's echo of a level it has applied (protocol 2), exactly
+ *   `{"quality":"original"|"high"|"low"}`; any other message with a `quality` field is null;
  * - { greeting }: the gateway's greeting (a session and secret, as strings);
  * - null: anything else (not JSON, oversized, or a mixture of the two), which is ignored.
  */
@@ -322,6 +324,9 @@ export function classifyText(text) {
     if (m.keepalive !== true || GREETING_FIELDS.some((f) => f in m)) return null;
     return 'keepalive';
   }
+  if ('quality' in m) {
+    return Object.keys(m).length === 1 && QUALITIES.includes(m.quality) ? { quality: m.quality } : null;
+  }
   if ('stream' in m) {
     const stream = text.length <= STREAM_MESSAGE_MAX ? parseStreamMessage(m) : null;
     return stream ? { stream } : 'bad-stream';
@@ -333,7 +338,8 @@ export function classifyText(text) {
 /**
  * Route one message from the player socket: binary to `frames` (the only kind counted for
  * resume), a greeting to `greeting`, a stream message to `stream`, a malformed stream
- * message to `badStream`, a keepalive nowhere, and anything else to `ignored`. The caller
+ * message to `badStream`, the gateway's echo of a level to `quality`, a keepalive nowhere, and
+ * anything else to `ignored`. The caller
  * has already noted that the socket is alive.
  */
 export function routeMessage(data, to) {
@@ -342,6 +348,7 @@ export function routeMessage(data, to) {
   if (t === 'keepalive') return;
   if (t === 'bad-stream') (to.badStream ?? to.ignored)();
   else if (t?.stream) to.stream?.(t.stream);
+  else if (t?.quality) (to.quality ?? to.ignored)(t.quality);
   else if (t) to.greeting(t.greeting);
   else to.ignored();
 }

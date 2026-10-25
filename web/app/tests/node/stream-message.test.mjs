@@ -126,6 +126,44 @@ test('routing: stream messages go to stream, malformed ones to badStream', () =>
   assert.equal(seen.at(-1), 'ignored');
 });
 
+test("the gateway's echo of a level: exactly one key, one of the three levels; anything else ignored", () => {
+  for (const q of ['original', 'high', 'low']) assert.deepEqual(classifyText(JSON.stringify({ quality: q })), { quality: q });
+  const junk = [
+    { quality: 'ultra' },
+    { quality: 'HIGH' },
+    { quality: '' },
+    { quality: null },
+    { quality: 1 },
+    { quality: ['high'] },
+    { quality: { level: 'high' } },
+    { quality: 'high', extra: 1 },
+    { quality: 'high', session: 's', secret: 'x' },
+    { quality: 'high', stream: GOOD.stream },
+  ];
+  for (const m of junk) assert.equal(classifyText(JSON.stringify(m)), null, JSON.stringify(m));
+  // An own __proto__ key is a second key.
+  assert.equal(classifyText('{"quality":"high","__proto__":{"x":1}}'), null);
+  assert.equal(classifyText('{"quality":"toString"}'), null);
+  // Routed to `quality`; junk to `ignored`; a router without `quality` ignores it.
+  const seen = [];
+  const to = { frames() {}, greeting: () => seen.push('greeting'), quality: (q) => seen.push(`quality ${q}`), ignored: () => seen.push('ignored') };
+  routeMessage('{"quality":"low"}', to);
+  routeMessage('{"quality":"lowest"}', to);
+  routeMessage('{"quality":"high"}', { frames() {}, greeting() {}, ignored: () => seen.push('ignored') });
+  assert.deepEqual(seen, ['quality low', 'ignored', 'ignored']);
+  // Robustness: random mutations never throw, and anything taken is one of the levels.
+  let seed = 7;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
+  const good = '{"quality":"original"}';
+  const alphabet = '{}[]":,lowhigrna_ ';
+  for (let i = 0; i < 3000; i++) {
+    const chars = [...good];
+    for (let n = 1 + Math.floor(rnd() * 3); n > 0; n--) chars[Math.floor(rnd() * chars.length)] = alphabet[Math.floor(rnd() * alphabet.length)];
+    const r = classifyText(chars.join(''));
+    if (r && typeof r === 'object' && 'quality' in r) assert.ok(['original', 'high', 'low'].includes(r.quality));
+  }
+});
+
 // --- Against the real WebAssembly core (built into static/player/pkg by tools/build-web.sh) ---
 
 const pkg = new URL('../../static/player/pkg/', import.meta.url);
@@ -323,6 +361,9 @@ test('the worker: protocol 2 wiring (stream messages by track, 4426)', () => {
   // The badge's facts are looked up for the track heard, the one whose `source` is reported.
   assert.match(src, /const seq = factsSeq\(player\.heard_track\(\), status\.track, stream\?\.n\);/);
   assert.doesNotMatch(src, /streamInfo\.frame/);
+  // The gateway's echo of a level goes to the page; a confirmed change is sent even if unchanged.
+  assert.match(src, /quality: \(level\) => postMessage\(\{ qualityApplied: level \}\)/);
+  assert.match(src, /if \(q !== quality \|\| msg\.confirm === true\) \{\s*quality = q;\s*sendQuality\(\);/);
   assert.match(src, /stream: \(info\) => streamInfo\.add\(info\)/);
   // Malformed messages are noted once.
   assert.match(src, /if \(badStreamNoted\) return;\s*badStreamNoted = true;/);

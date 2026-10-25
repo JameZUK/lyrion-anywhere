@@ -9,7 +9,7 @@ import type { PlayerStatus } from '#lib/lms/types';
 
 vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const fake = await import('./helpers/fake-app.svelte');
-const { device, SERVER_TOO_OLD_TEXT } = await import('#lib/player/device.svelte');
+const { device, QUALITY_ECHO_WAIT_MS, SERVER_TOO_OLD_TEXT } = await import('#lib/player/device.svelte');
 const { default: NowPlaying } = await import('../src/routes/+page.svelte');
 const { default: PlayerBar } = await import('#lib/components/PlayerBar.svelte');
 const { default: SignalPathView } = await import('#lib/components/SignalPathView.svelte');
@@ -99,6 +99,20 @@ afterEach(() => {
 
 const blocks = (root: ParentNode) => [...root.querySelectorAll('[data-block]')].map((b) => b.getAttribute('data-block'));
 const time = () => fake.calls.filter((c) => c.cmd[0] === 'time');
+
+/**
+ * A tap on the switch, then the wait for the gateway's echo of the level: no worker runs here,
+ * so none comes, and the stream restarts after the wait (device-protocol2.test.ts has the echo).
+ */
+async function chooseAndWait(el: Element) {
+	vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+	try {
+		await fireEvent.click(el);
+		vi.advanceTimersByTime(QUALITY_ECHO_WAIT_MS);
+	} finally {
+		vi.useRealTimers();
+	}
+}
 
 describe('the badge', () => {
 	test.each([
@@ -207,7 +221,7 @@ describe('the sheet', () => {
 	test('choosing Original: applies now (sought to where it is); then back to automatic', async () => {
 		const r = render(SignalPathView);
 		await tick();
-		await fireEvent.click(r.container.querySelector('[data-level=original]')!);
+		await chooseAndWait(r.container.querySelector('[data-level=original]')!);
 		expect(device.qualityOverride).toBe('original');
 		expect(time()).toEqual([{ player: HERE, cmd: ['time', 30] }]);
 		await waitFor(() => expect(r.container.querySelector('[data-origin]')!.textContent).toBe('Original, overridden here'));
@@ -222,7 +236,7 @@ describe('the sheet', () => {
 		});
 		await tick();
 		expect(r.container.querySelector('.verdict')!.textContent).toBe('Hi-Res · FLAC 24/96');
-		await fireEvent.click(r.container.querySelector('[data-back-to-automatic]')!);
+		await chooseAndWait(r.container.querySelector('[data-back-to-automatic]')!);
 		expect(device.qualityOverride).toBeNull();
 		await waitFor(() => expect(r.container.querySelector('[data-origin]')!.textContent).toBe('High, on mobile data'));
 		expect(time()).toHaveLength(2);
@@ -246,7 +260,7 @@ describe('the sheet', () => {
 		const r = render(SignalPathView);
 		await tick();
 		expect(r.container.querySelector('[data-origin]')!.textContent).toBe('High, chosen in Settings');
-		await fireEvent.click(r.container.querySelector('[data-level=original]')!);
+		await chooseAndWait(r.container.querySelector('[data-level=original]')!);
 		expect(time()).toHaveLength(1);
 		await waitFor(() => expect(r.container.querySelector('[data-origin]')!.textContent).toBe('Original, overridden here'));
 		r.unmount();
