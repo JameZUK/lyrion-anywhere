@@ -16,6 +16,7 @@ import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasScrollToNodeAction
 import androidx.compose.ui.test.hasTestTag
@@ -70,6 +71,12 @@ import io.github.jamezuk.lyrionanywhere.data.TopEntry
 import io.github.jamezuk.lyrionanywhere.data.Waveform
 import io.github.jamezuk.lyrionanywhere.data.statsPeriodChoices
 import io.github.jamezuk.lyrionanywhere.ui.FakeSharer
+import io.github.jamezuk.lyrionanywhere.ui.QualityVectors
+import io.github.jamezuk.lyrionanywhere.ui.onboarding.ServerScreen
+import io.github.jamezuk.lyrionanywhere.ui.onboarding.ServerUiState
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.safeDrawingPadding
 import io.github.jamezuk.lyrionanywhere.ui.R
 import io.github.jamezuk.lyrionanywhere.ui.car.CarListsUi
 import io.github.jamezuk.lyrionanywhere.ui.car.CarModeScreen
@@ -183,6 +190,8 @@ abstract class DocShots {
     fun shot(
         name: String,
         darkIcons: Boolean? = null,
+        /** A dialog is open: its window is drawn centred over the screen, behind a scrim, as Android draws one. */
+        dialog: Boolean = false,
         prepare: () -> Unit = {},
         content: @Composable () -> Unit,
     ) {
@@ -192,11 +201,53 @@ abstract class DocShots {
         settle()
         prepare()
         settle()
-        val image = compose.onRoot().captureToImage().asAndroidBitmap()
+        val image = if (dialog) withDialog() else compose.onRoot().captureToImage().asAndroidBitmap()
         DocShotFiles.check(name, image)
         DocShotFiles.write(name, image)
     }
 }
+
+/**
+ * The screen with its open dialog: a dialog is a window of its own (a second root), so the
+ * two are captured apart and put together as the window manager would, the dialog over a
+ * dimmed screen.
+ */
+private fun DocShots.withDialog(): Bitmap {
+    assertTrue("expected a dialog over the screen", compose.onAllNodes(isRoot()).fetchSemanticsNodes().size == 2)
+    val screen = compose.onAllNodes(isRoot())[0].captureToImage().asAndroidBitmap()
+    // The dialog's own window, drawn as it is laid out.
+    val view = org.robolectric.shadows.ShadowDialog.getLatestDialog()!!.window!!.decorView
+    // Robolectric lays a dialog's window out as wide as the screen; a phone keeps a margin
+    // either side, so it is measured again at that width before it is drawn.
+    lateinit var dialog: Bitmap
+    compose.runOnUiThread {
+        val margin = (DIALOG_MARGIN_DP * view.resources.displayMetrics.density).toInt()
+        val width = screen.width - 2 * margin
+        view.measure(
+            android.view.View.MeasureSpec.makeMeasureSpec(width, android.view.View.MeasureSpec.EXACTLY),
+            android.view.View.MeasureSpec.makeMeasureSpec(screen.height, android.view.View.MeasureSpec.AT_MOST),
+        )
+        view.layout(0, 0, view.measuredWidth, view.measuredHeight)
+        dialog = Bitmap.createBitmap(view.measuredWidth, view.measuredHeight, Bitmap.Config.ARGB_8888)
+        view.draw(android.graphics.Canvas(dialog))
+    }
+    val out = screen.copy(Bitmap.Config.ARGB_8888, true)
+    val canvas = android.graphics.Canvas(out)
+    canvas.drawColor(android.graphics.Color.argb(DIALOG_DIM, 0, 0, 0))
+    // Centred, as Android places it, but kept below the screen's text field when there is one
+    // (the field is what the picture is about).
+    val field = compose.onAllNodes(androidx.compose.ui.test.hasSetTextAction(), useUnmergedTree = true)
+        .fetchSemanticsNodes().firstOrNull()?.boundsInRoot?.bottom
+    val below = field?.let { it + 24 * compose.activity.resources.displayMetrics.density } ?: 0f
+    canvas.drawBitmap(dialog, (out.width - dialog.width) / 2f, maxOf((out.height - dialog.height) / 2f, below), null)
+    return out
+}
+
+/** The space either side of a dialog on a phone. */
+private const val DIALOG_MARGIN_DP = 28
+
+/** The dim behind a dialog (0–255). */
+private const val DIALOG_DIM = 140
 
 /** Checks each picture, and writes it when recording (`-PrecordDocScreenshots`). */
 object DocShotFiles {
@@ -281,7 +332,12 @@ object DocStates {
         summary = "",
     )
 
-    fun player(selected: String = DocLibrary.LOUNGE, prefs: NowPlayingPrefs = NowPlayingPrefs()): PlayerUiState {
+    fun player(
+        selected: String = DocLibrary.LOUNGE,
+        prefs: NowPlayingPrefs = NowPlayingPrefs(),
+        /** The quality vector shown (default: as the selected player has it). */
+        vector: String? = null,
+    ): PlayerUiState {
         val phone = selected == DocLibrary.PHONE_ID
         val status = DocLibrary.status(name = if (phone) "Phone" else "Lounge")
         val current = status.current!!
@@ -304,9 +360,7 @@ object DocStates {
             lyricsTrackId = current.id,
             nowPlaying = prefs,
             // The badge and the diagram, as the shared rules draw them (core/tests/fixtures).
-            diagram = io.github.jamezuk.lyrionanywhere.ui.QualityVectors.expected(
-                if (phone) io.github.jamezuk.lyrionanywhere.ui.QualityVectors.PASSED_THROUGH else io.github.jamezuk.lyrionanywhere.ui.QualityVectors.REMOTE,
-            ),
+            diagram = QualityVectors.expected(vector ?: if (phone) QualityVectors.PASSED_THROUGH else QualityVectors.REMOTE),
         )
     }
 
@@ -492,9 +546,16 @@ class DocScreenshotsPhone : DocShots() {
         }
     }
 
+    /** The signal path as a block diagram: a Hi-Res file re-encoded for High on mobile data (amber gateway, the switch). */
     @Test
-    fun signalPath() = shot("signal-path") {
-        val phone = DocStates.player(selected = DocLibrary.PHONE_ID)
+    fun signalPath() = signalPathShot("signal-path", QualityVectors.REPORTED)
+
+    /** The same sheet for a Hi-Res file passed through to a USB DAC, bit-perfect. */
+    @Test
+    fun signalPathHiRes() = signalPathShot("signal-path-hires", QualityVectors.PASSED_THROUGH)
+
+    private fun signalPathShot(name: String, vector: String) = shot(name) {
+        val phone = DocStates.player(selected = DocLibrary.PHONE_ID, vector = vector)
         SheetOver(
             behind = {
                 PhoneShell(tab = null, mini = null) {
@@ -507,10 +568,16 @@ class DocScreenshotsPhone : DocShots() {
     }
 
     @Test
-    fun soundSettings() = shot("sound-settings") {
+    fun soundSettings() = shot(
+        "sound-settings",
+        prepare = {
+            // Loudness: Fix output level at 100% on, Player level greyed out under it.
+            compose.onAllNodes(hasScrollToNodeAction()).onFirst().performScrollToNode(hasTestTag("sound-levelling"))
+        },
+    ) {
         PhoneShell(tab = null, mini = DocStates.mini) {
             DocScreen(stringResource(R.string.title_sound), back = true) {
-                SoundScreen(SoundUiState(SoundSettings(), playerLevel = 60), object : SoundActions {})
+                SoundScreen(SoundUiState(SoundSettings(fixedOutputLevel = true), playerLevel = 100), object : SoundActions {})
             }
         }
     }
@@ -593,6 +660,43 @@ class DocScreenshotsPhone : DocShots() {
         PhoneShell(tab = null, mini = DocStates.mini) {
             DocScreen(stringResource(R.string.title_downloads), back = true) {
                 DownloadsScreen(DocStates.downloads(), DownloadsActions(onStorage = {}))
+            }
+        }
+    }
+
+    /** The Library tab with the mini player: the quality badge in its second line. */
+    @Test
+    fun miniPlayer() = shot("mini-player") {
+        PhoneShell(tab = MainTab.LIBRARY, mini = DocStates.mini) {
+            DocScreen(stringResource(R.string.nav_library)) {
+                LibraryScreen(emptyList(), null, {}, onOpen = {})
+            }
+        }
+    }
+
+    /** Signing in over a VPN: a plain http:// private address, and the warning it brings up. */
+    @Test
+    fun signInVpn() = shot("sign-in-vpn", dialog = true) {
+        Box(Modifier.fillMaxSize().safeDrawingPadding()) {
+            ServerScreen(ServerUiState(address = "http://10.8.0.1:9443", confirmUnencrypted = true), onAddressChange = {}, onSubmit = {})
+        }
+    }
+
+    /** Settings › About: the app's version and the server's player protocol. */
+    @Test
+    fun settingsAboutProtocol() = shot("settings-about-protocol") {
+        PhoneShell(tab = null, mini = DocStates.mini) {
+            DocScreen(stringResource(R.string.section_about), back = true) {
+                SettingsScreen(
+                    state = SettingsUiState(username = "alex", sound = SoundSettings(), deviceName = "Phone"),
+                    appVersion = "1.17.0",
+                    libraryVersion = "0.0.1",
+                    onSignOut = {},
+                    onLicences = {},
+                    section = io.github.jamezuk.lyrionanywhere.ui.settings.SettingsSection.ABOUT,
+                    serverProtocol = 2u,
+                    serverProtocolChecked = true,
+                )
             }
         }
     }
