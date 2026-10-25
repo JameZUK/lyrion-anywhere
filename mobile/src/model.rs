@@ -1160,7 +1160,18 @@ pub(crate) fn status_from(v: &Value) -> PlayerStatus {
         current,
         next: next_of(v),
         sleep_secs: float_of(&v["will_sleep_in"]).filter(|s| s.is_finite() && *s > 0.0),
-        fixed_level: int_of(&v["digital_volume_control"]) == Some(0),
+        fixed_level: is_fixed_level(&v["digital_volume_control"]),
+    }
+}
+
+/// LMS's `digital_volume_control` says the output level is fixed: exactly `0` or `"0"`.
+/// Anything else (`1`, `0.5`, `"0,1"`, `" 0"`, junk, absent) leaves the volume working as
+/// usual, so a damaged answer can never pin the phone's output at full scale.
+fn is_fixed_level(v: &Value) -> bool {
+    match v {
+        Value::Number(n) => n.as_u64() == Some(0),
+        Value::String(s) => s == "0",
+        _ => false,
     }
 }
 
@@ -1511,6 +1522,25 @@ mod tests {
         assert!(!status_from(&json!({"digital_volume_control": "x"})).fixed_level);
         assert!(!status_from(&json!({"digital_volume_control": null})).fixed_level);
         assert!(!status_from(&json!({"digital_volume_control": [0]})).fixed_level);
+        // Exactly 0: not a fraction that rounds to it, nor a list that starts with it.
+        for v in [
+            json!(0.5),
+            json!(0.0),
+            json!(-0.4),
+            json!("0,1"),
+            json!("0.5"),
+            json!(" 0"),
+            json!("00"),
+            json!("-0"),
+            json!(-1),
+            json!({"0": 0}),
+            json!(false),
+        ] {
+            assert!(
+                !status_from(&json!({"digital_volume_control": v})).fixed_level,
+                "{v}"
+            );
+        }
     }
 
     #[test]
