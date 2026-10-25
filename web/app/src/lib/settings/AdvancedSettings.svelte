@@ -3,8 +3,8 @@
 	// playback engine and the volume source (each with the reason for the automatic choice), and
 	// the diagnostics for troubleshooting, folded away. The only place LMS is named by name.
 	import { app } from '#lib/state/app.svelte';
-	import { SERVER_TOO_OLD_TEXT, device } from '#lib/player/device.svelte';
-	import { OUTDATED_TEXT } from '#lib/state/status';
+	import { device } from '#lib/player/device.svelte';
+	import { OUTDATED_TEXT, SERVER_TOO_OLD_TEXT } from '#lib/state/status';
 	import { detect } from '#lib/player/capabilities';
 	import { MODE_LABELS, chooseMode, detectEnvironment, loadPreference, savePreference, type ModePreference } from '#lib/player/mode';
 	import { FIXED_LEVEL_EXPLANATION, FIXED_LEVEL_LABEL, FIXED_LEVEL_NO_FOLLOW, VOLUME_LABELS, canFollow, planVolume, type VolumeSetting } from '#lib/player/volume';

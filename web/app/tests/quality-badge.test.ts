@@ -9,7 +9,8 @@ import type { PlayerStatus } from '#lib/lms/types';
 
 vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const fake = await import('./helpers/fake-app.svelte');
-const { device, QUALITY_ECHO_WAIT_MS, SERVER_TOO_OLD_TEXT } = await import('#lib/player/device.svelte');
+const { device, QUALITY_ECHO_WAIT_MS } = await import('#lib/player/device.svelte');
+const { SERVER_TOO_OLD_TEXT } = await import('#lib/state/status');
 const { default: NowPlaying } = await import('../src/routes/+page.svelte');
 const { default: PlayerBar } = await import('#lib/components/PlayerBar.svelte');
 const { default: SignalPathView } = await import('#lib/components/SignalPathView.svelte');

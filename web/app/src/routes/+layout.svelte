@@ -73,8 +73,9 @@
 	$effect(() => {
 		// Not before the server has confirmed the sign-in: the player needs a real token.
 		if (app.status === 'signed-in' && !app.provisional) {
-			// What the gateway is (its player protocol), early: a tap on Play then needn't wait.
-			untrack(() => void loadServerInfo());
+			// What the gateway is (its player protocol), early: a tap on Play then needn't wait,
+			// and a server too old for this browser's player is said at once, before any tap.
+			untrack(() => void loadServerInfo().then((info) => info && device.noteServerProtocol(info.protocol)));
 			// Test the media-element path quietly, so this device can use it at once. Then start
 			// this device's player by itself if it is the one to use (SPEC D20: player-first), or
 			// if it was playing before a reload: it connects now, and the first tap anywhere

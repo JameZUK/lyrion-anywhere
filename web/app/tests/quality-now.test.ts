@@ -133,9 +133,13 @@ test('served and sent are checked again on the page', () => {
 });
 
 test("GET /v1/me's protocol: a positive whole number, else none (an older gateway)", () => {
-	expect(serverInfoOf({ protocol: 2, features: { a: true, b: 1 } })).toEqual({ protocol: 2, features: { a: true } });
-	for (const p of [undefined, null, '2', 2.5, 0, -2, true, {}, [2]]) expect(serverInfoOf({ protocol: p }).protocol, JSON.stringify(p)).toBeNull();
-	for (const raw of [null, 'x', [], 3]) expect(serverInfoOf(raw)).toEqual({ protocol: null, features: {} });
+	const user = { username: 'u', role: 'user' };
+	expect(serverInfoOf({ user, protocol: 2, features: { a: true, b: 1 } })).toEqual({ protocol: 2, features: { a: true } });
+	for (const p of [undefined, null, '2', 2.5, 0, -2, true, {}, [2]]) expect(serverInfoOf({ user, protocol: p })!.protocol, JSON.stringify(p)).toBeNull();
+	// Not recognisably the gateway's answer (no `user`): not an older gateway, but no answer.
+	for (const raw of [null, undefined, 'x', [], 3, {}, { protocol: 1 }, { protocol: 2 }, { user: null }, { user: [] }, { user: 'u', protocol: 2 }]) {
+		expect(serverInfoOf(raw), JSON.stringify(raw)).toBeNull();
+	}
 	expect(playsHere(2)).toBe(true);
 	expect(playsHere(3)).toBe(true);
 	expect(playsHere(1)).toBe(false);

@@ -16,13 +16,14 @@
 			reach: app.reach,
 			message: controls.message,
 			outdated: device.outdated,
+			serverTooOld: device.serverTooOld,
 			reconnecting: controls.thisDevice && device.state === 'reconnecting',
 			heldBack: device.needsTap && (device.detail.output === 'Playing' || (app.playerId === device.mac && app.playing)),
 			resume: device.wasActive && (device.state === 'off' || device.state === 'stopped' || device.state === 'error'),
 			update: appUpdate.offered,
 		}),
 	);
-	const ICONS = { moving: 'transfer', unreachable: 'offline', busy: 'clock', outdated: 'new', reconnecting: 'clock', held: 'play', resume: 'device', update: 'new' } as const;
+	const ICONS = { moving: 'transfer', unreachable: 'offline', busy: 'clock', outdated: 'new', 'server-too-old': 'warning', reconnecting: 'clock', held: 'play', resume: 'device', update: 'new' } as const;
 </script>
 
 {#if status}

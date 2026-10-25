@@ -88,10 +88,6 @@ export interface DeviceStatus {
 	stream_seq?: number | null;
 }
 
-/** Settings › About › Advanced, when the gateway is too old for this browser's player. */
-export const SERVER_TOO_OLD_TEXT =
-	"This browser can't play from this server until its Lyrion Anywhere plugin is updated to 0.7.3 or later. You can still control other players.";
-
 /** A player file, with the build version so a stale cached copy is never used. */
 const asset = (p: string) => {
 	const u = new URL(`player/${p}`, document.baseURI);
@@ -688,6 +684,18 @@ class DevicePlayer {
 	}
 
 	/**
+	 * What the gateway said its player protocol is (`GET /v1/me`; undefined: it couldn't be
+	 * asked). Below this app's, or not stated by a gateway that answered, this browser's player
+	 * can't run: `serverTooOld` is set (the status line says so) and true is returned.
+	 */
+	noteServerProtocol(protocol: number | null | undefined): boolean {
+		if (protocol === undefined || playsHere(protocol)) return false;
+		if (!this.serverTooOld) this.#note(`the server's player protocol is ${protocol ?? 'not stated'}; this browser needs 2: update the server's plugin`);
+		this.serverTooOld = true;
+		return true;
+	}
+
+	/**
 	 * Start by itself, without a tap (after signing in, or a reload): the player connects and
 	 * is ready, and the first tap anywhere turns the sound on. Not if another tab of this
 	 * browser already runs it ('busy').
@@ -801,9 +809,7 @@ class DevicePlayer {
 			if (this.protocolGate) {
 				const protocol = await this.protocolGate();
 				if (!live()) return;
-				if (protocol !== undefined && !playsHere(protocol)) {
-					this.#note(`the server's player protocol is ${protocol ?? 'not stated'}; this browser needs 2: update the server's plugin`);
-					this.serverTooOld = true;
+				if (this.noteServerProtocol(protocol)) {
 					this.stop();
 					this.state = 'off';
 					return;

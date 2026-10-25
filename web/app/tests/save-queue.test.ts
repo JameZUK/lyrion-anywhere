@@ -111,7 +111,8 @@ describe('MeApi.saveQueue', () => {
 		calls = [];
 		globalThis.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
 			calls.push({ url: String(url), method: init?.method ?? 'GET', body: init?.body ? JSON.parse(String(init.body)) : undefined });
-			return new Response(JSON.stringify(reply.body), { status: reply.status, headers: { 'content-type': 'application/json' } });
+			const body = reply.body === undefined ? null : typeof reply.body === 'string' ? reply.body : JSON.stringify(reply.body);
+			return new Response(body, { status: reply.status, headers: { 'content-type': 'application/json' } });
 		}) as typeof fetch;
 	});
 
@@ -155,6 +156,17 @@ describe('MeApi.saveQueue', () => {
 		expect(calls[0]).toMatchObject({ url: '/v1/me', method: 'GET' });
 		reply = { status: 200, body: { user: {} } };
 		expect(await (await api()).info()).toEqual({ protocol: null, features: {} });
+	});
+
+	test("/v1/me answers that aren't the gateway's are \"couldn't ask\", never an older gateway", async () => {
+		// A 204, an empty or blank body, a body without `user` (a proxy or captive portal): rejected.
+		for (const body of [undefined, '', '  ', {}, { protocol: 1 }, { features: {} }, { user: null, protocol: 2 }, { user: 'x' }, [], 'null']) {
+			reply = { status: body === undefined ? 204 : 200, body };
+			await expect((await api()).info(), JSON.stringify(body)).rejects.toBeInstanceOf(ApiError);
+		}
+		// The gateway's own answer without `protocol`, or below 2: an older gateway.
+		reply = { status: 200, body: { user: { username: 'u' }, protocol: 1 } };
+		expect((await (await api()).info()).protocol).toBe(1);
 	});
 });
 
