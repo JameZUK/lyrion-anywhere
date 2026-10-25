@@ -33,18 +33,39 @@ pub struct Switch { levels: [Level; 3], in_force: Level, origin: Origin /* Setti
 
 Inputs (`QualityInputs`): the file's format from status; what LMS served (codec, and bits/rate when the stream is passed through) and whether server gain applied; what the gateway sent (pass-through, or Opus at N kb/s and the level asked); the decoder's format; the output device, rate and route verdicts (today's `SignalPathInfo`); the quality origin. One pure function `describe(&QualityInputs) -> Diagram`. Vectors: `core/tests/fixtures/quality-vectors.json`, each an input and the expected badge, blocks and `lowers` flags, covering: FLAC 24/96 passed through; FLAC 24/96 re-encoded (High on mobile data; Data saver by setting; override); FLAC 16/44.1 passed through; ALAC file served as FLAC (LMS block); FLAC 24/96 downsampled by LMS to 16/44.1 (LMS block, verdict Lossless); MP3 320 as sent (Lossy, no gateway change); Opus radio stream; server ReplayGain only; remote player; offline download original and offline Opus; unknown type (no badge). The web (TypeScript) and the mobile crate run the same vectors; the Android UI tests render from the model.
 
-## What the gateway must tell the client
+## What the gateway tells the client, and the protocol version
 
-The engine sees only the stream it decodes. For the LMS and gateway blocks the client needs what LMS served and what the gateway did. The stream relay (`GET /v1/stream…`) adds response headers, which old clients ignore and which need no socket protocol change:
+_Decided 2026-10-25: no backwards compatibility for the player protocol. Both sides move to **protocol 2** together (plugin 0.7.3, Android 1.17.0, the web app that ships inside the plugin), and the release notes say so. Everything that does not need the new protocol (sign-in, browsing, remote control over `/v1/rpc` and `/v1/events`) is unchanged, so a mismatched pair still controls other players; only the device's own player needs both sides current._
 
-- `Anywhere-Served: flc` — the codec LMS sent the gateway, from the `strm` format byte (`f` FLAC, `p` PCM with rate and depth from the `strm` fields, `m` MP3, `o` Ogg, `a` AAC, `l` ALAC).
-- `Anywhere-Sent: passthrough` or `Anywhere-Sent: opus; kbps=160; level=high` — what the gateway did to it.
+**The stream message.** The engine sees only the stream it decodes; the LMS and gateway blocks need what LMS served and what the gateway did. The gateway sends a text message on the player socket for every stream it relays:
 
-Both are plain tokens the clients validate like every other header (letters, digits, `;`, `=`, at most 64 bytes). `GET /v1/me` lists `"stream_info": true` so clients know the headers are meant (absent: infer from the decoder and the level asked, as today). PROTOCOL.md gets the two headers under *Streams*; tests: the headers for a pass-through, an Opus re-encode at each level, a PCM stream, and that they survive `?offset=` resumes and `?limit=` chunks.
+```json
+{"stream":{"seq":12,
+  "served":{"codec":"flac","rate":96000,"bits":24,"channels":2,"gain_db":-3.2},
+  "sent":{"mode":"opus","kbps":160,"level":"high"}}}
+```
+
+- `seq` is the count of `strm s` frames the gateway has forwarded in this session, so the client ties the message to the stream it is fetching; both sides count the same frames (replayed frames after a resume are not counted twice, as the client never processes a frame twice).
+- `served` is LMS's stream as it reached the gateway: the codec from the `strm` format byte (`f` FLAC, `p` PCM with rate, depth and channels from the `strm` fields, `m` MP3, `o` Ogg, `a` AAC, `l` ALAC), the rate, depth and channels of a FLAC stream from its STREAMINFO (the gateway reads the first 42 bytes before passing them on or to `ffmpeg`), and the server ReplayGain from the `strm` (`gain_db`, absent when none). Unknown fields are `null`.
+- `sent` is what the gateway did: `{"mode":"passthrough"}` or `{"mode":"opus","kbps":160,"level":"high"|"low"}`.
+- It is sent when the gateway has the upstream response (so it knows the codec and can read STREAMINFO), which is after the client asked for the stream; the badge and sheet update when it arrives, within the first second. After a resume greeting the gateway sends it again for the stream in progress, so a resumed client is never without it.
+- It is not a frame (not binary) and is never counted in `received`, like the text keepalive.
+
+**Protocol version.**
+- `GET /v1/me` answers `"protocol": 2` (the gateway's).
+- The player socket's sign-in form carries `"protocol": 2`. A form without it, or with a lower number, is an old client: the gateway closes with **4426** and the reason `update the app` after checking the token and before opening a session, and audits `player.too_old` (device and the number given). A higher number than the gateway knows is accepted (the newer client decides what to do).
+- **Old app, new server:** the Android app shows, where the player would appear, "This server needs Lyrion Anywhere 1.17.0 or later. Update the app." (the close reason is mapped, never shown raw). Remote control keeps working. A stale web page (an old cached app) gets the same close; its error says to reload, and the boot guard and content ETags already make the next load fresh.
+- **New app, old server:** the app reads `protocol` from `/v1/me` at start-up and sign-in; below 2 (or absent) it does not open the player socket and says "This phone can't play from this server until its Lyrion Anywhere plugin is updated to 0.7.3 or later. You can still control other players." Settings › About shows the server's protocol and version.
+- **Admins:** the devices table records each device's protocol at attach; *Your devices* and the plugin's Devices list show "needs updating" beside an old one, so an admin can see who is behind after upgrading.
+- PROTOCOL.md gains a *Versions* section: protocol 1 (0.1 to 0.7.2 / Android to 1.16.0), protocol 2 (0.7.3 / 1.17.0: the stream message, the version in the sign-in form, close 4426).
+
+**Why this and not headers or inference.** Response headers would be readable only by code that performs the fetch and would be a second channel beside the socket; inference from the decoder cannot see LMS's own conversion under a re-encode. A first-class message on the socket, with a version number that lets each side say plainly that the other is too old, is the proper design, and the owner chose it over compatibility shims.
+
+**Tests (protocol):** the message for a pass-through FLAC (STREAMINFO read: 24/96), an Opus re-encode at each level, a PCM stream (fields from the `strm`), an MP3 as sent, server gain present and absent; `seq` across a seek, a track change and a resume (re-sent after the greeting); a client without `protocol`, with 1, with junk (`"2"`, `2.0`, `-1`, `99999999999`, an object) and with 3; the audit line; `/v1/me` carries `protocol`. Robustness: junk STREAMINFO bytes never panic and leave `rate`/`bits` null; the message is at most 512 bytes.
 
 ## Clients
 
-**Engines (mobile crate, web worker):** read the two headers at stream start and keep them with the track's audio (`TrackAudio.served`, `TrackAudio.sent`); expose them in the signal-path snapshot. The web worker passes them to the page with the existing `source` status.
+**Engines (mobile crate, web worker):** send `"protocol": 2` in the sign-in form; keep the latest `stream` message per `seq` and attach it to the matching `strm s` (`TrackAudio.served`, `TrackAudio.sent`); expose it in the signal-path snapshot. The web worker passes it to the page with the existing `source` status. Close 4426 is reported as "update needed", never retried.
 
 **Android:**
 - `QualityBadge` takes the `Badge` from the diagram, never `track.quality`, when this phone is the player; for a remote player the badge is the file's (as today, through the same `describe`). Mini player: the same text, compact.
@@ -60,15 +81,15 @@ Both are plain tokens the clients validate like every other header (letters, dig
 ## Tests
 
 - Core: the vectors; `describe` never panics on junk (fuzz over random inputs); badge text matches the vectors byte for byte.
-- Gateway: the two headers (see above); the quality control message followed by a seek yields a stream at the new level (an integration test with the fake LMS and a transcode stub, as in the streaming-quality tests).
-- Mobile crate: headers parsed and carried through a resume; the snapshot carries them; junk headers ignored.
+- Gateway: the stream message and the protocol version (see above); the quality control message followed by a seek yields a stream at the new level (an integration test with the fake LMS and a transcode stub, as in the streaming-quality tests).
+- Mobile crate: the stream message parsed and tied to its `strm` by `seq`, carried through a resume; the snapshot carries it; junk messages ignored; close 4426 mapped to the update message; `/v1/me` without `protocol` 2 keeps the player off with the server message.
 - Android (unit): the badge uses the heard stream (the exact case reported: FLAC 24/96 on mobile data → "Transcoded · Opus 160", amber); the diagram's blocks for each vector; the LMS block appears only when LMS changed something; the switch sends the message and seeks; the override clears on a metered change and survives a track change; a remote player and offline show their shapes; TalkBack reads the blocks in order.
 - Web (Vitest): the same cases on the components; the override's lifetime; Safari (no Network Information API) behaves.
 - Live: on the owner's setup, the reported track on mobile data shows "Transcoded · Opus 160" and the diagram File → Gateway (amber) → Phone; switching to Original in the sheet restarts the stream at the same position with FLAC 24/96 and the badge turns Hi-Res; back to automatic returns to Opus on the next stream.
 
 ## Docs
 
-SPEC §7.2 "Quality badge and signal path" rewritten, decision **D30**; FEATURES rows *Quality badge and signal path* and *Streaming quality* updated; PROTOCOL (headers, `stream_info`); CHANGELOG; `streaming-quality.md` "Clients" section marked superseded by this plan.
+SPEC §7.2 "Quality badge and signal path" rewritten, decision **D30**; FEATURES rows *Quality badge and signal path* and *Streaming quality* updated; PROTOCOL (the stream message, the version in the sign-in form, close 4426, `/v1/me` `protocol`, a *Versions* section); release notes for 0.7.3 and Android 1.17.0 open with "update both: the app needs the plugin 0.7.3 or later, and the plugin's player needs app 1.17.0 or later"; README's compatibility line; CHANGELOG; `streaming-quality.md` "Clients" section marked superseded by this plan.
 
 ## Out of scope
 
