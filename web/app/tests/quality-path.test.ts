@@ -2,7 +2,7 @@
 // decision 7): the web app must produce exactly the core's diagram for every shared vector,
 // and must never throw or produce long strings on any input.
 import { readFileSync } from 'node:fs';
-import { clean, codec, codecName, describe, fmtDb, formatLabel, isHiRes, khz, originText, type QualityInputs } from '#lib/player/quality-path';
+import { clean, codec, codecName, describe, fmtDb, formatLabel, isHiRes, isInvisible, khz, originText, type QualityInputs } from '#lib/player/quality-path';
 
 interface Vector {
 	name: string;
@@ -12,7 +12,7 @@ interface Vector {
 const vectors: Vector[] = JSON.parse(readFileSync(`${__dirname}/../../../core/tests/fixtures/quality-vectors.json`, 'utf8'));
 
 test('the shared vectors are all there', () => {
-	expect(vectors.length).toBeGreaterThanOrEqual(22);
+	expect(vectors.length).toBeGreaterThanOrEqual(29);
 });
 
 test.each(vectors.map((v) => [v.name, v] as const))('vector: %s', (_name, v) => {
@@ -88,6 +88,46 @@ test('names are cleaned of control, zero-width and bidi characters and cut to 40
 	expect(clean('a\u2028b\u0085c', 40)).toBe('abc');
 });
 
+test('the invisible characters are the core\u2019s list, range by range', () => {
+	// Each range's ends and a point inside, as in the core's `is_invisible`.
+	const ranges: [number, number][] = [
+		[0x0000, 0x001f], [0x007f, 0x009f], [0x00ad, 0x00ad], [0x034f, 0x034f], [0x0600, 0x0605], [0x061c, 0x061c],
+		[0x06dd, 0x06dd], [0x070f, 0x070f], [0x0890, 0x0891], [0x08e2, 0x08e2], [0x115f, 0x1160], [0x180e, 0x180e],
+		[0x200b, 0x200f], [0x2028, 0x202e], [0x2060, 0x206f], [0x3164, 0x3164], [0xfe00, 0xfe0f], [0xfeff, 0xfeff],
+		[0xffa0, 0xffa0], [0xfff9, 0xfffb], [0x110bd, 0x110bd], [0x110cd, 0x110cd], [0x13430, 0x1343f],
+		[0x1bca0, 0x1bca3], [0x1d173, 0x1d17a], [0xe0000, 0xe007f], [0xe0100, 0xe01ef],
+	];
+	for (const [lo, hi] of ranges) {
+		for (const cp of [lo, Math.floor((lo + hi) / 2), hi]) {
+			const c = String.fromCodePoint(cp);
+			expect(isInvisible(c), cp.toString(16)).toBe(true);
+			expect(clean(`a${c}b`, 40), cp.toString(16)).toBe('ab');
+		}
+		// The neighbours outside each range are kept, unless they are themselves in the list.
+		for (const cp of [lo - 1, hi + 1]) {
+			if (cp < 0 || ranges.some(([a, b]) => cp >= a && cp <= b)) continue;
+			expect(isInvisible(String.fromCodePoint(cp)), cp.toString(16)).toBe(false);
+		}
+	}
+	// Ordinary letters, spaces, emoji and joiners that draw are kept.
+	for (const c of ['a', '\u00e9', ' ', '\u00a0', '\u{1f3b5}', '\u4e2d', '\u0627']) expect(isInvisible(c), c).toBe(false);
+	expect(isInvisible('ab')).toBe(false);
+	expect(isInvisible('')).toBe(false);
+	// The cut counts code points, as the core's does, and the end is trimmed after it.
+	expect(clean('\u{1f3b5}'.repeat(50), 40)).toBe('\u{1f3b5}'.repeat(40));
+	expect(clean(`${'x'.repeat(39)} y`, 40)).toBe('x'.repeat(39));
+	expect(clean('\u{e0041}\u{e0042}Kitchen\u{fe0f}\u3164', 40)).toBe('Kitchen');
+});
+
+test('the device note: the name as given, then the clauses; only clauses are capitalised', () => {
+	const note = (device: object) => describe({ device }).blocks.find((b) => b.kind === 'device')!.note;
+	expect(note({ name: 'moto buds' })).toBe('moto buds');
+	expect(note({ name: 'iBasso DC03', bit_perfect: true })).toBe('iBasso DC03, bit-perfect');
+	expect(note({ name: ' \u200b ', resampled: true, rate: 48_000 })).toBe('Resampled to 48 kHz');
+	expect(note({ resampled: true, dsp_active: true })).toBe('Resampled, processed by DSP you turned on');
+	expect(note({})).toBe('');
+});
+
 test('nothing known gives no badge', () => {
 	const d = describe({});
 	expect(d.badge).toBeNull();
@@ -108,11 +148,11 @@ test('describe never throws and keeps every string short on random inputs', () =
 	const r = rng(0x5eed);
 	const pick = <T>(xs: readonly T[]): T => xs[Math.floor(r() * xs.length)]!;
 	const nums = [null, undefined, 0, -1, 1, 8, 16, 24, 32, 64, 65, 999, 1000, 44_100, 48_000, 96_000, 2_822_400, 50_000_001, 1.5, NaN, Infinity, -Infinity, 2 ** 53, '96000', true];
-	const strs = [null, undefined, '', ' ', 'flc', 'FLAC', 'ops', 'opus', 'ogg', 'mp3', 'pcm', 'dsf', 'alc', 'xyz', 'Opus', 'Vorbis', 'PCM (float)', '\u202e\u200b', 'a'.repeat(300), '\u0000\u0007x', 42, {}, []];
+	const strs = [null, undefined, '', ' ', '\u{e0041}\u00adx\ufe0f', 'flc', 'FLAC', 'ops', 'opus', 'ogg', 'mp3', 'pcm', 'dsf', 'alc', 'xyz', 'Opus', 'Vorbis', 'PCM (float)', '\u202e\u200b', 'a'.repeat(300), '\u0000\u0007x', 42, {}, []];
 	const any = () => (r() < 0.5 ? pick(nums) : pick(strs));
 	const longest = (v: unknown): number => {
 		if (typeof v === 'string') {
-			expect(v).not.toMatch(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/u);
+			expect(Array.from(v).some(isInvisible), v).toBe(false);
 			return v.length;
 		}
 		if (Array.isArray(v)) return Math.max(0, ...v.map(longest));

@@ -63,7 +63,9 @@ test('before the stream message: the decoder alone still says Transcoded', () =>
 test("a malformed served or sent from the worker is unknown, not shown", () => {
 	const d = describeDiagram(qualityInputs(reported({ served: { codec: '<b>FLAC</b>' }, sent: { mode: 'opus', kbps: '160', level: 'high' } })));
 	expect(d.blocks.map((b) => b.kind)).toEqual(['file', 'gateway', 'device']);
-	expect(d.blocks[1]!.note).toBe('');
+	// Neither is shown: with Opus decoded from a FLAC file, only that a re-encode happened.
+	expect(d.blocks[1]).toMatchObject({ format: '', note: 'Re-encoded (details to follow)', lowers: true });
+	expect(d.badge!.text).toBe('Transcoded · Opus');
 });
 
 test('a remote player: File → the player, the badge from the file, no switch', () => {
@@ -145,10 +147,26 @@ describe('why the level in force is in force', () => {
 		['high', null, null, 'High, chosen in Settings'],
 		['low', 'high', null, 'High, overridden here'],
 	] as const)('%s, override %s, %j: %s', (pref, override, c, text) => {
-		const d = describeDiagram(qualityInputs(reported({ origin: originOf(pref, override, c) })));
+		// The stream heard is the one sent for the level in force.
+		const level = levelInForce(pref, override, c);
+		const sent = level === 'original' ? { mode: 'passthrough' as const } : { mode: 'opus' as const, kbps: level === 'low' ? 96 : 160, level };
+		const d = describeDiagram(qualityInputs(reported({ origin: originOf(pref, override, c), sent })));
 		expect(d.switch!.origin_text).toBe(text);
 		expect(d.switch!.overridden).toBe(override !== null);
-		expect(d.switch!.in_force).toBe(levelInForce(pref, override, c));
+		expect(d.switch!.in_force).toBe(level);
+	});
+
+	test('a level chosen but not yet heard is pending: the switch shows the level heard', () => {
+		// High is heard; Original has just been chosen in the sheet.
+		const d = describeDiagram(qualityInputs(reported({ origin: originOf('high', 'original', { type: 'cellular' }) })));
+		expect(d.switch!.in_force).toBe('high');
+		expect(d.switch!.origin_text).toBe('Original applies from the next track');
+		expect(d.switch!.overridden).toBe(true);
+		expect(d.blocks.find((b) => b.kind === 'gateway')!.note).toBe('Re-encoded to Opus 160 kb/s; Original applies from the next track');
+		// Passed through (Original heard), with Data saver chosen.
+		const p = describeDiagram(qualityInputs(reported({ sent: { mode: 'passthrough' }, origin: originOf('low', null, { type: 'cellular' }) })));
+		expect(p.switch!.in_force).toBe('original');
+		expect(p.blocks.find((b) => b.kind === 'gateway')!.note).toBe('Passed through unchanged; Data saver applies from the next track');
 	});
 });
 
