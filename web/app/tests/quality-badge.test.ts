@@ -254,9 +254,11 @@ describe('the sheet', () => {
 		await chooseAndWait(r.container.querySelector('[data-level=original]')!);
 		expect(device.qualityOverride).toBe('original');
 		expect(time()).toEqual([{ player: HERE, cmd: ['time', 30] }]);
-		await waitFor(() => expect(r.container.querySelector('[data-origin]')!.textContent).toBe('Original, overridden here'));
-		expect(r.container.querySelector('[data-level=original]')!.getAttribute('aria-checked')).toBe('true');
-		// The gateway still says Opus until the new stream's message arrives; then it passes through.
+		// The gateway still says Opus until the new stream's message arrives: High is what is
+		// heard, and Original is pending.
+		await waitFor(() => expect(r.container.querySelector('[data-origin]')!.textContent).toBe('Original applies from the next track'));
+		expect(r.container.querySelector('[data-level=high]')!.getAttribute('aria-checked')).toBe('true');
+		// Then it passes through: Original is in force.
 		device.applyStatus({
 			output: 'Playing',
 			sample_rate: 96000,
@@ -266,9 +268,12 @@ describe('the sheet', () => {
 		});
 		await tick();
 		expect(r.container.querySelector('.verdict')!.textContent).toBe('Hi-Res · FLAC 24/96');
+		expect(r.container.querySelector('[data-origin]')!.textContent).toBe('Original, overridden here');
+		expect(r.container.querySelector('[data-level=original]')!.getAttribute('aria-checked')).toBe('true');
 		await chooseAndWait(r.container.querySelector('[data-back-to-automatic]')!);
 		expect(device.qualityOverride).toBeNull();
-		await waitFor(() => expect(r.container.querySelector('[data-origin]')!.textContent).toBe('High, on mobile data'));
+		// Original is still heard until the High stream's message arrives.
+		await waitFor(() => expect(r.container.querySelector('[data-origin]')!.textContent).toBe('High applies from the next track'));
 		expect(time()).toHaveLength(2);
 		r.unmount();
 	});
@@ -315,7 +320,7 @@ describe('the sheet', () => {
 		expect(r.container.querySelector('[data-origin]')!.textContent).toBe('High, chosen in Settings');
 		await chooseAndWait(r.container.querySelector('[data-level=original]')!);
 		expect(time()).toHaveLength(1);
-		await waitFor(() => expect(r.container.querySelector('[data-origin]')!.textContent).toBe('Original, overridden here'));
+		await waitFor(() => expect(r.container.querySelector('[data-origin]')!.textContent).toBe('Original applies from the next track'));
 		r.unmount();
 	});
 

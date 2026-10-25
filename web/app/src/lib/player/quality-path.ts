@@ -147,10 +147,23 @@ const asciiUpper = (s: string) => s.replace(/[a-z]/g, (c) => c.toUpperCase());
 const UTF8 = new TextEncoder();
 const utf8Len = (s: string) => UTF8.encode(s).length;
 
-/** Control characters, line and paragraph separators and invisible formatting characters. */
-const INVISIBLE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/gu;
+// The characters `clean` drops, as the core's `is_invisible`: controls (`Cc`), the line and
+// paragraph separators, every format character (`Cf`, Unicode 16) and the other characters
+// that draw nothing (the combining grapheme joiner, the Hangul fillers, the variation
+// selectors), any of which could make a name read as something else.
+const INVISIBLE_CLASS =
+	'[\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u034f\\u0600-\\u0605\\u061c\\u06dd\\u070f\\u0890-\\u0891\\u08e2' +
+	'\\u115f-\\u1160\\u180e\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u206f\\u3164' +
+	'\\ufe00-\\ufe0f\\ufeff\\uffa0\\ufff9-\\ufffb' +
+	'\\u{110bd}\\u{110cd}\\u{13430}-\\u{1343f}\\u{1bca0}-\\u{1bca3}\\u{1d173}-\\u{1d17a}' +
+	'\\u{e0000}-\\u{e007f}\\u{e0100}-\\u{e01ef}]';
+const INVISIBLE = new RegExp(INVISIBLE_CLASS, 'gu');
+const ONE_INVISIBLE = new RegExp(`^${INVISIBLE_CLASS}$`, 'u');
 
-/** Text from an input: invisible characters dropped, trimmed, at most `max` characters. */
+/** Whether `clean` drops this character (one code point), as the core's `is_invisible`. */
+export const isInvisible = (c: string): boolean => ONE_INVISIBLE.test(c);
+
+/** Text from an input: the invisible characters dropped, trimmed, at most `max` characters. */
 export function clean(s: string, max: number): string {
 	const t = trim(s.replace(INVISIBLE, ''));
 	return Array.from(t).slice(0, max).join('').replace(TRIM_END, '');
@@ -305,7 +318,13 @@ function fileFmt(f: FileFormat): Fmt | null {
 
 const isOgg = (name: string) => name === 'Ogg Vorbis' || name === 'Opus';
 
-function servedFmt(s: Served, file: Fmt | null): Fmt | null {
+/**
+ * LMS's stream; a lossy stream in the file's codec borrows the file's bit rate. A lossless
+ * stream whose message did not carry its depth or rate takes them from the decoder when the
+ * gateway passed it through in the same codec, and otherwise from the file when it is in the
+ * file's codec.
+ */
+function servedFmt(s: Served, file: Fmt | null, sent: Sent | null, decoded: Fmt | null): Fmt | null {
 	const token = str(s.codec);
 	if (token === null) return null;
 	const ogg = asciiLower(trim(token)) === 'ogg';
@@ -319,6 +338,10 @@ function servedFmt(s: Served, file: Fmt | null): Fmt | null {
 		[name, lossless] = c;
 	}
 	const f: Fmt = { name, lossless, bits: bitsOf(s.bits), rate: rateOf(s.rate), kbps: null, channels: channelsOf(s.channels) };
+	if (lossless && sent?.mode === 'passthrough' && decoded && decoded.lossless && sameCodec(decoded, f)) {
+		f.bits = f.bits ?? decoded.bits;
+		f.rate = f.rate ?? decoded.rate;
+	}
 	if (file && sameCodec(file, f)) {
 		if (lossless) {
 			f.bits = f.bits ?? file.bits;
@@ -371,9 +394,15 @@ function badge(verdict: Verdict, stream: string): Badge {
 	return { verdict, stream, text: `${WORDS[verdict]} · ${stream}` };
 }
 
-function verdictOf(file: Fmt | null, heard: Fmt): Verdict {
-	if (file && !file.lossless) return 'lossy';
-	if (file && file.lossless && !heard.lossless) return 'transcoded';
+/**
+ * A lossy source is Lossy; a lossless source heard through a lossy stream is Transcoded;
+ * otherwise the heard stream's own verdict. The source is the file when LMS reports its type,
+ * else LMS's stream (`servedLossless`).
+ */
+function verdictOf(file: Fmt | null, servedLossless: boolean | null, heard: Fmt): Verdict {
+	const source = file ? file.lossless : servedLossless;
+	if (source === false) return 'lossy';
+	if (source === true && !heard.lossless) return 'transcoded';
 	return fmtVerdict(heard);
 }
 
@@ -388,11 +417,6 @@ function fileBlock(file: Fmt | null): Block {
 function deviceNote(d: Device | null): string {
 	if (!d) return '';
 	const parts: string[] = [];
-	const n = str(d.name);
-	if (n !== null) {
-		const name = clean(n, MAX_NAME);
-		if (name) parts.push(name);
-	}
 	if (d.bit_perfect === true) parts.push('bit-perfect');
 	else {
 		if (d.resampled === true) {
@@ -401,15 +425,20 @@ function deviceNote(d: Device | null): string {
 		}
 		if (d.dsp_active === true) parts.push('processed by DSP you turned on');
 	}
-	return capitalise(parts.join(', '));
+	const clauses = parts.join(', ');
+	// The device's own name is shown as the platform gives it; only a note that starts with
+	// one of our clauses is capitalised.
+	const n = str(d.name);
+	const name = n !== null ? clean(n, MAX_NAME) : '';
+	if (name) return clauses ? `${name}, ${clauses}` : name;
+	return capitalise(clauses);
 }
 
 const deviceBlock = (decoded: Fmt | null, device: Device | null): Block =>
 	block('device', 'This device', decoded ? decodedLabel(decoded) : '', deviceNote(device));
 
-function lmsChanges(file: Fmt | null, served: Fmt | null, gain: unknown): [string, boolean] | null {
+function lmsChanges(file: Fmt | null, served: Fmt | null, gain: unknown): string | null {
 	const parts: string[] = [];
-	let lowered = false;
 	if (file && served) {
 		if (!sameCodec(file, served)) parts.push(`converted from ${file.name}`);
 		if (file.name !== 'DSD' && served.lossless) {
@@ -419,41 +448,71 @@ function lmsChanges(file: Fmt | null, served: Fmt | null, gain: unknown): [strin
 			if (bits && rate && served.bits !== null && served.rate !== null) what = `${served.bits}-bit, ${khz(served.rate)} kHz`;
 			else if (bits && !rate && served.bits !== null) what = `${served.bits}-bit`;
 			else if (!bits && rate && served.rate !== null) what = `${khz(served.rate)} kHz`;
-			if (what !== null) {
-				lowered = true;
-				parts.push(`lowered to ${what}`);
-			}
+			if (what !== null) parts.push(`lowered to ${what}`);
 		}
 	}
 	if (typeof gain === 'number' && Number.isFinite(gain) && Math.abs(gain) >= 0.05 && Math.abs(gain) <= 100) parts.push(`ReplayGain ${fmtDb(gain)}`);
 	if (!parts.length) return null;
-	return [capitalise(parts.join(', ')), lowered];
+	return capitalise(parts.join(', '));
 }
 
-function gatewayBlock(sent: Sent | null, out: Fmt | null, origin: Origin | null): [Block, boolean] {
+/**
+ * The level the stream heard was sent at, when the stream message shows it: an Opus
+ * re-encode is the level it was made for (High when the message does not say); a FLAC stream
+ * passed through is Original. The gateway re-encodes only FLAC, so any other stream passed
+ * through shows none.
+ */
+function sentLevel(sent: Sent, served: Served | null): Level | null {
+	if (isOpusSent(sent)) return sent.level === 'low' ? 'low' : 'high';
+	if (sent.mode !== 'passthrough') return null;
+	const token = served ? str(served.codec) : null;
+	const c = token !== null ? codec(token) : null;
+	return c && c[0] === 'FLAC' ? 'original' : null;
+}
+
+/** The reason for the level: the origin's when in force, or the chosen level still pending. */
+interface Reason {
+	pending: boolean;
+	text: string;
+}
+
+/** The origin's reason when its level is the one heard (or nothing says), else "{Level} applies from the next track". */
+function reasonOf(origin: Origin, heard: Level | null): Reason {
+	if (heard !== null && heard !== origin.level) return { pending: true, text: `${levelName(origin.level)} applies from the next track` };
+	return { pending: false, text: originText(origin) };
+}
+
+const heardLevel = (i: QualityInputs): Level | null => (i.sent ? sentLevel(i.sent, i.served ?? null) : null);
+
+/**
+ * What the gateway block says it did. With nothing from the gateway but a lossy stream decoded
+ * from a lossless source (`reencodeUnreported`), its stream message is still on its way.
+ */
+function gatewayBlock(i: QualityInputs, out: Fmt | null, reencodeUnreported: boolean): Block {
+	const sent = i.sent ?? null;
+	const reason = i.origin ? reasonOf(i.origin, heardLevel(i)) : null;
 	let format = '';
 	let note = '';
-	let reencoded = false;
 	if (sent && sent.mode === 'passthrough') {
 		format = out ? labelWithChannels(out) : '';
-		note = 'Passed through unchanged';
+		note = reason?.pending ? `Passed through unchanged; ${reason.text}` : 'Passed through unchanged';
 	} else if (isOpusSent(sent)) {
 		const k = kbpsOf(sent.kbps);
 		const action = k !== null ? `Re-encoded to Opus ${k} kb/s` : 'Re-encoded to Opus';
-		note = origin ? `${action} (${originText(origin)})` : action;
+		note = !reason ? action : reason.pending ? `${action}; ${reason.text}` : `${action} (${reason.text})`;
 		format = label(opusFmt(sent.kbps));
-		reencoded = true;
-	}
-	return [block('gateway', 'Lyrion gateway', format, note), reencoded];
+	} else if (!sent && reencodeUnreported) note = 'Re-encoded (details to follow)';
+	return block('gateway', 'Lyrion gateway', format, note);
 }
 
+/** The level in force is the one the stream heard was sent at, when shown; else the origin's; else Original. */
 function switchOf(i: QualityInputs): Switch {
 	const origin = i.origin ?? null;
-	const inForce: Level = origin ? origin.level : isOpusSent(i.sent) ? (i.sent.level === 'low' ? 'low' : 'high') : 'original';
+	const heard = heardLevel(i);
 	return {
 		levels: ['original', 'high', 'low'],
-		in_force: inForce,
-		origin_text: origin ? originText(origin) : '',
+		in_force: heard ?? origin?.level ?? 'original',
+		origin_text: origin ? reasonOf(origin, heard).text : '',
 		overridden: origin?.kind === 'override',
 		seekable: i.seekable === true,
 	};
@@ -489,35 +548,42 @@ export function describe(inputs: QualityInputs): Diagram {
 		const blocks = [db, deviceBlock(decoded, inputs.device ?? null)];
 		let b: Badge | null = null;
 		if (decoded) {
-			const v = verdictOf(file, decoded);
+			const v = verdictOf(file, null, decoded);
 			if (isLowered(v)) db.lowers = true;
 			b = badge(v, l || label(decoded));
 		}
 		return { badge: b, blocks, switch: null };
 	}
 
-	const served = inputs.served ? servedFmt(inputs.served, file) : null;
 	const sent = inputs.sent ?? null;
+	const served = inputs.served ? servedFmt(inputs.served, file, sent, decoded) : null;
 	const blocks = [fileBlock(file)];
 	const lms = lmsChanges(file, served, inputs.served?.gain_db);
-	const lmsLowered = !!lms && lms[1];
-	if (lms) blocks.push(block('lms', 'LMS', served ? labelWithChannels(served) : '', lms[0]));
-	const [gateway, reencoded] = gatewayBlock(sent, served ?? file, inputs.origin ?? null);
-	blocks.push(gateway);
+	const hasLms = lms !== null;
+	if (lms !== null) blocks.push(block('lms', 'LMS', served ? labelWithChannels(served) : '', lms));
+	const servedLossless = served ? served.lossless : null;
+	const sourceLossless = file ? file.lossless : servedLossless;
+	const servedLossy = servedLossless === false;
+	// The gateway has said nothing yet, but a lossy stream is decoded from a lossless source
+	// that LMS did not convert: only the gateway can have re-encoded it.
+	const reencodeUnreported = !sent && !!decoded && !decoded.lossless && sourceLossless === true && !servedLossy;
+	const reencoded = isOpusSent(sent) || reencodeUnreported;
+	blocks.push(gatewayBlock(inputs, served ?? file, reencodeUnreported));
 	blocks.push(deviceBlock(decoded, inputs.device ?? null));
 
 	const heard = heardLocal(file, served, sent, decoded);
 	let b: Badge | null = null;
 	if (heard) {
-		const v = verdictOf(file, heard);
+		const v = verdictOf(file, servedLossless, heard);
 		const fileLossy = !!file && !file.lossless;
-		const servedLossy = !!served && !served.lossless;
 		const down = v === 'transcoded' || v === 'lossy';
 		let lowering: BlockKind | null = null;
 		if (fileLossy) lowering = 'file';
 		else if (down && servedLossy) lowering = 'lms';
 		else if (down && reencoded) lowering = 'gateway';
-		else if (v === 'lossless' && lmsLowered && !!file && hiRes(file)) lowering = 'lms';
+		// LMS's conversion took a Hi-Res file to a stream that is not (lowered it, or
+		// converted DSD to 16/44.1).
+		else if (v === 'lossless' && hasLms && !!file && hiRes(file)) lowering = 'lms';
 		if (lowering) setLowers(blocks, lowering);
 		b = badge(v, label(heard));
 	}
