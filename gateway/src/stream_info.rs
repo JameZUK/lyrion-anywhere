@@ -73,6 +73,8 @@ pub fn codec(format: u8) -> &'static str {
         b'o' => "ogg",
         b'a' => "aac",
         b'l' => "alac",
+        // LMS's code for Ogg Opus (squeezelite reads it the same way).
+        b'u' => "opus",
         _ => "unknown",
     }
 }
@@ -377,7 +379,8 @@ mod tests {
             (b'o', "ogg"),
             (b'a', "aac"),
             (b'l', "alac"),
-            (b'u', "unknown"),
+            (b'u', "opus"),
+            (b'w', "unknown"),
             (b'?', "unknown"),
             (0, "unknown"),
         ] {
