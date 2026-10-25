@@ -144,7 +144,8 @@ const TRIM_END = new RegExp(`[${WS}]+$`);
 const trim = (s: string) => s.replace(TRIM, '');
 const asciiLower = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
 const asciiUpper = (s: string) => s.replace(/[a-z]/g, (c) => c.toUpperCase());
-const utf8Len = (s: string) => new TextEncoder().encode(s).length;
+const UTF8 = new TextEncoder();
+const utf8Len = (s: string) => UTF8.encode(s).length;
 
 /** Control characters, line and paragraph separators and invisible formatting characters. */
 const INVISIBLE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/gu;

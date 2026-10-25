@@ -229,6 +229,59 @@ test('the status of another player, an agreeing one, or one without the field ch
 	expect(prefs()).toEqual([]);
 });
 
+/** Hold the matching commands until `release` is called. */
+function holdRpc(match: (cmd: Cmd) => boolean) {
+	let release!: () => void;
+	const held = new Promise<void>((r) => (release = r));
+	const rpc = api.rpc.getMockImplementation()!;
+	api.rpc.mockImplementation(async (player: string, cmd: Cmd) => {
+		if (match(cmd)) await held;
+		return rpc(player, cmd);
+	});
+	return { release, restore: () => api.rpc.mockImplementation(rpc) };
+}
+
+test('changed again while a sync is under way: one more sync runs when it ends, so the last change wins', async () => {
+	lms.control = 0;
+	await connected();
+	// The first change's playerpref waits for LMS.
+	const h = holdRpc((cmd) => cmd[0] === 'playerpref' && cmd[2] === '1');
+	try {
+		device.setFixedLevel(false);
+		await settle();
+		// Off, then on again within the round trip: not dropped.
+		device.setFixedLevel(true);
+		device.setFixedLevel(false);
+		device.setFixedLevel(true);
+		await settle();
+		h.release();
+		await settle();
+		// The first change reached LMS; one more read-and-set brought it back to the setting.
+		expect(prefs().map((p) => p.cmd[2])).toEqual(['1', '0']);
+		expect(lms.control).toBe(0);
+		expect(lms.sent.filter((s) => s.cmd[0] === 'status')).toHaveLength(3); // on connecting, the change, and once more;
+	} finally {
+		h.restore();
+	}
+});
+
+test('a sync asked for while one runs is dropped once the player stops', async () => {
+	lms.control = 0;
+	await connected();
+	const h = holdRpc((cmd) => cmd[0] === 'playerpref');
+	try {
+		device.setFixedLevel(false);
+		await settle();
+		device.setFixedLevel(true);
+		device.stop();
+		h.release();
+		await settle();
+		expect(lms.sent.filter((s) => s.cmd[0] === 'status')).toHaveLength(2); // on connecting, and the change: no more;
+	} finally {
+		h.restore();
+	}
+});
+
 test('not connected: a disagreeing status of this player sends nothing', async () => {
 	device.mac = MAC;
 	device.observeStatus(MAC, { digital_volume_control: 1 });

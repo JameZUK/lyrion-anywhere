@@ -11,6 +11,7 @@
 // queued (by estimate) and again as each track starts (by its real size).
 import { ApiError, CLIENT_HEADER, bearer } from '#lib/api/http';
 import type { OfflineStore } from './store';
+import { HeadCollector, audioHeader, storedHeader, type AudioHeader } from './audio-header';
 import {
 	BadInfo,
 	TRACK_REF,
@@ -750,12 +751,26 @@ export class DownloadManager {
 		item.total = total;
 		item.received = offset;
 
-		let p: PartialDownload = { user, key: info.key, format, total, received: offset, chunks: seq, contentType };
+		// An original's rate and depth, from its first bytes (kept with the partial download, so
+		// a resumed one still knows them).
+		const head = format === 'original' && offset === 0 ? new HeadCollector() : null;
+		let header: Partial<AudioHeader> = format === 'original' && offset > 0 ? storedHeader(partial) : {};
+		const learn = () => {
+			if (!head) return;
+			header = audioHeader(head.bytes) ?? {};
+			p = { ...p, ...header };
+		};
+		let p: PartialDownload = { user, key: info.key, format, total, received: offset, chunks: seq, contentType, ...header };
 		await store.putPartial(p);
 
 		let buf: Uint8Array[] = [];
 		let bufLen = 0;
+		let learnt = false;
 		const flush = async () => {
+			if (!learnt) {
+				learnt = true;
+				learn();
+			}
 			if (!bufLen) return;
 			await store.putChunk(user, info.key, seq, new Blob(buf as BlobPart[]));
 			seq++;
@@ -775,6 +790,7 @@ export class DownloadManager {
 					throw new NotAudio('markup');
 				}
 			}
+			head?.add(bytes);
 			buf.push(bytes);
 			bufLen += bytes.byteLength;
 			item.received += bytes.byteLength;
@@ -830,6 +846,7 @@ export class DownloadManager {
 			format,
 			codec: format === 'original' ? info.original.format : format,
 			...(info.original.format ? { source: info.original.format } : {}),
+			...storedHeader(header),
 			ext: format === 'original' ? info.original.ext : TRANSCODE_TYPES[format].ext,
 			size: p.received,
 			contentType,

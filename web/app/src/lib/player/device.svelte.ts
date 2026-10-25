@@ -18,6 +18,8 @@ import {
 	LEVEL_LABELS,
 	connection,
 	levelInForce,
+	levelOfSent,
+	qualityEcho,
 	loadPreference as loadQualityPreference,
 	savePreference as saveQualityPreference,
 	type QualityPreference,
@@ -50,6 +52,8 @@ const DEVICE_LOCK = 'anywhere-device-player';
 const HOLD_FULL_EVERY_MS = 3000;
 /** While a controller has changed this player's Volume Control against the setting, set it back at most this often. */
 export const FIXED_LEVEL_EVERY_MS = 30_000;
+/** A restart at a new streaming level waits this long for the gateway to confirm the level. */
+export const QUALITY_ECHO_WAIT_MS = 2000;
 /** Web Audio: tell the worker when the output is heard this often (for sync). */
 const CLOCK_EVERY_MS = 250;
 /** Media element: read the play head this often (the background may slow it to 1 s). */
@@ -83,10 +87,6 @@ export interface DeviceStatus {
 	/** The gateway's stream number those two are for. */
 	stream_seq?: number | null;
 }
-
-/** Settings › About › Advanced, when the gateway is too old for this browser's player. */
-export const SERVER_TOO_OLD_TEXT =
-	"This browser can't play from this server until its Lyrion Anywhere plugin is updated to 0.7.3 or later. You can still control other players.";
 
 /** A player file, with the build version so a stale cached copy is never used. */
 const asset = (p: string) => {
@@ -137,6 +137,8 @@ class DevicePlayer {
 	#fixedAt = -Infinity;
 	/** A read-and-set of the Volume Control is under way. */
 	#fixedBusy = false;
+	/** Why another sync was asked for while one was under way (it runs when that one ends), or null. */
+	#fixedDirty: string | null = null;
 	/** "Streaming quality in this browser" in Settings, and the level it means now. */
 	qualityPreference = $state<QualityPreference>(loadQualityPreference());
 	quality = $state<StreamQuality>('original');
@@ -380,22 +382,80 @@ class DevicePlayer {
 	/**
 	 * Override the streaming level from the signal path for this session, or (null) go back to
 	 * automatic. The gateway is told at once; when the track can be sought, this device seeks
-	 * to where it is ("time t"), so the new stream starts there within a second or two.
-	 * Returns 'now' when it was sought, 'next' when it applies from the next track (an
-	 * unseekable stream, or this device not playing), 'unchanged' when the level stays.
+	 * to where it is ("time t") once the gateway has confirmed the level (or after
+	 * {@link QUALITY_ECHO_WAIT_MS} without it), so the new stream starts there at that level.
+	 * Whether anything changes is decided by the stream being sent now, not by the level asked
+	 * for next (a choice in Settings applies from the next track). Returns 'now' when the
+	 * stream restarts, 'next' when it applies from the next track (an unseekable stream, or this
+	 * device not playing), 'unchanged' when the stream is already at that level.
 	 */
 	overrideQuality(level: StreamQuality | null, at: { seekable: boolean; seconds?: number } = { seekable: false }): 'now' | 'next' | 'unchanged' {
 		const before = this.quality;
+		// A restart still waiting for an earlier choice is superseded by this one.
+		this.#cancelPendingSeek();
 		this.qualityOverride = level;
 		this.#updateQuality();
 		this.#note(level ? `streaming level overridden here: ${LEVEL_LABELS[level]}` : 'streaming level back to automatic');
-		if (this.quality === before) return 'unchanged';
+		const sent = this.state === 'connected' ? levelOfSent(this.detail.sent) : null;
+		if (sent !== null ? sent === this.quality : this.quality === before) return 'unchanged';
 		if (!at.seekable || !this.mac || this.state !== 'connected') return 'next';
 		const s = at.seconds ?? Number(this.detail.elapsed_ms) / 1000;
-		const c = seekTo(Number.isFinite(s) && s > 0 ? s : 0);
+		this.#seekWhenApplied(this.quality, Number.isFinite(s) && s > 0 ? s : 0, before === this.quality);
+		return 'now';
+	}
+
+	/** The level the gateway last said it applied in this session (its echo), or null. */
+	#gatewayLevel: StreamQuality | null = null;
+	/** A restart at a new level, waiting for the gateway's echo of it. */
+	#pendingSeek: { level: StreamQuality; seconds: number; asked: number; timer: ReturnType<typeof setTimeout> } | null = null;
+
+	/**
+	 * Restart the stream at `seconds` once the gateway has applied `level`: at once if it has
+	 * already said so, else on its echo, else after {@link QUALITY_ECHO_WAIT_MS} anyway (noted).
+	 * `again`: the worker already holds this level, so it is asked to send it once more for
+	 * the gateway to answer.
+	 */
+	#seekWhenApplied(level: StreamQuality, seconds: number, again: boolean) {
+		this.#cancelPendingSeek();
+		if (this.#gatewayLevel === level) {
+			this.#restartAt(seconds);
+			return;
+		}
+		if (again) this.#worker?.postMessage({ cmd: 'quality', quality: level, confirm: true });
+		const timer = setTimeout(() => {
+			if (this.#pendingSeek?.timer !== timer) return;
+			this.#note(`the server didn't confirm the streaming level (${LEVEL_LABELS[level]}) within ${QUALITY_ECHO_WAIT_MS / 1000} s: restarting the stream anyway`);
+			this.#firePendingSeek();
+		}, QUALITY_ECHO_WAIT_MS);
+		this.#pendingSeek = { level, seconds, asked: performance.now(), timer };
+	}
+
+	#cancelPendingSeek() {
+		if (this.#pendingSeek) clearTimeout(this.#pendingSeek.timer);
+		this.#pendingSeek = null;
+	}
+
+	#firePendingSeek() {
+		const p = this.#pendingSeek;
+		if (!p) return;
+		this.#cancelPendingSeek();
+		// Playing meanwhile: start where it has got to, not where it was when chosen.
+		const waited = this.detail.output === 'Playing' ? (performance.now() - p.asked) / 1000 : 0;
+		this.#restartAt(p.seconds + Math.max(0, waited));
+	}
+
+	/** Seek to where it is, so the new stream (at the new level) starts there. */
+	#restartAt(seconds: number) {
+		if (!this.mac || this.state !== 'connected') return;
+		const c = seekTo(seconds);
 		this.#note(describePageCommand(c, 'the streaming level changed: the new stream starts here'));
 		api.rpc(this.mac, c).catch((e: Error) => this.#note(`could not restart the stream at the new level: ${e.message}`));
-		return 'now';
+	}
+
+	/** The gateway applied `level` (its answer to a change of level). */
+	#onQualityApplied(level: StreamQuality) {
+		this.#gatewayLevel = level;
+		if (this.#pendingSeek?.level === level) this.#firePendingSeek();
 	}
 
 	/** The level for the preference, the override and the network now; tells the player when it changes. */
@@ -423,7 +483,10 @@ class DevicePlayer {
 		const q = levelInForce(this.qualityPreference, this.qualityOverride, c);
 		if (q === this.quality) return;
 		this.quality = q;
-		this.#worker?.postMessage({ cmd: 'quality', quality: q });
+		if (!this.#worker) return;
+		// Not applied until the gateway says so again.
+		this.#gatewayLevel = null;
+		this.#worker.postMessage({ cmd: 'quality', quality: q });
 	}
 
 	/** Change "Volume on this device"; applies at once if this device is playing. */
@@ -452,7 +515,12 @@ class DevicePlayer {
 	async #syncFixedLevel(why: string) {
 		const mac = this.mac;
 		const gen = this.#gen;
-		if (!mac || this.#fixedBusy) return;
+		if (!mac) return;
+		if (this.#fixedBusy) {
+			// A change made while a sync is under way: run once more when it ends.
+			this.#fixedDirty = why;
+			return;
+		}
 		this.#fixedBusy = true;
 		try {
 			let reported: unknown;
@@ -467,6 +535,10 @@ class DevicePlayer {
 			if (v) await this.#setVolumeControl(mac, v, why);
 		} finally {
 			this.#fixedBusy = false;
+			const again = this.#fixedDirty;
+			this.#fixedDirty = null;
+			// Read afresh: LMS has what this sync set, and the setting may differ from it now.
+			if (again !== null && gen === this.#gen && this.state === 'connected') void this.#syncFixedLevel(again);
 		}
 	}
 
@@ -623,6 +695,18 @@ class DevicePlayer {
 	}
 
 	/**
+	 * What the gateway said its player protocol is (`GET /v1/me`; undefined: it couldn't be
+	 * asked). Below this app's, or not stated by a gateway that answered, this browser's player
+	 * can't run: `serverTooOld` is set (the status line says so) and true is returned.
+	 */
+	noteServerProtocol(protocol: number | null | undefined): boolean {
+		if (protocol === undefined || playsHere(protocol)) return false;
+		if (!this.serverTooOld) this.#note(`the server's player protocol is ${protocol ?? 'not stated'}; this browser needs 2: update the server's plugin`);
+		this.serverTooOld = true;
+		return true;
+	}
+
+	/**
 	 * Start by itself, without a tap (after signing in, or a reload): the player connects and
 	 * is ready, and the first tap anywhere turns the sound on. Not if another tab of this
 	 * browser already runs it ('busy').
@@ -736,9 +820,7 @@ class DevicePlayer {
 			if (this.protocolGate) {
 				const protocol = await this.protocolGate();
 				if (!live()) return;
-				if (protocol !== undefined && !playsHere(protocol)) {
-					this.#note(`the server's player protocol is ${protocol ?? 'not stated'}; this browser needs 2: update the server's plugin`);
-					this.serverTooOld = true;
+				if (this.noteServerProtocol(protocol)) {
 					this.stop();
 					this.state = 'off';
 					return;
@@ -853,6 +935,8 @@ class DevicePlayer {
 		clearInterval(this.#restartTimer);
 		clearInterval(this.#clockTimer);
 		clearTimeout(this.#startTimer);
+		this.#cancelPendingSeek();
+		this.#gatewayLevel = null;
 		this.#smoother.reset();
 		this.#seekAfterFlush = false;
 		this.#elementVolume?.cancel();
@@ -1105,9 +1189,13 @@ class DevicePlayer {
 			this.#applyVolume();
 		}
 		if (m.media && typeof m.media === 'object') await this.#onMedia(m.media as Record<string, unknown>);
+		const applied = qualityEcho(m.qualityApplied);
+		if (applied) this.#onQualityApplied(applied);
 		if (m.connection === 'connected') {
 			this.state = 'connected';
 			this.freshSession = m.fresh === true;
+			// A fresh session took its level from the sign-in, unconfirmed.
+			if (this.freshSession) this.#gatewayLevel = null;
 			const p = m.player as { mac?: string; name?: string } | undefined;
 			if (p?.mac && p.mac !== this.mac) {
 				this.mac = p.mac;

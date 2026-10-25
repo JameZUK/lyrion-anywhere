@@ -8,11 +8,15 @@ import { device } from './device.svelte';
 import { describe, isLowered, type Diagram } from './quality-path';
 import { qualityInputs, type PathFacts } from './quality-now';
 import { connection, originOf } from './stream-quality';
+import { storedHeader } from '#lib/offline/audio-header';
 
 class QualityNow {
-	/** This device is the selected player, and its player is running. */
+	/**
+	 * This device is the selected player, and its player is running (or being reconnected:
+	 * it is still this device's stream, so the badge keeps its last facts and the switch stays).
+	 */
 	get here(): boolean {
-		return !offlinePlayer.active && !!app.playerId && app.playerId === device.mac && device.state === 'connected';
+		return !offlinePlayer.active && !!app.playerId && app.playerId === device.mac && (device.state === 'connected' || device.state === 'reconnecting');
 	}
 
 	/** The current track can be sought (so a change of level can take effect now). */
@@ -23,7 +27,7 @@ class QualityNow {
 	get facts(): PathFacts {
 		if (offlinePlayer.active) {
 			const t = offlinePlayer.current;
-			return { player: 'offline', download: t ? { format: t.format, codec: t.codec, ...(t.source ? { source: t.source } : {}) } : null };
+			return { player: 'offline', download: t ? { format: t.format, codec: t.codec, ...(t.source ? { source: t.source } : {}), ...storedHeader(t) } : null };
 		}
 		const track = app.now?.playlist_loop?.[0] ?? null;
 		if (!this.here) return { player: 'remote', playerName: app.nameOf(app.playerId), track };
@@ -42,10 +46,8 @@ class QualityNow {
 		};
 	}
 
-	/** The badge, the blocks and the switch. */
-	get diagram(): Diagram {
-		return describe(qualityInputs(this.facts));
-	}
+	/** The badge, the blocks and the switch: worked out once per change, for every screen that shows them. */
+	readonly diagram: Diagram = $derived(describe(qualityInputs(this.facts)));
 }
 
 export const qualityNow = new QualityNow();

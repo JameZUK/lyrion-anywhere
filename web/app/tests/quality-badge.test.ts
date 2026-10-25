@@ -9,7 +9,8 @@ import type { PlayerStatus } from '#lib/lms/types';
 
 vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const fake = await import('./helpers/fake-app.svelte');
-const { device, SERVER_TOO_OLD_TEXT } = await import('#lib/player/device.svelte');
+const { device, QUALITY_ECHO_WAIT_MS } = await import('#lib/player/device.svelte');
+const { SERVER_TOO_OLD_TEXT } = await import('#lib/state/status');
 const { default: NowPlaying } = await import('../src/routes/+page.svelte');
 const { default: PlayerBar } = await import('#lib/components/PlayerBar.svelte');
 const { default: SignalPathView } = await import('#lib/components/SignalPathView.svelte');
@@ -100,6 +101,20 @@ afterEach(() => {
 const blocks = (root: ParentNode) => [...root.querySelectorAll('[data-block]')].map((b) => b.getAttribute('data-block'));
 const time = () => fake.calls.filter((c) => c.cmd[0] === 'time');
 
+/**
+ * A tap on the switch, then the wait for the gateway's echo of the level: no worker runs here,
+ * so none comes, and the stream restarts after the wait (device-protocol2.test.ts has the echo).
+ */
+async function chooseAndWait(el: Element) {
+	vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+	try {
+		await fireEvent.click(el);
+		vi.advanceTimersByTime(QUALITY_ECHO_WAIT_MS);
+	} finally {
+		vi.useRealTimers();
+	}
+}
+
 describe('the badge', () => {
 	test.each([
 		['phones', 360],
@@ -155,6 +170,35 @@ describe('the badge', () => {
 		np.unmount();
 	});
 
+	test("reconnecting is still this device: the badge keeps the stream's facts, and the switch stays", async () => {
+		device.state = 'reconnecting';
+		const r = render(PlayerBar);
+		await tick();
+		expect(r.container.querySelector('[data-mini-quality]')!.textContent).toBe('Transcoded · Opus 160');
+		r.unmount();
+		const s = render(SignalPathView);
+		await tick();
+		expect(blocks(s.container)).toEqual(['file', 'gateway', 'device']);
+		expect(s.container.querySelector('[data-quality-switch]')).not.toBeNull();
+		s.unmount();
+		// Stopped, it is not.
+		device.state = 'stopped';
+		const p = render(PlayerBar);
+		await tick();
+		expect(p.container.querySelector('[data-mini-quality]')!.textContent).toBe('Hi-Res · FLAC 24/96');
+		p.unmount();
+	});
+
+	test('the diagram is worked out once per change and shared by every reader', async () => {
+		const { qualityNow } = await import('#lib/player/quality-now.svelte');
+		const a = qualityNow.diagram;
+		expect(qualityNow.diagram).toBe(a);
+		device.applyStatus({ ...device.detail, sent: { mode: 'passthrough' } });
+		const b = qualityNow.diagram;
+		expect(b).not.toBe(a);
+		expect(qualityNow.diagram).toBe(b);
+	});
+
 	test('nothing playing: no badge in the mini player', async () => {
 		fake.app.now = status({ playlist_loop: [] });
 		const r = render(PlayerBar);
@@ -207,7 +251,7 @@ describe('the sheet', () => {
 	test('choosing Original: applies now (sought to where it is); then back to automatic', async () => {
 		const r = render(SignalPathView);
 		await tick();
-		await fireEvent.click(r.container.querySelector('[data-level=original]')!);
+		await chooseAndWait(r.container.querySelector('[data-level=original]')!);
 		expect(device.qualityOverride).toBe('original');
 		expect(time()).toEqual([{ player: HERE, cmd: ['time', 30] }]);
 		await waitFor(() => expect(r.container.querySelector('[data-origin]')!.textContent).toBe('Original, overridden here'));
@@ -222,7 +266,7 @@ describe('the sheet', () => {
 		});
 		await tick();
 		expect(r.container.querySelector('.verdict')!.textContent).toBe('Hi-Res · FLAC 24/96');
-		await fireEvent.click(r.container.querySelector('[data-back-to-automatic]')!);
+		await chooseAndWait(r.container.querySelector('[data-back-to-automatic]')!);
 		expect(device.qualityOverride).toBeNull();
 		await waitFor(() => expect(r.container.querySelector('[data-origin]')!.textContent).toBe('High, on mobile data'));
 		expect(time()).toHaveLength(2);
@@ -240,13 +284,36 @@ describe('the sheet', () => {
 		r.unmount();
 	});
 
+	test('"Applies from the next track." goes once the next track has started', async () => {
+		// Reconnecting: the switch is there, but the stream can't restart now.
+		device.state = 'reconnecting';
+		const r = render(SignalPathView);
+		await tick();
+		expect(r.container.querySelector('[data-applies-next]')).toBeNull();
+		await fireEvent.click(r.container.querySelector('[data-level=low]')!);
+		expect(r.container.querySelector('[data-applies-next]')).not.toBeNull();
+		// Still the same track (a status poll, the connection back): it stays.
+		device.state = 'connected';
+		fake.app.now = status({ time: 31 });
+		await tick();
+		expect(r.container.querySelector('[data-applies-next]')).not.toBeNull();
+		// The next track: it has applied, so the caption goes, and stays gone.
+		fake.app.now = status({ playlist_cur_index: 1, playlist_loop: [{ id: 12, title: 'Next song', type: 'flc', 'playlist index': 1 }] as PlayerStatus['playlist_loop'] });
+		await tick();
+		expect(r.container.querySelector('[data-applies-next]')).toBeNull();
+		fake.app.now = status({ playlist_cur_index: 2, playlist_loop: [{ id: 13, title: 'Later song', type: 'flc', 'playlist index': 2 }] as PlayerStatus['playlist_loop'] });
+		await tick();
+		expect(r.container.querySelector('[data-applies-next]')).toBeNull();
+		r.unmount();
+	});
+
 	test('Safari (no Network Information API): "chosen in Settings", and the switch works', async () => {
 		network(null);
 		device.setQualityPreference('high');
 		const r = render(SignalPathView);
 		await tick();
 		expect(r.container.querySelector('[data-origin]')!.textContent).toBe('High, chosen in Settings');
-		await fireEvent.click(r.container.querySelector('[data-level=original]')!);
+		await chooseAndWait(r.container.querySelector('[data-level=original]')!);
 		expect(time()).toHaveLength(1);
 		await waitFor(() => expect(r.container.querySelector('[data-origin]')!.textContent).toBe('Original, overridden here'));
 		r.unmount();

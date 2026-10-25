@@ -141,9 +141,17 @@ export interface ServerInfo {
 /** The player protocol this web app speaks: a gateway below it can't run this browser's player. */
 export const PLAYER_PROTOCOL = 2;
 
-/** `GET /v1/me`'s answer, checked: `protocol` a positive whole number, features only `true`. */
-export function serverInfoOf(raw: unknown): ServerInfo {
-	const r = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as { protocol?: unknown; features?: unknown }) : {};
+const plainObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * `GET /v1/me`'s answer, checked: `protocol` a positive whole number, features only `true`.
+ * Null for an answer that isn't recognisably the gateway's (no body, an empty one, or one
+ * without `user`, as a proxy or captive portal might send): that is "couldn't ask", never
+ * "an older gateway".
+ */
+export function serverInfoOf(raw: unknown): ServerInfo | null {
+	if (!plainObject(raw) || !plainObject(raw.user)) return null;
+	const r = raw as { protocol?: unknown; features?: unknown };
 	const protocol = typeof r.protocol === 'number' && Number.isSafeInteger(r.protocol) && r.protocol > 0 ? r.protocol : null;
 	const features: Record<string, boolean> = {};
 	const f = r.features && typeof r.features === 'object' && !Array.isArray(r.features) ? (r.features as Record<string, unknown>) : {};
@@ -187,10 +195,12 @@ export class MeApi {
 	/**
 	 * What this gateway is (`GET /v1/me`): its player-protocol version (null when it doesn't
 	 * say, as gateways before protocol 2 don't) and the optional features it offers (only
-	 * `true` counts).
+	 * `true` counts). Rejects when the answer isn't recognisably the gateway's (see serverInfoOf).
 	 */
 	async info(): Promise<ServerInfo> {
-		return serverInfoOf(await this.#call<unknown>('/v1/me'));
+		const info = serverInfoOf(await this.#call<unknown>('/v1/me'));
+		if (!info) throw new ApiError(502, 'the server sent something that isn’t the gateway’s answer');
+		return info;
 	}
 
 	/**

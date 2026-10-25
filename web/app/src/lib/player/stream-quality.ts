@@ -94,6 +94,18 @@ export function sentOf(raw: unknown): Sent | null {
 	return null;
 }
 
+/** The level a stream was sent at (passed through: Original; Opus at its level), or null when unknown. */
+export function levelOfSent(raw: unknown): StreamQuality | null {
+	const s = sentOf(raw);
+	if (!s) return null;
+	return s.mode === 'passthrough' ? 'original' : (s.level ?? null);
+}
+
+/** The gateway's echo of a level it has applied (`{"quality":…}`, checked by the worker): the level, or null. */
+export function qualityEcho(raw: unknown): StreamQuality | null {
+	return raw === 'original' || raw === 'high' || raw === 'low' ? raw : null;
+}
+
 /**
  * Why the level in force is the one in force, for the gateway block and the switch:
  * overridden from the signal path; chosen in Settings; or Automatic, which follows the

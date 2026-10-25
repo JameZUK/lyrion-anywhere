@@ -306,6 +306,8 @@ const GREETING_FIELDS = ['session', 'secret', 'mac', 'name', 'resumed', 'grace']
  *   socket is alive: it is not a greeting and carries no sequence number;
  * - { stream }: the stream message (protocol 2), checked by `parseStreamMessage`;
  * - 'bad-stream': a message with a `stream` field that fails those checks;
+ * - { quality }: the gateway's echo of a level it has applied (protocol 2), exactly
+ *   `{"quality":"original"|"high"|"low"}`; any other message with a `quality` field is null;
  * - { greeting }: the gateway's greeting (a session and secret, as strings);
  * - null: anything else (not JSON, oversized, or a mixture of the two), which is ignored.
  */
@@ -322,6 +324,9 @@ export function classifyText(text) {
     if (m.keepalive !== true || GREETING_FIELDS.some((f) => f in m)) return null;
     return 'keepalive';
   }
+  if ('quality' in m) {
+    return Object.keys(m).length === 1 && QUALITIES.includes(m.quality) ? { quality: m.quality } : null;
+  }
   if ('stream' in m) {
     const stream = text.length <= STREAM_MESSAGE_MAX ? parseStreamMessage(m) : null;
     return stream ? { stream } : 'bad-stream';
@@ -333,7 +338,8 @@ export function classifyText(text) {
 /**
  * Route one message from the player socket: binary to `frames` (the only kind counted for
  * resume), a greeting to `greeting`, a stream message to `stream`, a malformed stream
- * message to `badStream`, a keepalive nowhere, and anything else to `ignored`. The caller
+ * message to `badStream`, the gateway's echo of a level to `quality`, a keepalive nowhere, and
+ * anything else to `ignored`. The caller
  * has already noted that the socket is alive.
  */
 export function routeMessage(data, to) {
@@ -342,6 +348,7 @@ export function routeMessage(data, to) {
   if (t === 'keepalive') return;
   if (t === 'bad-stream') (to.badStream ?? to.ignored)();
   else if (t?.stream) to.stream?.(t.stream);
+  else if (t?.quality) (to.quality ?? to.ignored)(t.quality);
   else if (t) to.greeting(t.greeting);
   else to.ignored();
 }
@@ -397,45 +404,20 @@ export function parseStreamMessage(m) {
   return { seq: s.seq, served, sent };
 }
 
-/** A server → client Slimproto frame that starts a stream: `strm` with command `s`. */
-export function isStreamStart(bytes) {
-  const b = bytes instanceof Uint8Array ? bytes : bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : null;
-  // Two length bytes, the opcode, then the command.
-  return !!b && b.length >= 7 && b[2] === 0x73 && b[3] === 0x74 && b[4] === 0x72 && b[5] === 0x6d && b[6] === 0x73;
-}
-
 /**
- * What the gateway said about each stream of this session, tied to the streams by `seq`: the
- * count of `strm s` frames, from 1, which both sides keep the same way. Frames are counted by
- * their place in the session (the resume counter), so a frame seen twice is never counted
- * twice. The last few messages are kept (a later one for the same `seq`, as re-sent after a
- * resume, replaces it).
+ * What the gateway said about each stream of this session, by `seq`. The link to the audio is
+ * the core's track number: the core numbers every `strm s` of the session from 0 (one it
+ * refuses included), the gateway every one it relays from 1, so track `t` is stream `t + 1`
+ * (see `factsSeq`). The last few messages are kept (a later one for the same `seq`, as re-sent
+ * after a resume, replaces it).
  */
 export class StreamInfo {
   static KEEP = 8;
-  #starts = 0;
-  #lastFrame = 0;
   #bySeq = new Map();
 
-  /** A new session: nothing is known, and counting starts again. */
+  /** A new session: nothing is known. */
   reset() {
-    this.#starts = 0;
-    this.#lastFrame = 0;
     this.#bySeq.clear();
-  }
-
-  /** Binary message number `n` of the session (from 1); true when it started a stream. */
-  frame(n, bytes) {
-    if (!Number.isSafeInteger(n) || n <= this.#lastFrame) return false;
-    this.#lastFrame = n;
-    if (!isStreamStart(bytes)) return false;
-    this.#starts++;
-    return true;
-  }
-
-  /** How many `strm s` frames this session has seen. */
-  get starts() {
-    return this.#starts;
   }
 
   /** Keep a checked stream message (see parseStreamMessage). */
@@ -452,6 +434,19 @@ export class StreamInfo {
   of(seq) {
     return this.#bySeq.get(seq) ?? null;
   }
+}
+
+/**
+ * The stream whose stream message describes what is heard: the core's track heard now (the
+ * one the decoder's format comes from, so the badge's inputs are all of one track), else the
+ * track last pulled into the output, else the stream being fetched (`fetching`, the
+ * gateway's number). The core numbers its tracks from 0, the gateway its streams from 1.
+ */
+export function factsSeq(heard, pulled, fetching) {
+  const track = (t) => Number.isSafeInteger(t) && t >= 0;
+  if (track(heard)) return heard + 1;
+  if (track(pulled)) return pulled + 1;
+  return Number.isSafeInteger(fetching) && fetching > 0 ? fetching : null;
 }
 
 /** A change of level mid-session: only for a gateway listing `stream_quality` (older ones end the session on it). */

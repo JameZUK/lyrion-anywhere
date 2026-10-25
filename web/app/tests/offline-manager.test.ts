@@ -511,3 +511,56 @@ test('the not-audio checks: real containers pass, markup and JSON do not, arbitr
 	for (const t of ['text/html', 'TEXT/HTML; charset=utf-8', 'application/json', 'application/problem+json', 'application/xhtml+xml', 'image/png']) expect(notAudioType(t), t).toBe(true);
 	for (const t of [null, '', 'audio/flac', 'audio/mpeg', 'application/octet-stream', 'application/ogg', 'video/mp4']) expect(notAudioType(t), String(t)).toBe(false);
 });
+
+/** `n` bytes of a FLAC file: "fLaC" and STREAMINFO for 24-bit 96 kHz stereo, then filler. */
+function flac96(n: number): Uint8Array {
+	const b = bytes(n, 4);
+	b.set([0x66, 0x4c, 0x61, 0x43, 0x80, 0, 0, 34, 0x10, 0, 0x10, 0, 0, 0, 0, 0, 0, 0]);
+	// 96000 Hz (20 bits), 2 channels (3 bits, less one), 24 bits (5 bits, less one).
+	b.set([0x17, 0x70, 0x03, 0x70], 18);
+	return b;
+}
+
+test("an original's rate and depth are kept with the download, from the file's own header", async () => {
+	const t = track(21, 2 * CHUNK_BYTES, { bytes: flac96(2 * CHUNK_BYTES) });
+	const { m, store } = setup([t]);
+	await m.setUser('alice');
+	m.enqueue([{ id: 21 }], 'original');
+	await settle(m);
+	expect(await store.getTrack('alice', key(21))).toMatchObject({ format: 'original', codec: 'flc', rate: 96_000, bits: 24 });
+});
+
+test('a resumed original keeps the rate and depth learnt from its first bytes', async () => {
+	const t = track(22, 2 * CHUNK_BYTES + 500, { bytes: flac96(2 * CHUNK_BYTES + 500) });
+	const { m, server, store } = setup([t]);
+	let first = true;
+	server.hooks.push((req) => {
+		if (req.format && first) {
+			first = false;
+			return new Response(body(t.bytes, 64 * 1024, CHUNK_BYTES + 4096), { headers: { 'content-length': String(t.bytes.length) } });
+		}
+		return undefined;
+	});
+	await m.setUser('alice');
+	m.enqueue([{ id: 22 }], 'original');
+	await settle(m);
+	expect(server.reqs.filter((r) => r.format).map((r) => r.range)).toEqual([null, `bytes=${CHUNK_BYTES + 4096}-`]);
+	expect(await store.getTrack('alice', key(22))).toMatchObject({ rate: 96_000, bits: 24 });
+});
+
+test('a transcode, or an original whose header says nothing, stores no rate or depth', async () => {
+	const t = track(23, 5000, { bytes: flac96(5000) });
+	const plain = track(24, 5000);
+	const { m, store } = setup([t, plain]);
+	await m.setUser('alice');
+	m.enqueue([{ id: 23 }], 'opus');
+	m.enqueue([{ id: 24 }], 'original');
+	await settle(m);
+	const opus = await store.getTrack('alice', key(23));
+	expect(opus?.format).toBe('opus');
+	expect(opus).not.toHaveProperty('rate');
+	expect(opus).not.toHaveProperty('bits');
+	const other = await store.getTrack('alice', key(24));
+	expect(other?.format).toBe('original');
+	expect(other).not.toHaveProperty('rate');
+});

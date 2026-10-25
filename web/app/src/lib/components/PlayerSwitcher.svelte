@@ -77,7 +77,7 @@
 		onclose();
 	}
 	function here() {
-		useThisDevice();
+		void useThisDevice();
 		onclose();
 	}
 	function bring() {
