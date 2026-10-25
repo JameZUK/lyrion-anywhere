@@ -8,7 +8,7 @@ Every screenshot in the documentation, with what it shows. The library, players,
   <img src="images/web/now-playing-phone.png" alt="Now playing on a phone: the cover, the title with a rating star, the quality badge, the waveform seek bar, large transport controls and the player, Lyrics and Queue actions" width="200">
   <img src="images/web/signal-path-phone.png" alt="The signal path on a phone: the blocks File, Lyrion gateway and This device stacked, the gateway block amber for a re-encoded stream, with the streaming quality buttons beneath it" width="200">
   <img src="images/web/play-on-phone.png" alt="The Play on sheet on a phone: the volume, this device, then every other player with what it is doing, and Group players" width="200">
-  <img src="images/web/home-phone.png" alt="Home on a phone: shelves of recently played albums, stations and new music, with the mini player" width="200">
+  <img src="images/web/home-phone.png" alt="Home in the web app on a phone: Recently played albums, stations and New music, with the mini player at the bottom naming the track, the player in use and a small Hi-Res chip" width="200">
 </p>
 <p align="center">
   <img src="images/web/queue-phone.png" alt="The queue on a phone, in sections: Played, Now playing, Up next and Then" width="200">
