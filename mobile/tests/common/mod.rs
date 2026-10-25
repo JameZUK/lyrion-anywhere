@@ -933,6 +933,66 @@ impl ConnLog {
     pub fn end(&self) -> Option<ClientEnd> {
         *self.end.lock().unwrap()
     }
+
+    /// The text messages the client sent (unmasked): its sign-in form first.
+    pub fn ws_texts(&self) -> Vec<String> {
+        client_ws_frames(&self.up.lock().unwrap())
+            .into_iter()
+            .filter(|(op, _)| *op == 1)
+            .map(|(_, p)| String::from_utf8_lossy(&p).into_owned())
+            .collect()
+    }
+}
+
+/// The WebSocket frames (opcode, unmasked payload) in what a client sent on a connection,
+/// after its HTTP upgrade request. A frame cut short ends the list.
+pub fn client_ws_frames(up: &[u8]) -> Vec<(u8, Vec<u8>)> {
+    let Some(start) = up.windows(4).position(|w| w == b"\r\n\r\n") else {
+        return Vec::new();
+    };
+    let mut b = &up[start + 4..];
+    let mut frames = Vec::new();
+    while b.len() >= 2 {
+        let op = b[0] & 0x0f;
+        let masked = b[1] & 0x80 != 0;
+        let mut len = (b[1] & 0x7f) as usize;
+        let mut at: usize = 2;
+        if len == 126 {
+            if b.len() < 4 {
+                break;
+            }
+            len = usize::from(u16::from_be_bytes([b[2], b[3]]));
+            at = 4;
+        } else if len == 127 {
+            if b.len() < 10 {
+                break;
+            }
+            len = u64::from_be_bytes(b[2..10].try_into().unwrap()) as usize;
+            at = 10;
+        }
+        let mask = if masked {
+            if b.len() < at + 4 {
+                break;
+            }
+            let m = [b[at], b[at + 1], b[at + 2], b[at + 3]];
+            at += 4;
+            Some(m)
+        } else {
+            None
+        };
+        if b.len() < at.saturating_add(len) {
+            break;
+        }
+        let mut payload = b[at..at + len].to_vec();
+        if let Some(m) = mask {
+            for (i, x) in payload.iter_mut().enumerate() {
+                *x ^= m[i % 4];
+            }
+        }
+        frames.push((op, payload));
+        b = &b[at + len..];
+    }
+    frames
 }
 
 /// The opcodes of the WebSocket frames in what a client sent on a connection (its HTTP

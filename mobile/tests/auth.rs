@@ -26,7 +26,11 @@ async fn login_keeps_only_the_refresh_token_and_device_id() {
     assert_eq!(saved.device_id, who.device.id);
     assert!(saved.refresh_token.len() >= 32);
     assert_eq!(s.current(), Some(who.clone()));
-    assert_eq!(s.me().await.unwrap(), who);
+    // The sign-in's answer doesn't say the player protocol; `/v1/me` does.
+    assert_eq!(who.protocol, None);
+    let me = s.me().await.unwrap();
+    assert_eq!(me.protocol, Some(2));
+    assert_eq!((me.user, me.device), (who.user, who.device));
     let account = s.account().await.unwrap();
     assert_eq!(account.username, "alice");
     assert!(!account.is_admin && !account.two_step_enabled);

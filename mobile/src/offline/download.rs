@@ -225,6 +225,10 @@ pub(crate) struct TrackInfo {
     pub duration: f64,
     /// LMS's file type (e.g. "flc").
     pub codec: String,
+    /// The original's rate (Hz) and depth (bits), when the gateway gives them
+    /// (`original.rate`, `original.bits`; optional).
+    pub rate: Option<u32>,
+    pub bits: Option<u32>,
     /// The original's size, when LMS knows it.
     pub size: Option<u64>,
     pub ext: String,
@@ -303,6 +307,16 @@ pub(crate) fn parse_info(v: &Value, expect_id: i64) -> Result<TrackInfo, &'stati
             .filter(|d| d.is_finite() && *d > 0.0 && *d < 1e6)
             .unwrap_or(0.0),
         codec: clean_codec(orig.get("format").and_then(Value::as_str).unwrap_or("")),
+        rate: orig
+            .get("rate")
+            .and_then(Value::as_u64)
+            .filter(|n| (1000..=50_000_000).contains(n))
+            .map(|n| n as u32),
+        bits: orig
+            .get("bits")
+            .and_then(Value::as_u64)
+            .filter(|n| (1..=64).contains(n))
+            .map(|n| n as u32),
         size,
         ext,
         formats,
@@ -779,6 +793,13 @@ impl Job {
             } else {
                 format.as_str().into()
             },
+            original: (!info.codec.is_empty()).then(|| crate::quality::QualityFile {
+                kind: Some(info.codec.clone()),
+                rate: info.rate,
+                bits: info.bits,
+                kbps: None,
+                channels: None,
+            }),
             ext,
             size: received,
             downloaded_at: now_secs(),
@@ -1580,6 +1601,31 @@ mod tests {
         assert_eq!(i.title, "xy");
         assert_eq!(i.album_id, None);
         assert!(parse_info(&json!([1]), 123).is_err());
+    }
+
+    /// The original's rate and depth are optional, and junk reads as unknown, never as a
+    /// refusal.
+    #[test]
+    fn info_takes_the_originals_rate_and_depth_when_given() {
+        let i = parse_info(&info_json(), 123).unwrap();
+        assert_eq!((i.rate, i.bits), (None, None));
+        let mut j = info_json();
+        j["original"]["rate"] = json!(96_000);
+        j["original"]["bits"] = json!(24);
+        let i = parse_info(&j, 123).unwrap();
+        assert_eq!((i.rate, i.bits), (Some(96_000), Some(24)));
+        for (rate, bits) in [
+            (json!(0), json!(0)),
+            (json!(-44_100), json!(-1)),
+            (json!("96000"), json!("24")),
+            (json!(1e300), json!(65)),
+            (json!(u64::MAX), json!(null)),
+        ] {
+            j["original"]["rate"] = rate;
+            j["original"]["bits"] = bits;
+            let i = parse_info(&j, 123).unwrap();
+            assert_eq!((i.rate, i.bits), (None, None));
+        }
     }
 
     #[test]

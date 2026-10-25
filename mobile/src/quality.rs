@@ -475,27 +475,51 @@ pub fn download_label(
     }
 }
 
+/// LMS's type as the core takes it: letters and digits, 1 to 12 of them, lower case.
+fn clean_kind(kind: &str) -> Option<String> {
+    Some(kind.trim().to_ascii_lowercase())
+        .filter(|k| (1..=12).contains(&k.len()) && k.bytes().all(|b| b.is_ascii_alphanumeric()))
+}
+
 /// The downloads player's diagram: Download → This device, from its signal-path snapshot
-/// and the download's format and LMS type (an original's file format is the download's).
+/// and the downloaded track. The file is the original the download was made from (kept in
+/// the index for every format), so an Opus or MP3 copy of a lossless track is *Transcoded*;
+/// an original's rate, depth and channels are the decoder's (the download is the file). An
+/// entry written before the original was kept has one only for an original download (its
+/// `codec` is LMS's type); an older Opus or MP3 one stays *Lossy*.
 #[uniffi::export]
 pub fn offline_quality_diagram(
     path: Option<SignalPathInfo>,
-    format: crate::offline::DownloadFormat,
-    codec: String,
+    track: crate::offline::OfflineTrack,
 ) -> QualityDiagram {
+    use crate::offline::DownloadFormat as F;
+    let format = track.format;
     let decoded = path.as_ref().and_then(|p| p.decoded.clone());
-    let label = download_label(format, &codec, decoded.as_ref());
-    let file = (format == crate::offline::DownloadFormat::Original)
-        .then(|| QualityFile {
-            kind: Some(codec.trim().to_ascii_lowercase()).filter(|k| {
-                (1..=12).contains(&k.len()) && k.bytes().all(|b| b.is_ascii_alphanumeric())
+    let label = download_label(format, &track.codec, decoded.as_ref());
+    let original = match track.original {
+        Some(f) => f
+            .kind
+            .as_deref()
+            .and_then(clean_kind)
+            .map(|kind| QualityFile {
+                kind: Some(kind),
+                ..f
             }),
-            rate: decoded.as_ref().and_then(|d| d.rate),
-            bits: decoded.as_ref().and_then(|d| d.bits),
-            kbps: None,
-            channels: decoded.as_ref().and_then(|d| d.channels),
-        })
-        .filter(|f| f.kind.is_some());
+        None if format == F::Original => clean_kind(&track.codec).map(|kind| QualityFile {
+            kind: Some(kind),
+            ..QualityFile::default()
+        }),
+        None => None,
+    };
+    let file = original.map(|f| match (format, decoded.as_ref()) {
+        (F::Original, Some(d)) => QualityFile {
+            rate: d.rate.or(f.rate),
+            bits: d.bits.or(f.bits),
+            channels: d.channels.or(f.channels),
+            ..f
+        },
+        _ => f,
+    });
     describe_quality(QualityInputs {
         player: QualityPlayer::Offline { format: label },
         file,
@@ -697,8 +721,44 @@ mod tests {
         );
     }
 
-    /// The downloads player: an original FLAC is Hi-Res from its own format, an Opus
-    /// download is lowered at the Download block; never a switch.
+    fn download(
+        format: crate::offline::DownloadFormat,
+        codec: &str,
+        original: Option<QualityFile>,
+    ) -> crate::offline::OfflineTrack {
+        crate::offline::OfflineTrack {
+            key: "ab".repeat(32),
+            track_id: 1,
+            title: String::new(),
+            artist: String::new(),
+            album: String::new(),
+            album_id: None,
+            track_number: None,
+            duration_secs: 0.0,
+            format,
+            codec: codec.into(),
+            original,
+            ext: "flac".into(),
+            size: 1,
+            downloaded_at: 0,
+            origin: crate::offline::DownloadOrigin::Manual,
+        }
+    }
+
+    fn flac_original() -> Option<QualityFile> {
+        Some(QualityFile {
+            kind: Some("flc".into()),
+            rate: Some(96_000),
+            bits: Some(24),
+            kbps: None,
+            channels: None,
+        })
+    }
+
+    /// The downloads player: an original FLAC is Hi-Res from its own format; an Opus or
+    /// MP3 download of a lossless original is *Transcoded*, of a lossy one *Lossy*, lowered
+    /// at the Download block; never a switch. Entries from before the original was kept
+    /// still describe.
     #[test]
     fn the_offline_diagram() {
         use crate::offline::DownloadFormat;
@@ -710,14 +770,24 @@ mod tests {
             channels: Some(2),
             lossless: true,
         });
-        let d = offline_quality_diagram(Some(path.clone()), DownloadFormat::Original, "flc".into());
-        assert_eq!(d.badge.as_ref().unwrap().text, "Hi-Res \u{b7} FLAC 24/96");
+        let original = download(DownloadFormat::Original, "flc", flac_original());
+        let d = offline_quality_diagram(Some(path.clone()), original);
+        let b = d.badge.as_ref().unwrap();
+        assert_eq!(b.verdict, DiagramVerdict::HiRes);
+        assert_eq!(b.text, "Hi-Res \u{b7} FLAC 24/96");
         assert!(d.switch.is_none());
         assert_eq!(
             d.blocks.iter().map(|b| b.kind).collect::<Vec<_>>(),
             vec![DiagramBlockKind::Download, DiagramBlockKind::Device]
         );
         assert_eq!(d.blocks[0].format, "FLAC 24/96");
+        // An original from an older index (no original kept): its codec is LMS's type.
+        let d = offline_quality_diagram(
+            Some(path.clone()),
+            download(DownloadFormat::Original, "flc", None),
+        );
+        assert_eq!(d.badge.unwrap().verdict, DiagramVerdict::HiRes);
+
         path.decoded = Some(QualityDecoded {
             codec: "Opus".into(),
             rate: Some(48_000),
@@ -725,16 +795,38 @@ mod tests {
             channels: Some(2),
             lossless: false,
         });
-        let d = offline_quality_diagram(Some(path), DownloadFormat::Opus, "opus".into());
+        let opus = download(DownloadFormat::Opus, "opus", flac_original());
+        let d = offline_quality_diagram(Some(path.clone()), opus);
         let b = d.badge.unwrap();
-        assert_eq!(b.stream, "Opus 160");
+        assert_eq!(b.verdict, DiagramVerdict::Transcoded);
+        assert_eq!(b.text, "Transcoded \u{b7} Opus 160");
         assert!(b.lowered && d.blocks[0].lowers);
+        // An Opus copy of an MP3 is Lossy.
+        let mp3_original = Some(QualityFile {
+            kind: Some("mp3".into()),
+            ..QualityFile::default()
+        });
+        let d = offline_quality_diagram(
+            Some(path.clone()),
+            download(DownloadFormat::Opus, "opus", mp3_original),
+        );
+        assert_eq!(d.badge.unwrap().verdict, DiagramVerdict::Lossy);
+        // An Opus download from an older index: nothing says what it was made from.
+        let d = offline_quality_diagram(Some(path), download(DownloadFormat::Opus, "opus", None));
+        assert_eq!(d.badge.unwrap().verdict, DiagramVerdict::Lossy);
         // Nothing known yet: no badge, the shape still there.
-        let d = offline_quality_diagram(None, DownloadFormat::Mp3, "mp3".into());
+        let d = offline_quality_diagram(None, download(DownloadFormat::Mp3, "mp3", None));
         assert!(d.badge.is_none());
         assert_eq!(d.blocks[0].format, "MP3 320");
         // A hostile type is no file format.
-        let d = offline_quality_diagram(None, DownloadFormat::Original, "fl\u{202e}c".into());
+        let hostile = Some(QualityFile {
+            kind: Some("fl\u{202e}c".into()),
+            ..QualityFile::default()
+        });
+        let d = offline_quality_diagram(
+            None,
+            download(DownloadFormat::Original, "fl\u{202e}c", hostile),
+        );
         assert_eq!(d.blocks[0].format, "");
     }
 

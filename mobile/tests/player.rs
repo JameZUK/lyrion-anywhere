@@ -4041,3 +4041,168 @@ async fn a_clean_end_with_no_bytes_ends_at_once() {
     assert_eq!(streams.hits().len(), 3, "{:?}", streams.hits());
     r.player.stop();
 }
+
+// --- The gateway's stream message, end to end (protocol 2) ------------------------------
+
+/// The real gateway's stream message reaches the signal path of the stream it describes:
+/// a FLAC 24/96 passed through shows LMS's stream (read from its STREAMINFO) and the
+/// gateway's pass-through, and the badge "Hi-Res · FLAC 24/96"; a seek (`strm q`, then a
+/// headerless `strm s`) brings the new stream's own facts (no STREAMINFO: rate and depth
+/// unknown) for the new track, never the old one's, and the badge stays Hi-Res from the
+/// decoder; a resume leaves the snapshot as it was, and the message the gateway re-sends
+/// after the greeting is not counted as a frame (the next resume asks for the same count).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_real_gateways_stream_message_reaches_the_signal_path() {
+    use anywhere_mobile::{
+        DiagramBlockKind, QualityFile, QualityNetwork, QualityOrigin, StreamQuality, StreamSent,
+        StreamServed,
+    };
+    let mut r = rig_opts(RigOpts {
+        record: true,
+        pace: Some(1.0),
+        ..RigOpts::default()
+    })
+    .await;
+    let track = flac::encode_self_describing(96_000, 24, &flac::noise(96_000 * 8, 24, 11));
+    // The seek's stream: the same frames without `fLaC` and STREAMINFO (42 bytes), as LMS
+    // sends a FLAC from a seek point.
+    assert_eq!(&track[..4], b"fLaC");
+    let headerless = track[42..].to_vec();
+    let (gate1, gate2) = (
+        Arc::new(tokio::sync::Notify::new()),
+        Arc::new(tokio::sync::Notify::new()),
+    );
+    {
+        let mut s = r.h.lms.streams.lock().unwrap();
+        s.push_back(StreamPlan {
+            body: track,
+            gate_at: Some((1024 * 1024, gate1.clone())),
+        });
+        s.push_back(StreamPlan {
+            body: headerless,
+            gate_at: Some((1024 * 1024, gate2.clone())),
+        });
+    }
+    let file = QualityFile {
+        kind: Some("flc".into()),
+        rate: Some(96_000),
+        bits: Some(24),
+        kbps: None,
+        channels: Some(2),
+    };
+    let origin = QualityOrigin::Setting {
+        network: Some(QualityNetwork::Wifi),
+        level: StreamQuality::Original,
+    };
+    let mac = r.mac;
+    r.send(audg_full()).await;
+    r.send(strm_s(b'f', &mac)).await;
+
+    // 1. The stream as LMS served it and as the gateway sent it.
+    let full = StreamServed {
+        codec: "flac".into(),
+        rate: Some(96_000),
+        bits: Some(24),
+        channels: Some(2),
+        gain_db: None,
+    };
+    let obs = r.obs.clone();
+    let want = full.clone();
+    wait_for("the stream message in the signal path", move || {
+        obs.last_path().is_some_and(|p| {
+            p.source_rate == 96_000
+                && p.served.as_ref() == Some(&want)
+                && p.sent == Some(StreamSent::Passthrough)
+        })
+    })
+    .await;
+    let d = r
+        .player
+        .quality_diagram(Some(file.clone()), Some(origin), true);
+    assert_eq!(d.badge.as_ref().unwrap().text, "Hi-Res \u{b7} FLAC 24/96");
+    let gateway = d
+        .blocks
+        .iter()
+        .find(|b| b.kind == DiagramBlockKind::Gateway)
+        .unwrap();
+    assert_eq!(gateway.note, "Passed through unchanged");
+    assert_eq!(gateway.format, "FLAC 24/96");
+    assert!(d.blocks.iter().all(|b| !b.lowers));
+
+    // 2. A seek: the headerless stream's own message (no STREAMINFO), for the new track.
+    let before_seek = r.obs.paths.lock().unwrap().len();
+    r.send(strm_frame(b'q', b'f', "")).await;
+    r.send(strm_s(b'f', &mac)).await;
+    let obs = r.obs.clone();
+    wait_for("the seek's message in the signal path", move || {
+        obs.last_path().is_some_and(|p| {
+            p.served
+                .as_ref()
+                .is_some_and(|s| s.codec == "flac" && s.rate.is_none() && s.bits.is_none())
+        })
+    })
+    .await;
+    let paths = r.obs.paths.lock().unwrap().clone();
+    assert!(
+        paths[..before_seek]
+            .iter()
+            .flatten()
+            .all(|p| p.served.as_ref().is_none_or(|s| s.rate == Some(96_000))),
+        "the seek's facts never showed for the first stream"
+    );
+    let seeked = r.obs.last_path().unwrap();
+    assert_eq!(seeked.sent, Some(StreamSent::Passthrough));
+    assert_eq!(seeked.source_rate, 96_000, "decoded from the frames");
+    // The decoder says what the headerless stream is: Hi-Res still, and no LMS block.
+    let d = r
+        .player
+        .quality_diagram(Some(file.clone()), Some(origin), true);
+    assert_eq!(d.badge.as_ref().unwrap().text, "Hi-Res \u{b7} FLAC 24/96");
+    assert!(
+        !d.blocks.iter().any(|b| b.kind == DiagramBlockKind::Lms),
+        "{:?}",
+        d.blocks
+    );
+
+    // 3. A resume: the snapshot is unchanged, and the message re-sent after the greeting is
+    // not a frame.
+    let snapshot = (seeked.served.clone(), seeked.sent);
+    let statuses = r.obs.statuses.lock().unwrap().len();
+    r.proxy.as_ref().unwrap().cut_all();
+    wait_reconnected(&r, statuses, 20).await;
+    // Long enough for the re-sent message (and anything else) to be read.
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let p = r.obs.last_path().unwrap();
+    assert_eq!(
+        (p.served.clone(), p.sent),
+        snapshot,
+        "unchanged by the resume"
+    );
+    let statuses = r.obs.statuses.lock().unwrap().len();
+    r.proxy.as_ref().unwrap().cut_all();
+    wait_reconnected(&r, statuses, 20).await;
+    let forms: Vec<serde_json::Value> = r
+        .proxy
+        .as_ref()
+        .unwrap()
+        .player_sockets()
+        .iter()
+        .map(|c| serde_json::from_str(&c.ws_texts()[0]).unwrap())
+        .collect();
+    assert_eq!(forms.len(), 3, "{forms:?}");
+    let received = |f: &serde_json::Value| f["resume"]["received"].as_u64().unwrap();
+    assert!(received(&forms[1]) > 0, "{forms:?}");
+    // Nothing binary came from LMS between the two resumes: the count stands still.
+    assert_eq!(
+        received(&forms[2]),
+        received(&forms[1]),
+        "a text message was counted as a frame: {forms:?}"
+    );
+    assert_eq!(r.count("HELO"), 1, "resumed, not a new session");
+    let p = r.obs.last_path().unwrap();
+    assert_eq!((p.served.clone(), p.sent), snapshot);
+    gate1.notify_one();
+    gate2.notify_one();
+    r.stop_pulling();
+    r.player.stop();
+}

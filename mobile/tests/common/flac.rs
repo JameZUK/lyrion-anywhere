@@ -54,7 +54,33 @@ fn utf8_number(mut v: u64, out: &mut Vec<u8>) {
 
 /// A FLAC file of interleaved stereo integer `samples` (right-aligned, `bits` deep).
 pub fn encode(rate: u32, bits: u32, samples: &[i32]) -> Vec<u8> {
+    encode_with(rate, bits, samples, false)
+}
+
+/// [`encode`], with every frame header carrying its own rate and depth (as real encoders
+/// write them), so the frames alone, without `fLaC` and STREAMINFO (the stream LMS sends
+/// from a seek point), still say what they are.
+pub fn encode_self_describing(rate: u32, bits: u32, samples: &[i32]) -> Vec<u8> {
+    encode_with(rate, bits, samples, true)
+}
+
+fn encode_with(rate: u32, bits: u32, samples: &[i32], self_describing: bool) -> Vec<u8> {
     assert!(bits == 16 || bits == 24);
+    // The frame header's codes (FLAC format, "FRAME_HEADER"); 0: from STREAMINFO.
+    let (rate_code, depth_code) = if self_describing {
+        let r = match rate {
+            88_200 => 0b0001,
+            176_400 => 0b0010,
+            192_000 => 0b0011,
+            44_100 => 0b1001,
+            48_000 => 0b1010,
+            96_000 => 0b1011,
+            _ => panic!("no frame-header code for {rate} Hz"),
+        };
+        (r, if bits == 16 { 0b100 } else { 0b110 })
+    } else {
+        (0, 0)
+    };
     let frames = samples.len() / 2;
     let mut out = b"fLaC".to_vec();
     // STREAMINFO, the last metadata block.
@@ -76,9 +102,9 @@ pub fn encode(rate: u32, bits: u32, samples: &[i32]) -> Vec<u8> {
         let n = chunk.len() / 2;
         let mut f = vec![0xff, 0xf8]; // sync, fixed block size
         // Block size: 16-bit (n-1) at the end of the header; rate and depth from
-        // STREAMINFO.
-        f.push(0b0111_0000);
-        f.push(0b0001_0000); // left/right independent, depth from STREAMINFO
+        // STREAMINFO, or given here.
+        f.push(0b0111_0000 | rate_code);
+        f.push(0b0001_0000 | (depth_code << 1)); // left/right independent
         utf8_number(number as u64, &mut f);
         f.extend(((n - 1) as u16).to_be_bytes());
         f.push(crc8(&f));

@@ -1,8 +1,9 @@
 //! The offline index: what this device has downloaded for one user on one server.
 //!
 //! A small JSON file (`index.json`) listing each track's stable key, current LMS id, title,
-//! artist, album, number, duration, format, file extension and size, plus whether the
-//! album's artwork is cached. It never holds tokens, server addresses or file paths: a
+//! artist, album, number, duration, format, the original file's type (with its rate and depth
+//! when known), file extension and size, plus whether the album's artwork is cached. It
+//! never holds tokens, server addresses or file paths: a
 //! track's file is named by its stable key (64 hex digits) and an extension from a fixed
 //! list, so nothing read from the index can point outside the download folder.
 //!
@@ -107,6 +108,10 @@ pub struct OfflineTrack {
     pub format: DownloadFormat,
     /// LMS's file type for originals (e.g. "flc"), else the format.
     pub codec: String,
+    /// The library file the download was made from, whatever the format: LMS's type and,
+    /// when known, its rate and depth, so an Opus or MP3 copy of a lossless track reads as
+    /// *Transcoded*. `None` in entries written before it was kept.
+    pub original: Option<crate::quality::QualityFile>,
     /// The file's extension (a fixed list).
     pub ext: String,
     pub size: u64,
@@ -171,10 +176,38 @@ fn track_json(t: &OfflineTrack) -> Value {
         "duration": t.duration_secs,
         "format": t.format.as_str(),
         "codec": t.codec,
+        "orig": t.original.as_ref().map(original_json),
         "ext": t.ext,
         "size": t.size,
         "at": t.downloaded_at,
         "origin": t.origin.as_str(),
+    })
+}
+
+fn original_json(f: &crate::quality::QualityFile) -> Value {
+    json!({ "kind": f.kind, "rate": f.rate, "bits": f.bits })
+}
+
+/// The original's format, checked: its type as letters and digits (none: no original), and
+/// a rate and depth only when they are in range. Anything else reads as unknown.
+pub fn original_from(v: Option<&Value>) -> Option<crate::quality::QualityFile> {
+    let o = v?.as_object()?;
+    let kind = clean_codec(o.get("kind")?.as_str()?);
+    if kind.is_empty() {
+        return None;
+    }
+    let num = |k: &str, lo: u64, hi: u64| {
+        o.get(k)
+            .and_then(Value::as_u64)
+            .filter(|n| (lo..=hi).contains(n))
+            .map(|n| n as u32)
+    };
+    Some(crate::quality::QualityFile {
+        kind: Some(kind),
+        rate: num("rate", 1000, 50_000_000),
+        bits: num("bits", 1, 64),
+        kbps: None,
+        channels: None,
     })
 }
 
@@ -222,6 +255,7 @@ fn track_from(v: &Value) -> Option<OfflineTrack> {
         duration_secs: duration,
         format: DownloadFormat::parse(o.get("format")?.as_str()?)?,
         codec: clean_codec(o.get("codec").and_then(Value::as_str).unwrap_or("")),
+        original: original_from(o.get("orig")),
         ext: ext.to_string(),
         size,
         downloaded_at: o.get("at").and_then(Value::as_u64).unwrap_or(0),
@@ -290,6 +324,13 @@ pub(crate) mod tests {
             duration_secs: 61.5,
             format: DownloadFormat::Original,
             codec: "flc".into(),
+            original: Some(crate::quality::QualityFile {
+                kind: Some("flc".into()),
+                rate: Some(96_000),
+                bits: Some(24),
+                kbps: None,
+                channels: None,
+            }),
             ext: "flac".into(),
             size: 1000 + u64::from(n),
             downloaded_at: 1_800_000_000,
@@ -305,8 +346,56 @@ pub(crate) mod tests {
         b.format = DownloadFormat::Opus;
         b.origin = DownloadOrigin::Recent;
         b.ext = "opus".into();
-        let tracks = vec![sample(1), b];
+        b.codec = "opus".into();
+        let mut c = sample(3);
+        c.original = None;
+        let tracks = vec![sample(1), b, c];
         assert_eq!(parse(&serialise(&tracks)), Parsed::Tracks(tracks, 0));
+    }
+
+    /// An index written before the original's format was kept still reads, entry for entry,
+    /// with no original.
+    #[test]
+    fn entries_without_the_original_still_read() {
+        let mut e = track_json(&sample(1));
+        e.as_object_mut().unwrap().remove("orig");
+        let file = serde_json::to_vec(&json!({"v": 1, "tracks": [e]})).unwrap();
+        let mut want = sample(1);
+        want.original = None;
+        assert_eq!(parse(&file), Parsed::Tracks(vec![want], 0));
+    }
+
+    /// A damaged or hostile original is unknown, never a reason to drop the track; numbers
+    /// out of range are dropped one by one.
+    #[test]
+    fn the_original_is_checked() {
+        let read = |orig: Value| {
+            let mut e = track_json(&sample(1));
+            e["orig"] = orig;
+            let file = serde_json::to_vec(&json!({"v": 1, "tracks": [e]})).unwrap();
+            match parse(&file) {
+                Parsed::Tracks(t, 0) => t[0].original.clone(),
+                other => panic!("{other:?}"),
+            }
+        };
+        for junk in [
+            json!(null),
+            json!("flc"),
+            json!([]),
+            json!({}),
+            json!({"kind": 7}),
+            json!({"kind": ""}),
+            json!({"kind": "\u{202e}/../"}),
+        ] {
+            assert_eq!(read(junk.clone()), None, "{junk}");
+        }
+        let f = read(json!({"kind": "F\u{202e}LC", "rate": 0, "bits": 99_999_999_999u64})).unwrap();
+        assert_eq!(f.kind.as_deref(), Some("flc"));
+        assert_eq!((f.rate, f.bits), (None, None));
+        let f = read(json!({"kind": "dsf", "rate": 2_822_400, "bits": 1, "kbps": 5})).unwrap();
+        assert_eq!((f.rate, f.bits, f.kbps), (Some(2_822_400), Some(1), None));
+        let f = read(json!({"kind": "flc", "rate": -96000, "bits": 24.5})).unwrap();
+        assert_eq!((f.rate, f.bits), (None, None));
     }
 
     #[test]

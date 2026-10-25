@@ -118,6 +118,10 @@ pub enum PlayerConnection {
     /// Ended for good because the gateway needs a newer app (close 4426): the app asks
     /// the user to update it. Never retried; other players can still be controlled.
     UpdateApp,
+    /// Never started because the gateway's player protocol (`/v1/me` `protocol`) is older
+    /// than this app's, or not given: the server's Lyrion Anywhere plugin needs updating.
+    /// Never retried; other players can still be controlled.
+    UpdatePlugin,
 }
 
 /// What the output is doing (LMS decides; this reflects it).
@@ -606,11 +610,38 @@ impl LocalPlayer {
     }
 
     /// The level for the streams that follow (the next track, or a seek): asked for when
-    /// the player connects, and sent at once to a gateway that supports changing it.
+    /// the player connects, and sent at once to a gateway that supports changing it. Sent,
+    /// it returns once the gateway has echoed the level (`{"quality":…}`), so a seek made
+    /// next gets a stream at the new level; it waits at most [`QUALITY_ECHO_WAIT`] (then
+    /// returns anyway, and says so in the log). With nothing sent (the same level, not
+    /// connected, or a gateway that can't change it mid-session) it returns at once.
+    /// Blocks: call it off the main thread.
     pub fn set_stream_quality(&self, quality: StreamQuality) {
         *self.quality.lock().unwrap() = quality;
-        if let Some(r) = self.run.lock().unwrap().as_ref() {
-            let _ = r.cmds.send(Cmd::SetQuality(quality));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let sent = self
+            .run
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|r| r.cmds.send(Cmd::SetQuality(quality, Some(tx))).is_ok());
+        if !sent {
+            return;
+        }
+        let started = std::time::Instant::now();
+        match rx.recv_timeout(QUALITY_ECHO_WAIT) {
+            Ok(()) => log::debug!(
+                "player: the gateway applied {} in {} ms",
+                quality.as_str(),
+                started.elapsed().as_millis()
+            ),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => log::warn!(
+                "player: no echo of {} from the gateway within {} ms; going ahead",
+                quality.as_str(),
+                QUALITY_ECHO_WAIT.as_millis()
+            ),
+            // Nothing to wait for (or the engine stopped).
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {}
         }
     }
 
@@ -1123,6 +1154,9 @@ impl LocalPlayer {
 }
 
 /// How often the sleep fade moves the gain (small steps: no audible stairs).
+/// Longest [`LocalPlayer::set_stream_quality`] waits for the gateway's echo of a level.
+pub const QUALITY_ECHO_WAIT: Duration = Duration::from_secs(2);
+
 const FADE_STEP: Duration = Duration::from_millis(100);
 /// The fade lifts this long after the timer's end (LMS has stopped the player by then).
 const FADE_LIFT_AFTER_SECS: f64 = 10.0;

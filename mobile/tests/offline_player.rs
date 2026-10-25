@@ -79,6 +79,7 @@ fn library_with(
             duration_secs: rate_secs,
             format: DownloadFormat::Original,
             codec: "flc".into(),
+            original: None,
             ext: "flac".into(),
             size: file.len() as u64,
             downloaded_at: 1_800_000_000,
