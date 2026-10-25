@@ -7,7 +7,7 @@ use common::*;
 use std::path::{Path, PathBuf};
 
 use anywhere_gateway::admin;
-use anywhere_gateway::transcode::Ffmpeg;
+use anywhere_gateway::transcode::{Ffmpeg, OpusEncoder, Setup};
 use reqwest::StatusCode as S;
 use serde_json::{Value, json};
 
@@ -73,10 +73,10 @@ async fn with_ffmpeg(action: Option<&str>, tweak: impl FnOnce(&mut Config)) -> D
     let path = fake_ffmpeg(&dir, action);
     let cache = dir.join("cache");
     let h = harness_with(|c| {
-        c.ffmpeg = Some(Ffmpeg {
+        c.ffmpeg = Setup::Ready(Ffmpeg {
             path,
             mp3: true,
-            opus: true,
+            opus: Some(OpusEncoder::Libopus),
         });
         c.download_cache_dir = Some(cache);
         tweak(c);
@@ -921,7 +921,7 @@ async fn ffmpeg_is_probed_for_its_encoders() {
     let dir = scratch("probe");
     let path = fake_ffmpeg(&dir, None);
     let f = anywhere_gateway::transcode::probe(&path, Duration::from_secs(5)).unwrap();
-    assert!(f.mp3 && f.opus);
+    assert!(f.mp3 && f.opus == Some(OpusEncoder::Libopus));
     assert_eq!(f.path, path);
     // A program without either encoder is not used.
     let none = dir.join("none");
@@ -931,7 +931,10 @@ async fn ffmpeg_is_probed_for_its_encoders() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&none, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    assert!(anywhere_gateway::transcode::probe(&none, Duration::from_secs(5)).is_none());
+    assert_eq!(
+        anywhere_gateway::transcode::probe(&none, Duration::from_secs(5)),
+        Err(anywhere_gateway::transcode::ProbeError::NoEncoders)
+    );
     // One that hangs is given up on.
     let hang = dir.join("hang");
     std::fs::write(&hang, "#!/bin/sh\nexec sleep 30\n").unwrap();
@@ -941,7 +944,10 @@ async fn ffmpeg_is_probed_for_its_encoders() {
         std::fs::set_permissions(&hang, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     let started = std::time::Instant::now();
-    assert!(anywhere_gateway::transcode::probe(&hang, Duration::from_millis(300)).is_none());
+    assert_eq!(
+        anywhere_gateway::transcode::probe(&hang, Duration::from_millis(300)),
+        Err(anywhere_gateway::transcode::ProbeError::NotRunnable)
+    );
     assert!(started.elapsed() < Duration::from_secs(5));
 }
 
@@ -1040,4 +1046,112 @@ async fn admins_set_download_permissions() {
         .await
         .unwrap();
     assert_eq!(s["download_formats"], json!(["original", "mp3", "opus"]));
+    // And how it comes to make them, for the plugin's settings page.
+    assert_eq!(s["transcoding"]["state"], "ready");
+    assert_eq!(
+        s["transcoding"]["ffmpeg"],
+        json!(d.dir.join("ffmpeg").to_string_lossy())
+    );
+    assert_eq!(s["transcoding"]["mp3"], true);
+    assert_eq!(s["transcoding"]["opus"], "libopus");
+    assert_eq!(s["transcoding"]["live_streams"], true);
+}
+
+#[tokio::test]
+async fn without_ffmpeg_the_settings_say_why() {
+    let h = harness().await; // the default: none found on PATH
+    let (base, secret) = h.admin_api().await;
+    let s: Value = reqwest::Client::new()
+        .get(format!("{base}/admin/v1/settings"))
+        .bearer_auth(&secret)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(s["download_formats"], json!(["original"]));
+    assert_eq!(s["transcoding"], json!({"state": "not_found"}));
+    for (setup, want) in [
+        (Setup::Off, json!({"state": "off"})),
+        (
+            Setup::Unusable {
+                path: "/opt/pcp/ffmpeg".into(),
+                why: anywhere_gateway::transcode::ProbeError::NoEncoders,
+            },
+            json!({"state": "unusable", "ffmpeg": "/opt/pcp/ffmpeg", "why": "no_encoders"}),
+        ),
+    ] {
+        let h = harness_with(|c| c.ffmpeg = setup).await;
+        let (base, secret) = h.admin_api().await;
+        let s: Value = reqwest::Client::new()
+            .get(format!("{base}/admin/v1/settings"))
+            .bearer_auth(&secret)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(s["transcoding"], want);
+        assert_eq!(s["download_formats"], json!(["original"]));
+    }
+}
+
+/// piCorePlayer's ffmpeg: ffmpeg's own Opus encoder and no MP3 encoder. Opus downloads are
+/// offered and made with `-c:a opus -strict -2`; MP3 isn't offered.
+#[tokio::test]
+async fn ffmpegs_built_in_opus_encoder_serves_opus_downloads_without_mp3() {
+    let d = with_ffmpeg(None, |c| {
+        let path = c.ffmpeg.ready().unwrap().path.clone();
+        c.ffmpeg = Setup::Ready(Ffmpeg {
+            path,
+            mp3: false,
+            opus: Some(OpusEncoder::Native),
+        });
+    })
+    .await;
+    let h = &d.h;
+    let v: Value = h.info("1", &h.tok_a).await.json().await.unwrap();
+    assert_eq!(v["formats"], json!(["original", "opus"]));
+    let r = h
+        .get_dl("/v1/download/track/1?format=mp3", Some(&h.tok_a), None)
+        .await;
+    assert_eq!(r.status(), S::NOT_FOUND);
+    assert_eq!(
+        r.json::<Value>().await.unwrap()["error"],
+        "format not available"
+    );
+    assert!(
+        runs(&d.dir).is_empty(),
+        "no ffmpeg run for a format it can't make"
+    );
+
+    let r = h
+        .get_dl("/v1/download/track/1?format=opus", Some(&h.tok_a), None)
+        .await;
+    assert_eq!(r.status(), S::OK);
+    assert_eq!(header(&r, "content-type"), "audio/ogg");
+    assert_eq!(r.bytes().await.unwrap(), fake_output().as_bytes());
+    let all = runs(&d.dir);
+    assert_eq!(all.len(), 1);
+    let a = &all[0];
+    let pos = |w: &str| a.iter().position(|x| x == w).unwrap();
+    assert_eq!(a[pos("-c:a") + 1], "opus");
+    assert_eq!(&a[pos("-c:a") + 2..pos("-c:a") + 4], ["-strict", "-2"]);
+    assert!(!a.contains(&"libopus".to_string()));
+
+    let (base, secret) = h.admin_api().await;
+    let s: Value = reqwest::Client::new()
+        .get(format!("{base}/admin/v1/settings"))
+        .bearer_auth(&secret)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(s["download_formats"], json!(["original", "opus"]));
+    assert_eq!(s["transcoding"]["opus"], "ffmpeg");
+    assert_eq!(s["transcoding"]["mp3"], false);
 }

@@ -147,6 +147,39 @@
     return formats.length ? `on (${formats.join(', ')})` : 'on';
   }
 
+  const OPUS_ENCODER_NAMES = { libopus: 'libopus', ffmpeg: 'ffmpeg\u2019s built-in encoder' };
+  const NO_TRANSCODING = 'downloads in their original format only, and streams sent as they are';
+
+  /**
+   * The gateway's transcoding set-up in words, from GET /admin/v1/settings: the ffmpeg it
+   * found and the encoders it has, or why there is none ('' when the gateway sent nothing).
+   */
+  function transcodingText(t) {
+    if (!t || typeof t !== 'object') return '';
+    const path = typeof t.ffmpeg === 'string' && t.ffmpeg ? t.ffmpeg : 'ffmpeg';
+    switch (t.state) {
+      case 'off':
+        return `Transcoding is turned off (Offer MP3 and Opus is unticked): ${NO_TRANSCODING}.`;
+      case 'not_found':
+        return `Transcoding: no ffmpeg found on the system path, so ${NO_TRANSCODING}. Install ffmpeg, or enter its path above.`;
+      case 'unusable': {
+        const why = t.why === 'not_executable' ? 'is not an executable file'
+          : t.why === 'no_encoders' ? 'has neither an MP3 encoder (libmp3lame) nor an Opus encoder'
+            : 'could not be run';
+        return `Transcoding: ${path} ${why}, so ${NO_TRANSCODING}.`;
+      }
+      case 'ready': {
+        const mp3 = t.mp3 === true ? 'MP3 (libmp3lame)' : 'no MP3 (no libmp3lame encoder)';
+        const enc = Object.prototype.hasOwnProperty.call(OPUS_ENCODER_NAMES, t.opus) ? OPUS_ENCODER_NAMES[t.opus] : null;
+        const opus = enc ? `Opus (${enc})` : 'no Opus (no Opus encoder)';
+        const live = t.live_streams === true ? 'on' : 'off';
+        return `Transcoding with ${path}: ${mp3}, ${opus}; lower-data streams for mobile data ${live}.`;
+      }
+      default:
+        return '';
+    }
+  }
+
   /** Time left on a pairing code, e.g. "9:05". */
   function formatCountdown(seconds) {
     const s = Math.max(0, Math.floor(Number(seconds) || 0));
@@ -620,7 +653,7 @@
     return `${have} (this release pins ${pin})`;
   }
 
-  const api = { command, adminOnlyArg, pageToken, validDays, sessionDaysShown, validDeviceName, clientText, needsUpdating, validUsername, validPassword, formatTime, formatUptime, diagnosticsText, downloadsText, formatCountdown, pairingView, auditEventText, isHttpUrl, isPrivateAddress, privateHttpOrigin, pairingLinkFor, hasTrustedNetworks, trustedListenText, isEnter, restartText, offlineText, DEFAULT_SESSION_DAYS,
+  const api = { command, adminOnlyArg, pageToken, validDays, sessionDaysShown, validDeviceName, clientText, needsUpdating, validUsername, validPassword, formatTime, formatUptime, diagnosticsText, downloadsText, transcodingText, formatCountdown, pairingView, auditEventText, isHttpUrl, isPrivateAddress, privateHttpOrigin, pairingLinkFor, hasTrustedNetworks, trustedListenText, isEnter, restartText, offlineText, DEFAULT_SESSION_DAYS,
     validTunnelHostname, validTunnelToken, validApiToken, tunnelRequest, clearFields, formatMB, tunnelStateText, tunnelControls, tunnelUrl, pairingPublicUrl, tunnelOverrideText, tunnelListen, tunnelServiceText, quickCountdownText, tunnelLogText, tunnelVersionText };
   if (typeof globalThis.__anywhereTest === 'object') {
     Object.assign(globalThis.__anywhereTest, api);
@@ -777,12 +810,14 @@
       closePairing();
       for (const id of ['aw-users', 'aw-devices', 'aw-audit']) $(id).replaceChildren();
       $('aw-plugins').replaceChildren();
+      if (transcodingNote) transcodingNote.textContent = '';
     }
   }
 
   let restartButton = null;
   let restartNote = null;
   let statusInfo = null;
+  let transcodingNote = null; // filled from the gateway's settings, under the status rows
 
   async function showStatus() {
     // With the token, or LMS leaves out the paths, pid, listen address and stderr.
@@ -807,9 +842,10 @@
         say(restartText(r));
       }), null, 'restart');
       statusInfo = el('div', {});
+      transcodingNote = el('p', { className: 'aw-note', id: 'aw-transcoding' });
       restartNote = el('p', { className: 'aw-note', id: 'aw-restart-note' });
       restartButton.setAttribute('aria-describedby', 'aw-restart-note');
-      box.replaceChildren(statusInfo, restartNote, restartButton);
+      box.replaceChildren(statusInfo, transcodingNote, restartNote, restartButton);
     }
     restartButton.disabled = !s.enabled;
     restartNote.textContent = s.enabled
@@ -1132,6 +1168,8 @@
     const s = await admin('settings');
     const input = $('aw-session-days');
     if (document.activeElement !== input) input.value = String(sessionDaysShown(s));
+    // What the gateway found when it looked for ffmpeg, under the status rows.
+    if (transcodingNote) transcodingNote.textContent = transcodingText(s && s.transcoding);
   }
 
   const KIND = { app: 'App', radio: 'Radio', menu: 'Menu', 'not installed': 'Not installed' };

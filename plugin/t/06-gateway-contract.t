@@ -100,6 +100,7 @@ for my $s (@steps) {
 		is($data->{session_days}, 90, 'default sign-in lifetime');
 		is($data->{session_days_default}, 90, 'the gateway reports the default');
 		is_deeply($data->{download_formats}, ['original'], 'started with --no-transcode: originals only');
+		is_deeply($data->{transcoding}, { state => 'off' }, 'and the settings page is told why');
 	}
 }
 is((send_op('settings', {}))[1]{session_days}, 7, 'sign-in lifetime saved');

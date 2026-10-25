@@ -70,8 +70,8 @@ fn system_ffmpeg() -> Option<anywhere_gateway::transcode::Ffmpeg> {
     .into_iter()
     .map(std::path::PathBuf::from)
     .find(|p| p.exists())?;
-    let f = anywhere_gateway::transcode::probe(&path, Duration::from_secs(10))?;
-    f.opus.then_some(f)
+    let f = anywhere_gateway::transcode::probe(&path, Duration::from_secs(10)).ok()?;
+    f.opus.is_some().then_some(f)
 }
 
 #[test]
@@ -125,7 +125,7 @@ async fn data_saver_plays_opus_then_original_plays_flac() {
         eprintln!("skipping: no ffmpeg with libopus");
         return;
     };
-    let h = Harness::start_with(|c| c.ffmpeg = Some(ff)).await;
+    let h = Harness::start_with(|c| c.ffmpeg = anywhere_gateway::transcode::Setup::Ready(ff)).await;
     let session =
         anywhere_mobile::Session::new(h.server(), MemStore::new(), "Test phone".into()).unwrap();
     session
@@ -244,7 +244,7 @@ async fn changing_level_without_the_feature_keeps_the_session() {
     // message (an older gateway would end the session on one) and the change waits for the
     // next sign-in. (This gateway would accept one anyway; the point here is that nothing
     // the player does on a change disturbs the session.)
-    let h = Harness::start_with(|c| c.ffmpeg = None).await;
+    let h = Harness::start_with(|c| c.ffmpeg = anywhere_gateway::transcode::Setup::NotFound).await;
     let session =
         anywhere_mobile::Session::new(h.server(), MemStore::new(), "Test phone".into()).unwrap();
     session

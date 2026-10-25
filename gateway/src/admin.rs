@@ -205,8 +205,9 @@ struct Settings {
     session_days: u32,
 }
 
-/// Gateway settings: the sign-in lifetime (days an unused device stays signed in), and the
-/// download formats this server can produce (transcodes need ffmpeg).
+/// Gateway settings: the sign-in lifetime (days an unused device stays signed in), the
+/// download formats this server can produce (transcodes need ffmpeg), and the transcoding
+/// set-up: the ffmpeg found and its encoders, or why there is none.
 async fn settings(State(st): State<AdminState>) -> Response {
     let formats: Vec<&str> = st
         .gw
@@ -221,6 +222,7 @@ async fn settings(State(st): State<AdminState>) -> Response {
         "session_days_min": crate::accounts::SESSION_DAYS.start(),
         "session_days_max": crate::accounts::SESSION_DAYS.end(),
         "download_formats": formats,
+        "transcoding": st.gw.transcoding(),
     }))
     .into_response()
 }

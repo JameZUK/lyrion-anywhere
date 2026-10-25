@@ -63,12 +63,12 @@
 [% END %]
 </details>
 
-[% WRAPPER setting title="Transcoded downloads" desc="Let people download tracks as MP3 or Opus as well as in their original format. Needs ffmpeg installed on this server; without it, only the original is offered." %]
+[% WRAPPER setting title="Transcoded downloads" desc="Let people download tracks as MP3 or Opus as well as in their original format, and send lower-data streams to phones on mobile data. Needs ffmpeg on this server: libmp3lame for MP3, and libopus or ffmpeg&rsquo;s own Opus encoder for Opus. The Status panel below says what the gateway found." %]
 	<input type="checkbox" name="pref_transcode" id="pref_transcode" value="1" [% IF prefs.pref_transcode %]checked[% END %]>
 	<label for="pref_transcode">Offer MP3 and Opus</label>
 [% END %]
 
-[% WRAPPER setting title="ffmpeg path" desc="Leave empty to use ffmpeg from the system path. Otherwise the absolute path to a program named ffmpeg, e.g. /usr/local/bin/ffmpeg." %]
+[% WRAPPER setting title="ffmpeg path" desc="Leave empty to use ffmpeg from the system path. Otherwise the absolute path to a program named ffmpeg, e.g. /usr/local/bin/ffmpeg (on piCorePlayer, a static ffmpeg kept on persistent storage)." %]
 	<input type="text" class="stdedit" name="pref_ffmpeg_path" value="[% prefs.pref_ffmpeg_path | html %]" placeholder="/usr/bin/ffmpeg">
 [% END %]
 

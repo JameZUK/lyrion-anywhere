@@ -71,20 +71,155 @@ impl Format {
     }
 }
 
+/// Which Opus encoder an ffmpeg has. libopus is preferred; ffmpeg's own `opus` encoder is
+/// used when libopus is missing, as on piCorePlayer's minimal ffmpeg (issue #29). The built-in
+/// one is marked experimental (so it needs `-strict -2`), is CELT-only and sits a little
+/// behind libopus at the same rate, which hardly shows at 96 kb/s and above for music.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpusEncoder {
+    Libopus,
+    /// ffmpeg's built-in `opus` encoder.
+    Native,
+}
+
+impl OpusEncoder {
+    /// The encoder's name for `-c:a`.
+    pub fn codec(self) -> &'static str {
+        match self {
+            OpusEncoder::Libopus => "libopus",
+            OpusEncoder::Native => "opus",
+        }
+    }
+
+    /// The name the settings page and the log know it by.
+    pub fn label(self) -> &'static str {
+        match self {
+            OpusEncoder::Libopus => "libopus",
+            OpusEncoder::Native => "ffmpeg",
+        }
+    }
+
+    /// Output options the encoder needs: the built-in one refuses to run without `-strict -2`.
+    pub fn options(self) -> &'static [&'static str] {
+        match self {
+            OpusEncoder::Libopus => &[],
+            OpusEncoder::Native => &["-strict", "-2"],
+        }
+    }
+}
+
+/// What a transcode is encoded with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Codec {
+    /// libmp3lame (ffmpeg has no MP3 encoder of its own).
+    Mp3,
+    Opus(OpusEncoder),
+}
+
 /// The system ffmpeg and the encoders it has.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ffmpeg {
     pub path: PathBuf,
+    /// It has libmp3lame.
     pub mp3: bool,
-    pub opus: bool,
+    /// The Opus encoder it has, if any.
+    pub opus: Option<OpusEncoder>,
 }
 
 impl Ffmpeg {
-    pub fn supports(&self, f: Format) -> bool {
+    /// The codec for a format, if this ffmpeg can make it.
+    pub fn codec(&self, f: Format) -> Option<Codec> {
         match f {
-            Format::Original => false,
-            Format::Mp3 => self.mp3,
-            Format::Opus => self.opus,
+            Format::Original => None,
+            Format::Mp3 => self.mp3.then_some(Codec::Mp3),
+            Format::Opus => self.opus.map(Codec::Opus),
+        }
+    }
+
+    pub fn supports(&self, f: Format) -> bool {
+        self.codec(f).is_some()
+    }
+}
+
+/// Why an ffmpeg can't be used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeError {
+    /// Not an absolute path to an executable regular file.
+    NotExecutable,
+    /// It couldn't be started, or didn't list its encoders within the time limit.
+    NotRunnable,
+    /// It ran, but has neither an MP3 encoder (libmp3lame) nor an Opus encoder.
+    NoEncoders,
+}
+
+impl ProbeError {
+    /// The reason as the settings page receives it.
+    pub fn code(self) -> &'static str {
+        match self {
+            ProbeError::NotExecutable => "not_executable",
+            ProbeError::NotRunnable => "not_runnable",
+            ProbeError::NoEncoders => "no_encoders",
+        }
+    }
+
+    /// The reason in words, for the log.
+    pub fn describe(self) -> &'static str {
+        match self {
+            ProbeError::NotExecutable => "is not an executable file",
+            ProbeError::NotRunnable => "could not be run (or did not answer in time)",
+            ProbeError::NoEncoders => {
+                "has neither an MP3 encoder (libmp3lame) nor an Opus encoder (libopus or opus)"
+            }
+        }
+    }
+}
+
+/// What the gateway found when it looked for ffmpeg at start-up: what it transcodes with,
+/// and otherwise why it doesn't, for the log and the plugin's settings page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Setup {
+    /// `--no-transcode`.
+    Off,
+    /// No `--ffmpeg` given, and none on `PATH`.
+    NotFound,
+    /// An ffmpeg was named or found, but can't be used.
+    Unusable {
+        path: PathBuf,
+        why: ProbeError,
+    },
+    Ready(Ffmpeg),
+}
+
+impl Setup {
+    /// The ffmpeg to transcode with, if there is one.
+    pub fn ready(&self) -> Option<&Ffmpeg> {
+        match self {
+            Setup::Ready(f) => Some(f),
+            _ => None,
+        }
+    }
+
+    /// The set-up for `GET /admin/v1/settings`: `state` is `off`, `not_found`, `unusable`
+    /// (with `ffmpeg`, the path, and `why`) or `ready` (with `ffmpeg`, `mp3`, `opus`, the
+    /// encoder's name or null, and `live_streams`, whether lower-data streams are possible
+    /// given `live_jobs`, the `--live-transcode-jobs` limit).
+    pub fn describe(&self, live_jobs: usize) -> serde_json::Value {
+        use serde_json::json;
+        match self {
+            Setup::Off => json!({"state": "off"}),
+            Setup::NotFound => json!({"state": "not_found"}),
+            Setup::Unusable { path, why } => json!({
+                "state": "unusable",
+                "ffmpeg": path.to_string_lossy(),
+                "why": why.code(),
+            }),
+            Setup::Ready(f) => json!({
+                "state": "ready",
+                "ffmpeg": f.path.to_string_lossy(),
+                "mp3": f.mp3,
+                "opus": f.opus.map(OpusEncoder::label),
+                "live_streams": f.opus.is_some() && live_jobs > 0,
+            }),
         }
     }
 }
@@ -122,9 +257,32 @@ pub fn find_on_path() -> Option<PathBuf> {
         .find(|p| is_executable(p))
 }
 
-/// Which of the encoders we use an `ffmpeg -encoders` listing includes: (mp3, opus).
-pub fn encoders(listing: &str) -> (bool, bool) {
-    let mut found = (false, false);
+/// The encoders we use that an `ffmpeg -encoders` listing includes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Encoders {
+    pub libmp3lame: bool,
+    pub libopus: bool,
+    /// ffmpeg's built-in Opus encoder.
+    pub opus: bool,
+}
+
+impl Encoders {
+    /// The Opus encoder to use: libopus when there is one, else ffmpeg's own.
+    pub fn opus_encoder(self) -> Option<OpusEncoder> {
+        if self.libopus {
+            Some(OpusEncoder::Libopus)
+        } else if self.opus {
+            Some(OpusEncoder::Native)
+        } else {
+            None
+        }
+    }
+}
+
+/// Which of the encoders we use an `ffmpeg -encoders` listing includes. A line is six flag
+/// characters (the first `A` for audio) and the encoder's name; nothing else is read.
+pub fn encoders(listing: &str) -> Encoders {
+    let mut found = Encoders::default();
     for line in listing.lines() {
         let mut words = line.split_whitespace();
         let (Some(flags), Some(name)) = (words.next(), words.next()) else {
@@ -134,16 +292,17 @@ pub fn encoders(listing: &str) -> (bool, bool) {
             continue;
         }
         match name {
-            "libmp3lame" => found.0 = true,
-            "libopus" => found.1 = true,
+            "libmp3lame" => found.libmp3lame = true,
+            "libopus" => found.libopus = true,
+            "opus" => found.opus = true,
             _ => {}
         }
     }
     found
 }
 
-/// `ffmpeg` with an empty environment (shared with [`crate::live`]).
-pub(crate) fn command(path: &Path) -> std::process::Command {
+/// `ffmpeg` with an empty environment (shared with [`crate::live`] and the tests).
+pub fn command(path: &Path) -> std::process::Command {
     let mut c = std::process::Command::new(path);
     c.env_clear();
     // Windows programs need SystemRoot to start at all.
@@ -154,12 +313,11 @@ pub(crate) fn command(path: &Path) -> std::process::Command {
     c
 }
 
-/// Run `ffmpeg -encoders` to see what it can do. `None` if it can't be run in time or has
-/// neither encoder.
-pub fn probe(path: &Path, limit: Duration) -> Option<Ffmpeg> {
+/// Run `ffmpeg -encoders` to see what it can do.
+pub fn probe(path: &Path, limit: Duration) -> Result<Ffmpeg, ProbeError> {
     use std::io::Read;
     if !path.is_absolute() || !is_executable(path) {
-        return None;
+        return Err(ProbeError::NotExecutable);
     }
     let mut child = command(path)
         .args(["-hide_banner", "-nostdin", "-encoders"])
@@ -167,8 +325,8 @@ pub fn probe(path: &Path, limit: Duration) -> Option<Ffmpeg> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .ok()?;
-    let out = child.stdout.take()?;
+        .map_err(|_| ProbeError::NotRunnable)?;
+    let out = child.stdout.take().ok_or(ProbeError::NotRunnable)?;
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut buf = Vec::new();
@@ -178,10 +336,15 @@ pub fn probe(path: &Path, limit: Duration) -> Option<Ffmpeg> {
     let listing = rx.recv_timeout(limit).ok();
     let _ = child.kill();
     let _ = child.wait();
-    let (mp3, opus) = encoders(&String::from_utf8_lossy(&listing?));
-    (mp3 || opus).then(|| Ffmpeg {
+    let listing = listing.ok_or(ProbeError::NotRunnable)?;
+    let found = encoders(&String::from_utf8_lossy(&listing));
+    let opus = found.opus_encoder();
+    if !found.libmp3lame && opus.is_none() {
+        return Err(ProbeError::NoEncoders);
+    }
+    Ok(Ffmpeg {
         path: path.to_path_buf(),
-        mp3,
+        mp3: found.libmp3lame,
         opus,
     })
 }
@@ -219,7 +382,8 @@ pub struct Job<'a> {
     pub input: &'a Path,
     pub output: &'a Path,
     pub demuxer: &'static str,
-    pub format: Format,
+    /// What to encode with (from [`Ffmpeg::codec`]).
+    pub codec: Codec,
     pub tags: &'a Tags,
     /// Output size limit in bytes.
     pub max_bytes: u64,
@@ -255,8 +419,8 @@ pub fn args(job: &Job) -> Vec<OsString> {
     words(&mut a, &["-map", "0:a:0"]);
     words(&mut a, &["-map_metadata", "-1", "-map_chapters", "-1"]);
     words(&mut a, &["-af", "aformat=channel_layouts=mono|stereo"]);
-    match job.format {
-        Format::Mp3 => {
+    match job.codec {
+        Codec::Mp3 => {
             // Embedded cover art, when the file has any, is kept as the ID3 picture.
             words(
                 &mut a,
@@ -275,11 +439,10 @@ pub fn args(job: &Job) -> Vec<OsString> {
             );
             words(&mut a, &["-f", "mp3"]);
         }
-        Format::Opus | Format::Original => {
-            words(
-                &mut a,
-                &["-vn", "-c:a", "libopus", "-b:a", "160k", "-f", "ogg"],
-            );
+        Codec::Opus(enc) => {
+            words(&mut a, &["-vn", "-c:a", enc.codec()]);
+            words(&mut a, enc.options());
+            words(&mut a, &["-b:a", "160k", "-f", "ogg"]);
         }
     }
     let t = job.tags;
@@ -783,15 +946,107 @@ mod tests {
     #[test]
     fn encoder_listing_is_parsed() {
         let listing = "Encoders:\n V..... = Video\n ------\n A....D libmp3lame           MP3\n A....D libopus              Opus\n A....D aac   AAC\n";
-        assert_eq!(encoders(listing), (true, true));
-        assert_eq!(encoders(" A....D aac AAC\n"), (false, false));
+        let both = Encoders {
+            libmp3lame: true,
+            libopus: true,
+            opus: false,
+        };
+        assert_eq!(encoders(listing), both);
+        assert_eq!(both.opus_encoder(), Some(OpusEncoder::Libopus));
+        assert_eq!(encoders(" A....D aac AAC\n"), Encoders::default());
+        assert_eq!(Encoders::default().opus_encoder(), None);
         assert_eq!(
             encoders(" V....D libmp3lame x\n"),
-            (false, false),
+            Encoders::default(),
             "not an audio encoder"
         );
-        assert_eq!(encoders("libopus\n"), (false, false));
-        assert_eq!(encoders(""), (false, false));
+        assert_eq!(encoders("libopus\n"), Encoders::default());
+        assert_eq!(encoders(""), Encoders::default());
+
+        // piCorePlayer's minimal ffmpeg: ffmpeg's own Opus encoder (experimental, the X) and
+        // no MP3 encoder. Its name must match exactly: `opus` is also a decoder's name, and
+        // `libopus` is read separately.
+        let pcp = " A..X.D opus                 Opus\n A....D pcm_s16le            PCM\n";
+        let found = encoders(pcp);
+        assert_eq!(
+            found,
+            Encoders {
+                libmp3lame: false,
+                libopus: false,
+                opus: true,
+            }
+        );
+        assert_eq!(found.opus_encoder(), Some(OpusEncoder::Native));
+        // libopus wins when both are listed (every full ffmpeg lists both).
+        let full = format!("{listing} A..X.D opus Opus\n");
+        assert_eq!(encoders(&full).opus_encoder(), Some(OpusEncoder::Libopus));
+        for not_it in [
+            " A....D opusenc x\n",
+            " A....D libopusenc x\n",
+            " D..... opus x\n",
+        ] {
+            assert_eq!(encoders(not_it).opus_encoder(), None, "{not_it:?}");
+        }
+    }
+
+    #[test]
+    fn opus_encoders_name_themselves() {
+        assert_eq!(OpusEncoder::Libopus.codec(), "libopus");
+        assert_eq!(OpusEncoder::Native.codec(), "opus");
+        assert_eq!(OpusEncoder::Libopus.options(), &[] as &[&str]);
+        assert_eq!(OpusEncoder::Native.options(), &["-strict", "-2"]);
+        let f = Ffmpeg {
+            path: "/usr/bin/ffmpeg".into(),
+            mp3: false,
+            opus: Some(OpusEncoder::Native),
+        };
+        assert_eq!(f.codec(Format::Mp3), None);
+        assert_eq!(
+            f.codec(Format::Opus),
+            Some(Codec::Opus(OpusEncoder::Native))
+        );
+        assert_eq!(f.codec(Format::Original), None);
+        assert!(f.supports(Format::Opus) && !f.supports(Format::Mp3));
+    }
+
+    #[test]
+    fn the_set_up_is_described_for_the_settings_page() {
+        use serde_json::json;
+        assert_eq!(Setup::Off.describe(4), json!({"state": "off"}));
+        assert_eq!(Setup::NotFound.describe(4), json!({"state": "not_found"}));
+        assert_eq!(
+            Setup::Unusable {
+                path: "/opt/ffmpeg".into(),
+                why: ProbeError::NoEncoders
+            }
+            .describe(4),
+            json!({"state": "unusable", "ffmpeg": "/opt/ffmpeg", "why": "no_encoders"})
+        );
+        assert_eq!(ProbeError::NotExecutable.code(), "not_executable");
+        assert_eq!(ProbeError::NotRunnable.code(), "not_runnable");
+        let pcp = Setup::Ready(Ffmpeg {
+            path: "/usr/local/bin/ffmpeg".into(),
+            mp3: false,
+            opus: Some(OpusEncoder::Native),
+        });
+        assert_eq!(
+            pcp.describe(4),
+            json!({"state": "ready", "ffmpeg": "/usr/local/bin/ffmpeg", "mp3": false, "opus": "ffmpeg", "live_streams": true})
+        );
+        assert_eq!(
+            pcp.describe(0)["live_streams"],
+            json!(false),
+            "no live jobs"
+        );
+        let mp3_only = Setup::Ready(Ffmpeg {
+            path: "/usr/bin/ffmpeg".into(),
+            mp3: true,
+            opus: None,
+        });
+        let d = mp3_only.describe(4);
+        assert_eq!(d["opus"], json!(null));
+        assert_eq!(d["live_streams"], json!(false));
+        assert!(Setup::Off.ready().is_none() && pcp.ready().is_some());
     }
 
     #[test]
@@ -820,12 +1075,12 @@ mod tests {
         }
     }
 
-    fn job_args(format: Format, demux: &'static str, tags: &Tags) -> Vec<String> {
+    fn job_args(codec: Codec, demux: &'static str, tags: &Tags) -> Vec<String> {
         let job = Job {
             input: Path::new("/srv/cache/.tmp-in.src"),
             output: Path::new("/srv/cache/.tmp-out.mp3"),
             demuxer: demux,
-            format,
+            codec,
             tags,
             max_bytes: 1000,
         };
@@ -843,7 +1098,7 @@ mod tests {
             album: String::new(),
             track: Some(3),
         };
-        let a = job_args(Format::Mp3, "flac", &tags);
+        let a = job_args(Codec::Mp3, "flac", &tags);
         let pos = |w: &str| a.iter().position(|x| x == w).unwrap();
         // The input restrictions come before -i, so they apply to it.
         assert!(pos("-protocol_whitelist") < pos("-i"));
@@ -870,25 +1125,98 @@ mod tests {
             "exactly one input"
         );
 
-        let o = job_args(Format::Opus, "mov", &Tags::default());
+        let o = job_args(Codec::Opus(OpusEncoder::Libopus), "mov", &Tags::default());
         assert!(o.windows(2).any(|w| w[0] == "-enable_drefs" && w[1] == "0"));
         assert!(o.windows(2).any(|w| w[0] == "-c:a" && w[1] == "libopus"));
         assert!(o.windows(2).any(|w| w[0] == "-b:a" && w[1] == "160k"));
         assert!(o.contains(&"-vn".to_string()));
+        assert!(!o.contains(&"-strict".to_string()));
         assert!(!a.contains(&"-enable_drefs".to_string()));
+
+        // ffmpeg's built-in Opus encoder: `-strict -2` as an output option, right after it.
+        let n = job_args(Codec::Opus(OpusEncoder::Native), "flac", &Tags::default());
+        let pos = |w: &str| n.iter().position(|x| x == w).unwrap();
+        assert_eq!(n[pos("-c:a") + 1], "opus");
+        assert_eq!(&n[pos("-c:a") + 2..pos("-c:a") + 4], ["-strict", "-2"]);
+        assert!(pos("-i") < pos("-strict") && pos("-strict") < n.len() - 1);
+        assert_eq!(n[pos("-b:a") + 1], "160k");
+        assert!(!n.contains(&"libopus".to_string()));
+        assert_eq!(n.iter().filter(|x| *x == "-i").count(), 1);
     }
 
     #[test]
     fn probing_needs_an_absolute_executable() {
-        assert!(probe(Path::new("ffmpeg"), Duration::from_secs(1)).is_none());
-        assert!(probe(Path::new("/nonexistent/ffmpeg"), Duration::from_secs(1)).is_none());
+        assert_eq!(
+            probe(Path::new("ffmpeg"), Duration::from_secs(1)),
+            Err(ProbeError::NotExecutable)
+        );
+        assert_eq!(
+            probe(Path::new("/nonexistent/ffmpeg"), Duration::from_secs(1)),
+            Err(ProbeError::NotExecutable)
+        );
         let dir = tmpdir("probe");
         let plain = dir.join("ffmpeg");
         std::fs::write(&plain, "#!/bin/sh\necho ' A..... libopus x'\n").unwrap();
-        assert!(
-            probe(&plain, Duration::from_secs(1)).is_none(),
+        assert_eq!(
+            probe(&plain, Duration::from_secs(1)),
+            Err(ProbeError::NotExecutable),
             "not executable"
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// An executable script standing in for ffmpeg.
+    #[cfg(unix)]
+    fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join(name);
+        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probing_reports_the_encoders_found_or_why_not() {
+        let dir = tmpdir("probe-why");
+        let limit = Duration::from_secs(5);
+        // piCorePlayer's: ffmpeg's own Opus encoder only.
+        let pcp = script(&dir, "pcp", "echo ' A..X.D opus                 Opus'");
+        assert_eq!(
+            probe(&pcp, limit),
+            Ok(Ffmpeg {
+                path: pcp.clone(),
+                mp3: false,
+                opus: Some(OpusEncoder::Native),
+            })
+        );
+        // A full one: libopus preferred, libmp3lame seen.
+        let full = script(
+            &dir,
+            "full",
+            "echo ' A....D libmp3lame x'; echo ' A..X.D opus x'; echo ' A....D libopus x'",
+        );
+        assert_eq!(
+            probe(&full, limit),
+            Ok(Ffmpeg {
+                path: full.clone(),
+                mp3: true,
+                opus: Some(OpusEncoder::Libopus),
+            })
+        );
+        // Encoders we can't use, or none at all: unusable, and the reason says so.
+        let aac = script(&dir, "aac", "echo ' A....D aac x'");
+        assert_eq!(probe(&aac, limit), Err(ProbeError::NoEncoders));
+        let silent = script(&dir, "silent", "exit 1");
+        assert_eq!(probe(&silent, limit), Err(ProbeError::NoEncoders));
+        // One that never answers is given up on (and killed) after the limit.
+        let stuck = script(&dir, "stuck", "sleep 20");
+        let started = std::time::Instant::now();
+        assert_eq!(
+            probe(&stuck, Duration::from_millis(300)),
+            Err(ProbeError::NotRunnable)
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

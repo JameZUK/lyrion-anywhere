@@ -31,7 +31,7 @@ Signing in for the first time is covered in [`INSTALL.md`](INSTALL.md#6-first-si
 
 ## Project status and roadmap
 
-- **Built and in use:** the gateway and LMS plugin (0.7.3), the web app, and the Android app (1.17.0, releases tagged `android-v*`). See [`CHANGELOG.md`](../CHANGELOG.md) for what changed and when.
+- **Built and in use:** the gateway and LMS plugin (0.7.5), the web app, and the Android app (1.17.1, releases tagged `android-v*`). See [`CHANGELOG.md`](../CHANGELOG.md) for what changed and when.
 - **Recently finished:**
   - joining a sync group from *Play on…* (*Sync with…*) on the web and Android, sync corrections made in the audio in the browser's media-element mode, and a phone rejoining a group in step after a dropped connection;
   - *Your devices*, to see and sign out your own signed-in devices (plugin 0.5.0 and Android 1.15.3);

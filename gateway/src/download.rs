@@ -979,9 +979,7 @@ async fn transcode_file(
 ) -> Result<std::fs::File, Refusal> {
     let tc = gw.transcoder.as_ref().ok_or(Refusal::FormatUnavailable)?;
     let demuxer = transcode::demuxer(&track.kind).ok_or(Refusal::FormatUnavailable)?;
-    if !tc.ffmpeg.supports(format) {
-        return Err(Refusal::FormatUnavailable);
-    }
+    let codec = tc.ffmpeg.codec(format).ok_or(Refusal::FormatUnavailable)?;
     let name = transcode::cache_name(key, format, track.size, &track.mtime);
     let open = |p: &Path| std::fs::File::open(p).ok();
     if let Some(f) = tc.cache.lookup(&name).as_deref().and_then(open) {
@@ -1013,7 +1011,7 @@ async fn transcode_file(
         input: &input.0,
         output: &output.0,
         demuxer,
-        format,
+        codec,
         tags: &tags,
         max_bytes: max,
     });

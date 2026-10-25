@@ -5,7 +5,8 @@
 //!   say Ogg Opus (`u`), and the player's core probes the content.
 //! - **How:** LMS's bytes go to `ffmpeg`'s standard input by a feeder task; its standard
 //!   output is the stream the relay counts, keeps for replay and serves, so `?offset=`,
-//!   acknowledgements and resume work unchanged on the Opus stream.
+//!   acknowledgements and resume work unchanged on the Opus stream. The encoder is libopus,
+//!   or ffmpeg's own when that is all it has ([`crate::transcode::OpusEncoder`]).
 //! - **Back-pressure:** a relay that stops reading stops `ffmpeg` (its output pipe fills),
 //!   which stops reading its input, which stops the feeder reading LMS. At most the pipes'
 //!   buffers are read ahead.
@@ -20,7 +21,7 @@
 
 use std::ffi::OsString;
 use std::io;
-use std::path::Path;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -32,6 +33,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::OwnedSemaphorePermit;
 use tokio::task::JoinHandle;
+
+use crate::transcode::OpusEncoder;
 
 /// Read size from `ffmpeg`'s output.
 const CHUNK: usize = 64 * 1024;
@@ -96,10 +99,18 @@ pub fn rewrite_strm(payload: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// `ffmpeg`'s argument list for a live encode at `bitrate_k` kb/s (no shell is involved).
-pub fn args(bitrate_k: u32) -> Vec<OsString> {
+/// The `ffmpeg` a live stream is encoded with: its path and the Opus encoder it has.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Encoder {
+    pub path: PathBuf,
+    pub opus: OpusEncoder,
+}
+
+/// `ffmpeg`'s argument list for a live encode at `bitrate_k` kb/s with `opus` (no shell is
+/// involved).
+pub fn args(bitrate_k: u32, opus: OpusEncoder) -> Vec<OsString> {
     let bitrate = format!("{}k", bitrate_k.clamp(32, 256));
-    [
+    let mut a: Vec<&str> = vec![
         "-hide_banner",
         "-nostdin",
         "-loglevel",
@@ -124,13 +135,15 @@ pub fn args(bitrate_k: u32) -> Vec<OsString> {
         "-ar",
         "48000",
         "-c:a",
-        "libopus",
-        "-b:a",
-        bitrate.as_str(),
-        "-vbr",
-        "on",
-        "-application",
-        "audio",
+        opus.codec(),
+    ];
+    a.extend(opus.options());
+    a.extend(["-b:a", bitrate.as_str()]);
+    // libopus's own options; ffmpeg's built-in encoder has neither and would refuse them.
+    if opus == OpusEncoder::Libopus {
+        a.extend(["-vbr", "on", "-application", "audio"]);
+    }
+    a.extend([
         "-threads",
         "1",
         "-flush_packets",
@@ -145,10 +158,8 @@ pub fn args(bitrate_k: u32) -> Vec<OsString> {
         "-f",
         "ogg",
         "pipe:1",
-    ]
-    .iter()
-    .map(OsString::from)
-    .collect()
+    ]);
+    a.into_iter().map(OsString::from).collect()
 }
 
 /// Bytes fed to `ffmpeg` and bytes it produced, for LMS's byte counts.
@@ -207,14 +218,14 @@ struct Live {
 /// Re-encode `upstream` (FLAC) to Ogg Opus at `bitrate_k` with `ffmpeg`. The stream ends
 /// cleanly only when the upstream ended cleanly and `ffmpeg` succeeded.
 pub fn encode(
-    ffmpeg: &Path,
+    ffmpeg: &Encoder,
     bitrate_k: u32,
     upstream: BoxStream<'static, Result<Bytes, io::Error>>,
     permit: Option<OwnedSemaphorePermit>,
     counts: Arc<Counts>,
 ) -> io::Result<BoxStream<'static, Result<Bytes, io::Error>>> {
-    let mut cmd = tokio::process::Command::from(crate::transcode::command(ffmpeg));
-    cmd.args(args(bitrate_k))
+    let mut cmd = tokio::process::Command::from(crate::transcode::command(&ffmpeg.path));
+    cmd.args(args(bitrate_k, ffmpeg.opus))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -358,33 +369,59 @@ mod tests {
         assert_eq!(rewrite_strm(&p[..23]), None);
     }
 
+    fn words(bitrate_k: u32, opus: OpusEncoder) -> Vec<String> {
+        args(bitrate_k, opus)
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect()
+    }
+
     #[test]
     fn args_are_fixed_and_hardened() {
-        let a: Vec<String> = args(96)
-            .iter()
-            .map(|s| s.to_string_lossy().into_owned())
-            .collect();
-        let pos = |w: &str| a.iter().position(|x| x == w).unwrap();
-        assert!(pos("-protocol_whitelist") < pos("-i"));
-        assert_eq!(a[pos("-protocol_whitelist") + 1], "pipe");
-        assert_eq!(a[pos("-f") + 1], "flac"); // the input demuxer is forced
-        assert!(pos("-f") < pos("-i"));
-        assert_eq!(a[pos("-i") + 1], "pipe:0");
-        assert_eq!(a.last().unwrap(), "pipe:1");
-        assert_eq!(a[pos("-b:a") + 1], "96k");
-        assert_eq!(a[pos("-c:a") + 1], "libopus");
-        assert_eq!(a[pos("-map_metadata") + 1], "-1");
-        // Deterministic output, as output options (after the input).
-        assert_eq!(a[pos("-fflags") + 1], "+bitexact");
-        assert_eq!(a[pos("-flags:a") + 1], "+bitexact");
-        assert!(pos("-fflags") > pos("-i") && pos("-fflags") < pos("pipe:1"));
+        for opus in [OpusEncoder::Libopus, OpusEncoder::Native] {
+            let a = words(96, opus);
+            let pos = |w: &str| a.iter().position(|x| x == w).unwrap();
+            assert!(pos("-protocol_whitelist") < pos("-i"));
+            assert_eq!(a[pos("-protocol_whitelist") + 1], "pipe");
+            assert_eq!(a[pos("-f") + 1], "flac"); // the input demuxer is forced
+            assert!(pos("-f") < pos("-i"));
+            assert_eq!(a[pos("-i") + 1], "pipe:0");
+            assert_eq!(a.last().unwrap(), "pipe:1");
+            assert_eq!(a[pos("-b:a") + 1], "96k");
+            assert_eq!(a[pos("-map_metadata") + 1], "-1");
+            assert_eq!(a[pos("-ar") + 1], "48000"); // all the built-in encoder takes
+            // Deterministic output, as output options (after the input).
+            assert_eq!(a[pos("-fflags") + 1], "+bitexact");
+            assert_eq!(a[pos("-flags:a") + 1], "+bitexact");
+            assert!(pos("-fflags") > pos("-i") && pos("-fflags") < pos("pipe:1"));
+            assert!(!a.iter().any(|w| w.contains("http") || w.contains("file")));
+            assert_eq!(a.iter().filter(|x| *x == "-i").count(), 1);
+        }
         // Bit rates are clamped to something sane whatever is asked.
-        let b: Vec<String> = args(100_000)
-            .iter()
-            .map(|s| s.to_string_lossy().into_owned())
-            .collect();
-        assert!(b.contains(&"256k".to_string()));
-        assert!(!a.iter().any(|w| w.contains("http") || w.contains("file")));
+        assert!(words(100_000, OpusEncoder::Libopus).contains(&"256k".to_string()));
+        assert!(words(0, OpusEncoder::Native).contains(&"32k".to_string()));
+    }
+
+    #[test]
+    fn each_opus_encoder_gets_its_own_options() {
+        let a = words(160, OpusEncoder::Libopus);
+        let pos = |w: &str| a.iter().position(|x| x == w).unwrap();
+        assert_eq!(a[pos("-c:a") + 1], "libopus");
+        assert_eq!(a[pos("-vbr") + 1], "on");
+        assert_eq!(a[pos("-application") + 1], "audio");
+        assert!(!a.contains(&"-strict".to_string()));
+
+        // ffmpeg's built-in encoder: experimental, so `-strict -2` as an output option right
+        // after the codec, and none of libopus's private options, which it would refuse.
+        let n = words(160, OpusEncoder::Native);
+        let pos = |w: &str| n.iter().position(|x| x == w).unwrap();
+        assert_eq!(n[pos("-c:a") + 1], "opus");
+        assert_eq!(n[pos("-strict") + 1], "-2");
+        assert!(pos("-i") < pos("-strict") && pos("-strict") < pos("pipe:1"));
+        assert_eq!(n[pos("-b:a") + 1], "160k");
+        assert!(!n.contains(&"-vbr".to_string()));
+        assert!(!n.contains(&"-application".to_string()));
+        assert!(!n.contains(&"libopus".to_string()));
     }
 
     #[test]

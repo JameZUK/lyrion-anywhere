@@ -807,7 +807,7 @@ impl Session {
         n: u64,
         window: usize,
         strip_flac: bool,
-        live_ffmpeg: Option<&std::path::Path>,
+        live_ffmpeg: Option<crate::live::Encoder>,
     ) -> Option<Arc<Relay>> {
         let mut st = self.state.lock().unwrap();
         if st.ended || n != st.stream_seq || st.stream_path.is_none() {

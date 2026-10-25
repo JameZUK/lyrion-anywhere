@@ -17,7 +17,7 @@ use common::*;
 
 use anywhere_core::decode::{DecodeStatus, InputBuffer, StreamDecoder};
 use anywhere_core::proto::{ClientMsg, Stat};
-use anywhere_gateway::transcode::Ffmpeg;
+use anywhere_gateway::transcode::{Encoders, Ffmpeg, OpusEncoder, Setup};
 use std::path::{Path, PathBuf};
 
 fn scratch(tag: &str) -> PathBuf {
@@ -69,10 +69,10 @@ async fn live(body: Option<&str>, jobs: usize) -> Live {
     let dir = scratch("enc");
     let path = fake_encoder(&dir, body);
     let h = harness_with(|c| {
-        c.ffmpeg = Some(Ffmpeg {
+        c.ffmpeg = Setup::Ready(Ffmpeg {
             path,
             mp3: true,
-            opus: true,
+            opus: Some(OpusEncoder::Libopus),
         });
         c.live_transcode_jobs = jobs;
     })
@@ -438,10 +438,10 @@ async fn a_failed_encoder_ends_the_stream_with_an_error() {
 async fn an_encoder_that_cant_start_is_a_bad_gateway() {
     let dir = scratch("missing");
     let h = harness_with(|c| {
-        c.ffmpeg = Some(Ffmpeg {
+        c.ffmpeg = Setup::Ready(Ffmpeg {
             path: dir.join("no-such-ffmpeg"),
             mp3: true,
-            opus: true,
+            opus: Some(OpusEncoder::Libopus),
         });
     })
     .await;
@@ -481,10 +481,10 @@ async fn no_encoder_means_no_feature_and_no_rewrite() {
         let mut h = harness_with(|c| {
             if tweak == 1 {
                 // ffmpeg without Opus, or live encoding switched off.
-                c.ffmpeg = Some(Ffmpeg {
+                c.ffmpeg = Setup::Ready(Ffmpeg {
                     path: "/usr/bin/ffmpeg".into(),
                     mp3: true,
-                    opus: false,
+                    opus: None,
                 });
             } else {
                 c.live_transcode_jobs = 0;
@@ -640,8 +640,24 @@ fn system_ffmpeg() -> Option<Ffmpeg> {
     .into_iter()
     .map(PathBuf::from)
     .find(|p| p.exists())?;
-    let f = anywhere_gateway::transcode::probe(&path, Duration::from_secs(10))?;
-    f.opus.then_some(f)
+    let f = anywhere_gateway::transcode::probe(&path, Duration::from_secs(10)).ok()?;
+    f.opus.is_some().then_some(f)
+}
+
+/// The system ffmpeg forced onto its built-in Opus encoder (what piCorePlayer's has), if it
+/// lists one; every ffmpeg built with its encoders does.
+fn system_ffmpeg_native_opus() -> Option<Ffmpeg> {
+    let f = system_ffmpeg()?;
+    let out = anywhere_gateway::transcode::command(&f.path)
+        .args(["-hide_banner", "-nostdin", "-encoders"])
+        .output()
+        .ok()?;
+    let listing = String::from_utf8_lossy(&out.stdout);
+    let found: Encoders = anywhere_gateway::transcode::encoders(&listing);
+    found.opus.then_some(Ffmpeg {
+        opus: Some(OpusEncoder::Native),
+        ..f
+    })
 }
 
 /// Decode with the players' own decoder; returns interleaved stereo samples.
@@ -660,17 +676,43 @@ fn decode(bytes: &[u8], format: u8) -> Vec<f32> {
     }
 }
 
-#[tokio::test]
-async fn real_ffmpeg_makes_opus_the_players_can_decode() {
-    let Some(ff) = system_ffmpeg() else {
+/// The system ffmpeg for a test, or `None` to skip it (never on CI, which sets
+/// `ANYWHERE_REQUIRE_FFMPEG`). `which` names what the test needs.
+fn required(found: Option<Ffmpeg>, which: &str) -> Option<Ffmpeg> {
+    if found.is_none() {
         assert!(
             std::env::var("ANYWHERE_REQUIRE_FFMPEG").is_err(),
-            "ffmpeg with libopus is required here"
+            "{which} is required here"
         );
-        eprintln!("skipping: no ffmpeg with libopus");
+        eprintln!("skipping: no {which}");
+    }
+    found
+}
+
+#[tokio::test]
+async fn real_ffmpeg_makes_opus_the_players_can_decode() {
+    let Some(ff) = required(system_ffmpeg(), "ffmpeg with libopus") else {
         return;
     };
-    let mut h = harness_with(|c| c.ffmpeg = Some(ff)).await;
+    decodable_opus(ff).await;
+}
+
+/// piCorePlayer's case: ffmpeg's own Opus encoder, with no libopus. Its output must play on
+/// the players too.
+#[tokio::test]
+async fn real_ffmpeg_built_in_opus_encoder_makes_opus_the_players_can_decode() {
+    let Some(ff) = required(
+        system_ffmpeg_native_opus(),
+        "ffmpeg with its built-in opus encoder",
+    ) else {
+        return;
+    };
+    assert_eq!(ff.opus, Some(OpusEncoder::Native));
+    decodable_opus(ff).await;
+}
+
+async fn decodable_opus(ff: Ffmpeg) {
+    let mut h = harness_with(|c| c.ffmpeg = Setup::Ready(ff)).await;
     let frames = 400; // about 10.4 s at 44.1 kHz
     let file = library_flac(0, frames);
     *h.lms.stream_body.lock().unwrap() = Some(Arc::new(file.clone()));
@@ -726,15 +768,26 @@ async fn real_ffmpeg_makes_opus_the_players_can_decode() {
 /// version strings).
 #[tokio::test]
 async fn real_ffmpeg_encodes_the_same_track_to_the_same_bytes() {
-    let Some(ff) = system_ffmpeg() else {
-        assert!(
-            std::env::var("ANYWHERE_REQUIRE_FFMPEG").is_err(),
-            "ffmpeg with libopus is required here"
-        );
-        eprintln!("skipping: no ffmpeg with libopus");
+    let Some(ff) = required(system_ffmpeg(), "ffmpeg with libopus") else {
         return;
     };
-    let mut h = harness_with(|c| c.ffmpeg = Some(ff)).await;
+    same_bytes(ff).await;
+}
+
+/// The replay cache's assumption holds for ffmpeg's built-in encoder too.
+#[tokio::test]
+async fn real_ffmpeg_built_in_opus_encoder_is_deterministic_too() {
+    let Some(ff) = required(
+        system_ffmpeg_native_opus(),
+        "ffmpeg with its built-in opus encoder",
+    ) else {
+        return;
+    };
+    same_bytes(ff).await;
+}
+
+async fn same_bytes(ff: Ffmpeg) {
+    let mut h = harness_with(|c| c.ffmpeg = Setup::Ready(ff)).await;
     let file = library_flac(0, 200);
     *h.lms.stream_body.lock().unwrap() = Some(Arc::new(file.clone()));
     let tok = h.tok_a.clone();
@@ -754,11 +807,10 @@ async fn real_ffmpeg_encodes_the_same_track_to_the_same_bytes() {
 
 #[tokio::test]
 async fn real_ffmpeg_ends_a_corrupt_stream_with_an_error() {
-    let Some(ff) = system_ffmpeg() else {
-        assert!(std::env::var("ANYWHERE_REQUIRE_FFMPEG").is_err());
+    let Some(ff) = required(system_ffmpeg(), "ffmpeg with libopus") else {
         return;
     };
-    let mut h = harness_with(|c| c.ffmpeg = Some(ff)).await;
+    let mut h = harness_with(|c| c.ffmpeg = Setup::Ready(ff)).await;
     // Not FLAC at all: ffmpeg refuses it, and the stream ends with an error.
     *h.lms.stream_body.lock().unwrap() = Some(Arc::new(b"MZ\x90\0not audio at all".repeat(5000)));
     let tok = h.tok_a.clone();

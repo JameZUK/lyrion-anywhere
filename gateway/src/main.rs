@@ -386,36 +386,37 @@ async fn shutdown_signal() {
     }
 }
 
-/// The ffmpeg to transcode downloads with, if any (spec D10).
-fn transcoder(explicit: Option<&Path>, disabled: bool) -> Option<transcode::Ffmpeg> {
+/// The ffmpeg to transcode with, or why there is none (spec D10, D25). The outcome is kept
+/// for the plugin's settings page.
+fn transcoder(explicit: Option<&Path>, disabled: bool) -> transcode::Setup {
+    const NONE: &str = "downloads in their original format only, and streams sent as they are";
     if disabled {
-        tracing::info!("transcoding turned off: downloads in their original format only");
-        return None;
+        tracing::info!("transcoding turned off: {NONE}");
+        return transcode::Setup::Off;
     }
     let path = match explicit {
-        Some(p) if !p.is_absolute() => {
-            tracing::warn!(
-                "--ffmpeg must be an absolute path; downloads in their original format only"
-            );
-            return None;
-        }
         Some(p) => p.to_path_buf(),
         None => match transcode::find_on_path() {
             Some(p) => p,
             None => {
-                tracing::info!("ffmpeg not found: downloads in their original format only");
-                return None;
+                tracing::info!("ffmpeg not found on PATH: {NONE}");
+                return transcode::Setup::NotFound;
             }
         },
     };
     match transcode::probe(&path, std::time::Duration::from_secs(10)) {
-        Some(f) => {
-            tracing::info!(path = %f.path.display(), mp3 = f.mp3, opus = f.opus, "transcoding downloads with ffmpeg");
-            Some(f)
+        Ok(f) => {
+            tracing::info!(
+                path = %f.path.display(),
+                mp3 = f.mp3,
+                opus = f.opus.map(transcode::OpusEncoder::label).unwrap_or("none"),
+                "transcoding with ffmpeg"
+            );
+            transcode::Setup::Ready(f)
         }
-        None => {
-            tracing::warn!(path = %path.display(), "ffmpeg unusable (not executable, or without libmp3lame/libopus): downloads in their original format only");
-            None
+        Err(why) => {
+            tracing::warn!(path = %path.display(), "ffmpeg {}: {NONE}", why.describe());
+            transcode::Setup::Unusable { path, why }
         }
     }
 }

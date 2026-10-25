@@ -150,8 +150,9 @@ pub struct Config {
     pub player_keepalive: Duration,
     /// An LMS request unanswered this long means LMS is blocked (see [`lms_health`]).
     pub lms_stall_after: Duration,
-    /// The system ffmpeg for transcoded downloads (`None`: originals only).
-    pub ffmpeg: Option<transcode::Ffmpeg>,
+    /// The system ffmpeg for transcoded downloads and lower-data streams, or why there is
+    /// none (originals only, streams as they are).
+    pub ffmpeg: transcode::Setup,
     /// Where transcodes are cached (`None`: no transcoding).
     pub download_cache_dir: Option<PathBuf>,
     /// Most bytes the transcode cache may hold.
@@ -254,7 +255,7 @@ impl Default for Config {
             ws_keepalive: Duration::from_secs(30),
             player_keepalive: Duration::from_secs(5),
             lms_stall_after: Duration::from_secs(4),
-            ffmpeg: None,
+            ffmpeg: transcode::Setup::NotFound,
             download_cache_dir: None,
             download_cache_bytes: 2048 * 1024 * 1024,
             transcode_jobs: 1,
@@ -383,7 +384,7 @@ impl Gateway {
             .no_proxy()
             .build()
             .expect("http client");
-        let transcoder = match (&cfg.ffmpeg, &cfg.download_cache_dir) {
+        let transcoder = match (cfg.ffmpeg.ready(), &cfg.download_cache_dir) {
             (Some(ffmpeg), Some(dir)) => {
                 match transcode::Cache::open(dir, cfg.download_cache_bytes) {
                     Ok(cache) => Some(transcode::Transcoder::new(
@@ -460,12 +461,18 @@ impl Gateway {
     }
 
     /// The `ffmpeg` that can make Opus, if live streams may be re-encoded at all.
-    pub(crate) fn live_ffmpeg(&self) -> Option<&std::path::Path> {
-        self.cfg
-            .ffmpeg
-            .as_ref()
-            .filter(|f| f.opus && self.cfg.live_transcode_jobs > 0)
-            .map(|f| f.path.as_path())
+    pub(crate) fn live_ffmpeg(&self) -> Option<live::Encoder> {
+        let f = self.cfg.ffmpeg.ready()?;
+        let opus = f.opus.filter(|_| self.cfg.live_transcode_jobs > 0)?;
+        Some(live::Encoder {
+            path: f.path.clone(),
+            opus,
+        })
+    }
+
+    /// The transcoding set-up for the plugin's settings page ([`transcode::Setup::describe`]).
+    pub fn transcoding(&self) -> serde_json::Value {
+        self.cfg.ffmpeg.describe(self.cfg.live_transcode_jobs)
     }
 
     /// A slot for one live encode, if one is free.

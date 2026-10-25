@@ -131,7 +131,7 @@ test('renders remote-controlled names as text, never as markup', async () => {
     grants: { data: { players: ['aa:bb:cc:dd:ee:01'] } },
     devices: { data: { devices: [{ id: 1, name: HOSTILE, username: 'bob', mac: '02:4c:41:00:00:09', last_seen: 1, last_addr: '198.51.100.7', client_kind: 'pwa', client_platform: HOSTILE, user_agent: HOSTILE }] } },
     audit: { data: { audit: [{ at: 1, event: 'login', username: 'bob', detail: HOSTILE }] } },
-    settings: { data: { session_days: 45 } },
+    settings: { data: { session_days: 45, transcoding: { state: 'unusable', ffmpeg: HOSTILE, why: 'no_encoders' } } },
     plugins: { data: { plugins: [
       { command: 'audiomuseai', name: HOSTILE, kind: 'menu', admin_only: true },
       { command: 'spotty', name: 'Spotty', kind: 'app', admin_only: false },
@@ -162,6 +162,9 @@ test('renders remote-controlled names as text, never as markup', async () => {
   assert.equal(dom.byId.get('aw-message').textContent, '', 'no error reported');
   assert.equal(dom.byId.get('aw-session-days').value, '45', 'the sign-in lifetime is shown');
   assert.ok(dom.byId.get('aw-plugins').textContent.includes(HOSTILE), 'plugin names shown verbatim as text');
+  const transcoding = dom.created.find((e) => e.attrs.id === 'aw-transcoding');
+  assert.ok(transcoding && transcoding.textContent.startsWith(`Transcoding: ${HOSTILE} has neither an MP3 encoder`), 'the ffmpeg set-up is shown in the status panel, its path as text');
+  assert.ok(dom.byId.get('aw-status').contains(transcoding), 'under the status rows');
 
   assert.ok(dom.byId.get('aw-users').textContent.includes('on (original, Opus)'), 'download permission shown, unknown formats dropped');
 
@@ -285,6 +288,33 @@ test('download permission text', () => {
   assert.equal(t.downloadsText({ downloads: 1 }), 'off', 'only a real true counts');
   assert.equal(t.downloadsText({ downloads: true, download_formats: ['__proto__', 'constructor', 'toString'] }), 'on');
   assert.equal(t.downloadsText(null), 'off');
+});
+
+test('transcoding set-up text (issue #29: say what the gateway found)', () => {
+  const none = 'downloads in their original format only, and streams sent as they are';
+  assert.equal(t.transcodingText(null), '');
+  assert.equal(t.transcodingText(undefined), '');
+  assert.equal(t.transcodingText('ready'), '');
+  assert.equal(t.transcodingText({ state: 'off' }), `Transcoding is turned off (Offer MP3 and Opus is unticked): ${none}.`);
+  assert.equal(t.transcodingText({ state: 'not_found' }), `Transcoding: no ffmpeg found on the system path, so ${none}. Install ffmpeg, or enter its path above.`);
+  assert.equal(t.transcodingText({ state: 'unusable', ffmpeg: '/opt/ffmpeg', why: 'no_encoders' }),
+    `Transcoding: /opt/ffmpeg has neither an MP3 encoder (libmp3lame) nor an Opus encoder, so ${none}.`);
+  assert.equal(t.transcodingText({ state: 'unusable', ffmpeg: '/opt/ffmpeg', why: 'not_executable' }), `Transcoding: /opt/ffmpeg is not an executable file, so ${none}.`);
+  assert.equal(t.transcodingText({ state: 'unusable', ffmpeg: '/opt/ffmpeg', why: 'not_runnable' }), `Transcoding: /opt/ffmpeg could not be run, so ${none}.`);
+  assert.equal(t.transcodingText({ state: 'unusable', why: 'something_new' }), `Transcoding: ffmpeg could not be run, so ${none}.`);
+  assert.equal(t.transcodingText({ state: 'ready', ffmpeg: '/usr/bin/ffmpeg', mp3: true, opus: 'libopus', live_streams: true }),
+    'Transcoding with /usr/bin/ffmpeg: MP3 (libmp3lame), Opus (libopus); lower-data streams for mobile data on.');
+  // piCorePlayer: ffmpeg's own Opus encoder, no MP3.
+  assert.equal(t.transcodingText({ state: 'ready', ffmpeg: '/usr/local/bin/ffmpeg', mp3: false, opus: 'ffmpeg', live_streams: true }),
+    'Transcoding with /usr/local/bin/ffmpeg: no MP3 (no libmp3lame encoder), Opus (ffmpeg\u2019s built-in encoder); lower-data streams for mobile data on.');
+  assert.equal(t.transcodingText({ state: 'ready', ffmpeg: '/usr/bin/ffmpeg', mp3: true, opus: null, live_streams: false }),
+    'Transcoding with /usr/bin/ffmpeg: MP3 (libmp3lame), no Opus (no Opus encoder); lower-data streams for mobile data off.');
+  // Odd or hostile values stay text, and only real values count: unknown encoder names and states are not trusted.
+  assert.equal(t.transcodingText({ state: 'ready', ffmpeg: 7, mp3: 'yes', opus: '__proto__', live_streams: 1 }),
+    'Transcoding with ffmpeg: no MP3 (no libmp3lame encoder), no Opus (no Opus encoder); lower-data streams for mobile data off.');
+  assert.equal(t.transcodingText({ state: 'ready', opus: 'constructor' }).includes('constructor'), false);
+  assert.equal(t.transcodingText({ state: 'ready<script>' }), '');
+  assert.equal(t.transcodingText({ state: 'unusable', ffmpeg: HOSTILE, why: 'no_encoders' }).includes(HOSTILE), true, 'the path is shown as given (as text)');
 });
 
 // --- page behaviour: stopped gateway, restart, Enter, grants, labels, focus, audit -------

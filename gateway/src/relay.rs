@@ -111,7 +111,7 @@ pub struct Relay {
 /// A live encode for this stream: `ffmpeg`, the bit rate, the slot it holds (handed to
 /// the encoder when the stream is opened) and its byte counts.
 struct LiveSetup {
-    ffmpeg: std::path::PathBuf,
+    ffmpeg: crate::live::Encoder,
     bitrate_k: u32,
     permit: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
     counts: Arc<crate::live::Counts>,
@@ -182,7 +182,7 @@ impl Relay {
     /// client's `level`, holding `permit` (a live-encode slot) while it runs.
     pub fn with_live(
         mut self,
-        ffmpeg: &std::path::Path,
+        ffmpeg: crate::live::Encoder,
         level: crate::live::Quality,
         bitrate_k: u32,
         permit: tokio::sync::OwnedSemaphorePermit,
@@ -192,7 +192,7 @@ impl Relay {
             level,
         };
         self.live = Some(LiveSetup {
-            ffmpeg: ffmpeg.to_path_buf(),
+            ffmpeg,
             bitrate_k,
             permit: Mutex::new(Some(permit)),
             counts: Arc::default(),
