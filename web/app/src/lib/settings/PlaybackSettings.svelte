@@ -5,7 +5,7 @@
 	import { app, session } from '#lib/state/app.svelte';
 	import { device } from '#lib/player/device.svelte';
 	import * as auth from '#lib/api/auth';
-	import { PREFERENCES, autoNote, connection, type QualityPreference } from '#lib/player/stream-quality';
+	import { LEVEL_LABELS, PREFERENCES, autoNote, connection, type QualityPreference } from '#lib/player/stream-quality';
 	import { loadDefault, saveDefault, type DefaultSetting } from '#lib/player/default-player';
 	import { isThisDevice } from '#lib/player/outputs';
 	import { textOf } from '#lib/lms/format';
@@ -23,7 +23,9 @@
 		low: 'Lossless tracks re-encoded by the gateway to Opus 96 kb/s (about 45 MB an hour)',
 	};
 	const qualityNow = $derived(
-		device.qualityPreference === 'auto'
+		device.qualityOverride
+			? `Now: ${LEVEL_LABELS[device.qualityOverride]}, overridden on the signal path. This setting applies again when the page reloads or the network changes.`
+			: device.qualityPreference === 'auto'
 			? `Now: ${QUALITY_LABELS[device.quality]}${net ? '' : " (this browser can't report its network)"}. Applies from the next track.`
 			: 'Applies from the next track. The quality badge on Now playing shows what is streamed.',
 	);

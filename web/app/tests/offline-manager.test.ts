@@ -44,7 +44,7 @@ test('downloads a track with its details and cover, keyed by the stable key', as
 	expect(it.received).toBe(t.bytes.length);
 	expect(it.total).toBe(t.bytes.length);
 	const saved = await store.getTrack('alice', key(5));
-	expect(saved).toMatchObject({ id: 5, albumId: 9, format: 'original', codec: 'flc', ext: 'flac', contentType: 'audio/flac', size: t.bytes.length, downloadedAt: 1234 });
+	expect(saved).toMatchObject({ id: 5, albumId: 9, format: 'original', codec: 'flc', source: 'flc', ext: 'flac', contentType: 'audio/flac', size: t.bytes.length, downloadedAt: 1234 });
 	expect(await sameBytes(await store.getAudio('alice', key(5)), t.bytes)).toBe(true);
 	expect((await store.getCover('alice', 9))?.type).toBe('image/jpeg');
 	expect(m.saved.map((s) => s.key)).toEqual([key(5)]);

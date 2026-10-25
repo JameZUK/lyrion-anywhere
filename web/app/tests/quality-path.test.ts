@@ -79,7 +79,7 @@ test('gains are written as the core writes them (ties to even)', () => {
 });
 
 test('names are cleaned of control, zero-width and bidi characters and cut to 40', () => {
-	const remote = (name: string) => describe({ player: { kind: 'remote', name } }).blocks[1].title;
+	const remote = (name: string) => describe({ player: { kind: 'remote', name } }).blocks[1]!.title;
 	const t = remote(`  Living\u0007room\n${'x'.repeat(500)}`);
 	expect(t.startsWith('Livingroom')).toBe(true);
 	expect(Array.from(t).length).toBe(40);

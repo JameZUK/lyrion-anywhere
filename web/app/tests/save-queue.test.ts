@@ -18,7 +18,7 @@ const fakeMe = vi.hoisted(() => ({
 vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 vi.mock('#lib/state/me', () => ({
 	me: {
-		features: async () => fakeMe.feats,
+		info: async () => ({ protocol: 2, features: fakeMe.feats }),
 		saveQueue: async (player: string, name: string, replace = false) => {
 			fakeMe.sent.push({ player, name, replace });
 			const a = fakeMe.answer(name, replace);
@@ -150,11 +150,11 @@ describe('MeApi.saveQueue', () => {
 	});
 
 	test('features: only true flags count', async () => {
-		reply = { status: 200, body: { user: {}, features: { save_queue: true, queue_edit: 1, analysis: false, x: 'true' } } };
-		expect(await (await api()).features()).toEqual({ save_queue: true });
+		reply = { status: 200, body: { user: {}, protocol: 2, features: { save_queue: true, queue_edit: 1, analysis: false, x: 'true' } } };
+		expect(await (await api()).info()).toEqual({ protocol: 2, features: { save_queue: true } });
 		expect(calls[0]).toMatchObject({ url: '/v1/me', method: 'GET' });
 		reply = { status: 200, body: { user: {} } };
-		expect(await (await api()).features()).toEqual({});
+		expect(await (await api()).info()).toEqual({ protocol: null, features: {} });
 	});
 });
 

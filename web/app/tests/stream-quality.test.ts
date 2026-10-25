@@ -82,8 +82,8 @@ test('Automatic explains itself per browser', () => {
 });
 
 test("the engine's source is checked before it reaches the screen", () => {
-	expect(streamOf({ codec: 'Opus', lossless: false, bits: null, channels: 2 })).toEqual({ codec: 'Opus', lossless: false, bits: null });
-	expect(streamOf({ codec: 'FLAC', lossless: true, bits: 24 })).toEqual({ codec: 'FLAC', lossless: true, bits: 24 });
+	expect(streamOf({ codec: 'Opus', lossless: false, bits: null, channels: 2 })).toEqual({ codec: 'Opus', lossless: false, bits: null, channels: 2 });
+	expect(streamOf({ codec: 'FLAC', lossless: true, bits: 24 })).toEqual({ codec: 'FLAC', lossless: true, bits: 24, channels: null });
 	expect(streamOf({ codec: 'PCM (float)', lossless: true })).toMatchObject({ codec: 'PCM (float)', bits: null });
 	for (const bad of [null, undefined, 'Opus', 42, {}, [], { codec: '' }, { codec: 42 }, { codec: '<b>Opus</b>' }, { codec: 'x'.repeat(21) }, { codec: ' Opus' }, { codec: 'Opus\n' }, { codec: 'Opus;rm' }]) {
 		expect(streamOf(bad), JSON.stringify(bad)).toBeNull();

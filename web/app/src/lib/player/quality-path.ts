@@ -471,11 +471,12 @@ export function describe(inputs: QualityInputs): Diagram {
 
 	if (player.kind === 'remote') {
 		const name = clean(str(player.name) ?? '', MAX_NAME);
-		const blocks = [fileBlock(file), block('player', name || 'Player', '', 'Plays the stream from LMS')];
+		const fb = fileBlock(file);
+		const blocks = [fb, block('player', name || 'Player', '', 'Plays the stream from LMS')];
 		let b: Badge | null = null;
 		if (file) {
 			const v = fmtVerdict(file);
-			if (v === 'lossy') blocks[0].lowers = true;
+			if (v === 'lossy') fb.lowers = true;
 			b = badge(v, label(file));
 		}
 		return { badge: b, blocks, switch: null };
@@ -483,11 +484,12 @@ export function describe(inputs: QualityInputs): Diagram {
 
 	if (player.kind === 'offline') {
 		const l = clean(str(player.format) ?? '', MAX_NAME);
-		const blocks = [block('download', 'Download', l, 'Saved on this device'), deviceBlock(decoded, inputs.device ?? null)];
+		const db = block('download', 'Download', l, 'Saved on this device');
+		const blocks = [db, deviceBlock(decoded, inputs.device ?? null)];
 		let b: Badge | null = null;
 		if (decoded) {
 			const v = verdictOf(file, decoded);
-			if (isLowered(v)) blocks[0].lowers = true;
+			if (isLowered(v)) db.lowers = true;
 			b = badge(v, l || label(decoded));
 		}
 		return { badge: b, blocks, switch: null };

@@ -131,6 +131,29 @@ function savedPlaylist(v: unknown): SavedPlaylist | null {
 	return { id: o.id, name: o.name };
 }
 
+/** What `GET /v1/me` says about the gateway itself. */
+export interface ServerInfo {
+	/** The player-protocol version (docs/PROTOCOL.md, *Versions*), or null when not given. */
+	protocol: number | null;
+	features: Record<string, boolean>;
+}
+
+/** The player protocol this web app speaks: a gateway below it can't run this browser's player. */
+export const PLAYER_PROTOCOL = 2;
+
+/** `GET /v1/me`'s answer, checked: `protocol` a positive whole number, features only `true`. */
+export function serverInfoOf(raw: unknown): ServerInfo {
+	const r = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as { protocol?: unknown; features?: unknown }) : {};
+	const protocol = typeof r.protocol === 'number' && Number.isSafeInteger(r.protocol) && r.protocol > 0 ? r.protocol : null;
+	const features: Record<string, boolean> = {};
+	const f = r.features && typeof r.features === 'object' && !Array.isArray(r.features) ? (r.features as Record<string, unknown>) : {};
+	for (const [k, v] of Object.entries(f)) if (v === true) features[k] = true;
+	return { protocol, features };
+}
+
+/** Whether a gateway's protocol lets this browser play (absent or lower: no). */
+export const playsHere = (protocol: number | null): boolean => protocol !== null && protocol >= PLAYER_PROTOCOL;
+
 export class MeApi {
 	constructor(private authed: Authed) {}
 
@@ -161,12 +184,13 @@ export class MeApi {
 		}
 	}
 
-	/** The optional features this gateway offers (`GET /v1/me`): only `true` counts. */
-	async features(): Promise<Record<string, boolean>> {
-		const r = await this.#call<{ features?: Record<string, unknown> } | null>('/v1/me');
-		const out: Record<string, boolean> = {};
-		for (const [k, v] of Object.entries(r?.features ?? {})) if (v === true) out[k] = true;
-		return out;
+	/**
+	 * What this gateway is (`GET /v1/me`): its player-protocol version (null when it doesn't
+	 * say, as gateways before protocol 2 don't) and the optional features it offers (only
+	 * `true` counts).
+	 */
+	async info(): Promise<ServerInfo> {
+		return serverInfoOf(await this.#call<unknown>('/v1/me'));
 	}
 
 	/**

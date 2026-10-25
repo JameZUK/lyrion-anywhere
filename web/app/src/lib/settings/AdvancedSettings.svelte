@@ -3,7 +3,8 @@
 	// playback engine and the volume source (each with the reason for the automatic choice), and
 	// the diagnostics for troubleshooting, folded away. The only place LMS is named by name.
 	import { app } from '#lib/state/app.svelte';
-	import { device } from '#lib/player/device.svelte';
+	import { SERVER_TOO_OLD_TEXT, device } from '#lib/player/device.svelte';
+	import { OUTDATED_TEXT } from '#lib/state/status';
 	import { detect } from '#lib/player/capabilities';
 	import { MODE_LABELS, chooseMode, detectEnvironment, loadPreference, savePreference, type ModePreference } from '#lib/player/mode';
 	import { FIXED_LEVEL_EXPLANATION, FIXED_LEVEL_LABEL, FIXED_LEVEL_NO_FOLLOW, VOLUME_LABELS, canFollow, planVolume, type VolumeSetting } from '#lib/player/volume';
@@ -45,10 +46,12 @@
 			<button class="btn" onclick={async () => { device.stop(); await device.start(); }} data-player-restart>Restart it to apply the engine</button>
 		{/if}
 	{:else}
-		<button class="btn primary" onclick={() => device.start()} disabled={!device.supported} data-player-start><Icon name="device" size={18} />Start the player</button>
+		<button class="btn primary" onclick={() => device.start()} disabled={!device.supported || device.serverTooOld || device.outdated} data-player-start><Icon name="device" size={18} />Start the player</button>
 	{/if}
 </p>
 {#if !device.supported}<p class="muted small">This browser can’t play music itself.</p>{/if}
+{#if device.serverTooOld}<p class="small" role="status" data-server-too-old>{SERVER_TOO_OLD_TEXT}</p>{/if}
+{#if device.outdated}<p class="small" role="status" data-outdated>{OUTDATED_TEXT}</p>{/if}
 
 <div class="rows">
 	<PickerRow
