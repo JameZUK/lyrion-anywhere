@@ -196,6 +196,30 @@
  {
   "player": true,
   "cmd": [
+   "playerpref",
+   "digitalVolumeControl",
+   "0"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playerpref",
+   "digitalVolumeControl",
+   "1"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
+   "playerpref",
+   "digitalVolumeControl",
+   "?"
+  ]
+ },
+ {
+  "player": true,
+  "cmd": [
    "power",
    1
   ]

@@ -32,6 +32,10 @@ const examples = [
 	{ player: true, cmd: c.seek(83.27) },
 	{ player: true, cmd: c.volume(55) },
 	{ player: true, cmd: c.mute() },
+	// LMS's Volume Control for this device's own player (allowed for no other player).
+	{ player: true, cmd: c.volumeControl('0') },
+	{ player: true, cmd: c.volumeControl('1') },
+	{ player: true, cmd: c.volumeControl('?') },
 	{ player: true, cmd: c.power(true) },
 	{ player: true, cmd: c.power(false) },
 	{ player: true, cmd: c.sleep(1800) },
