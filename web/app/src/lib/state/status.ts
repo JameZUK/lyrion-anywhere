@@ -5,7 +5,7 @@
 // and "Continue on…" is a snackbar with an action. Nothing else stacks.
 import type { Reachability } from './reachability';
 
-export type StatusKind = 'moving' | 'unreachable' | 'busy' | 'reconnecting' | 'held' | 'resume' | 'update';
+export type StatusKind = 'moving' | 'unreachable' | 'busy' | 'outdated' | 'reconnecting' | 'held' | 'resume' | 'update';
 
 export interface StatusInput {
 	/** The player playback is moving to ('' when not moving). */
@@ -13,6 +13,8 @@ export interface StatusInput {
 	reach: Reachability;
 	/** The connection message ('' while in reach). */
 	message: string;
+	/** The gateway refused this page's player as too old (4426): the page is a stale copy. */
+	outdated?: boolean;
 	/** This device is the player and its own connection is being made again. */
 	reconnecting: boolean;
 	/** This device plays, but the browser holds the sound back until a tap. */
@@ -29,6 +31,7 @@ export interface Status {
 }
 
 export const RECONNECTING_TEXT = 'Reconnecting this device…';
+export const OUTDATED_TEXT = 'This page is out of date: reload to update the app';
 export const HELD_TEXT = 'Playing on this device. Tap anywhere to turn the sound on.';
 export const RESUME_TEXT = 'This device was playing before the page reloaded.';
 export const UPDATE_TEXT = 'A new version is ready. Reload when convenient.';
@@ -38,6 +41,7 @@ export function statusOf(s: StatusInput): Status | null {
 	if (s.moving) return { kind: 'moving', text: `Moving playback to ${s.moving}…` };
 	if (s.reach === 'unreachable' && s.message) return { kind: 'unreachable', text: s.message };
 	if (s.reach === 'busy' && s.message) return { kind: 'busy', text: s.message };
+	if (s.outdated) return { kind: 'outdated', text: OUTDATED_TEXT };
 	if (s.reconnecting) return { kind: 'reconnecting', text: RECONNECTING_TEXT };
 	if (s.heldBack) return { kind: 'held', text: HELD_TEXT };
 	if (s.resume) return { kind: 'resume', text: RESUME_TEXT };

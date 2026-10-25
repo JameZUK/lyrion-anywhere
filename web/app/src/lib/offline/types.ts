@@ -120,6 +120,11 @@ export interface StoredTrack {
 	format: Format;
 	/** For originals, the file type (e.g. "flc"); for transcodes, the format. */
 	codec: string;
+	/**
+	 * The library file's type (e.g. "flc"), so a transcode's quality badge can say it was
+	 * transcoded. Missing on tracks stored before it was kept.
+	 */
+	source?: string;
 	ext: string;
 	size: number;
 	contentType: string;

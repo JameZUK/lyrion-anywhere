@@ -1,5 +1,7 @@
 // Streaming quality for this browser's player (docs/plans/streaming-quality.md): the level
-// asked of the gateway, chosen in Settings or automatically from the network.
+// asked of the gateway, chosen in Settings, automatically from the network, or overridden from
+// the signal path for this session (docs/plans/signal-path-redesign.md, decision 5).
+import type { Origin, Sent, Served } from './quality-path';
 
 export type StreamQuality = 'original' | 'high' | 'low';
 export type QualityPreference = 'auto' | StreamQuality;
@@ -51,6 +53,8 @@ export interface StreamSource {
 	lossless: boolean;
 	/** Bit depth of a lossless stream, when the engine knows it. */
 	bits: number | null;
+	/** Channels, when the engine knows them. */
+	channels?: number | null;
 }
 
 /**
@@ -61,8 +65,53 @@ export function streamOf(raw: unknown): StreamSource | null {
 	if (!raw || typeof raw !== 'object') return null;
 	const r = raw as Record<string, unknown>;
 	if (typeof r.codec !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9 ()./-]{0,19}$/.test(r.codec)) return null;
-	const bits = typeof r.bits === 'number' && Number.isInteger(r.bits) && r.bits >= 1 && r.bits <= 64 ? r.bits : null;
-	return { codec: r.codec, lossless: r.lossless === true, bits };
+	return { codec: r.codec, lossless: r.lossless === true, bits: whole(r.bits, 1, 64), channels: whole(r.channels, 1, 64) };
+}
+
+const whole = (v: unknown, lo: number, hi: number): number | null => (typeof v === 'number' && Number.isSafeInteger(v) && v >= lo && v <= hi ? v : null);
+const plain = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * What LMS served, from the worker's status (the gateway's stream message, already checked
+ * there). Checked again as it crosses to the page: a short lower-case codec token, numbers in
+ * range; anything else makes it unknown.
+ */
+export function servedOf(raw: unknown): Served | null {
+	if (!plain(raw)) return null;
+	const codec = typeof raw.codec === 'string' && /^[a-z][a-z0-9]{0,11}$/.test(raw.codec) ? raw.codec : null;
+	if (raw.codec !== null && raw.codec !== undefined && codec === null) return null;
+	const out: Served = { codec, rate: whole(raw.rate, 1000, 10_000_000), bits: whole(raw.bits, 1, 64), channels: whole(raw.channels, 1, 64) };
+	if (typeof raw.gain_db === 'number' && Number.isFinite(raw.gain_db) && Math.abs(raw.gain_db) <= 100) out.gain_db = raw.gain_db;
+	return out;
+}
+
+/** What the gateway sent, from the worker's status: pass-through, or Opus at a level. */
+export function sentOf(raw: unknown): Sent | null {
+	if (!plain(raw)) return null;
+	if (raw.mode === 'passthrough') return { mode: 'passthrough' };
+	const kbps = whole(raw.kbps, 6, 1000);
+	if (raw.mode === 'opus' && kbps !== null && (raw.level === 'high' || raw.level === 'low')) return { mode: 'opus', kbps, level: raw.level };
+	return null;
+}
+
+/**
+ * Why the level in force is the one in force, for the gateway block and the switch:
+ * overridden from the signal path; chosen in Settings; or Automatic, which follows the
+ * network where the browser reports it ("High, on mobile data", "Original, on Wi-Fi") and is
+ * otherwise "chosen automatically" (Safari and Firefox can't tell mobile data from Wi-Fi).
+ */
+export function originOf(pref: QualityPreference, override: StreamQuality | null, c: ConnectionInfo | null | undefined): Origin {
+	if (override) return { kind: 'override', level: override };
+	if (pref !== 'auto') return { kind: 'setting', network: null, level: pref };
+	const level = autoQuality(c);
+	if (c?.saveData !== true && c?.type === 'cellular') return { kind: 'setting', network: 'mobile', level };
+	if (c?.saveData !== true && c?.type === 'wifi') return { kind: 'setting', network: 'wifi', level };
+	return { kind: 'automatic', level };
+}
+
+/** The level in force: an override from the signal path, else the preference's. */
+export function levelInForce(pref: QualityPreference, override: StreamQuality | null, c: ConnectionInfo | null | undefined): StreamQuality {
+	return override ?? effectiveQuality(pref, c);
 }
 
 /**

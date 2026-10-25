@@ -15,13 +15,14 @@
 			moving: app.moving,
 			reach: app.reach,
 			message: controls.message,
+			outdated: device.outdated,
 			reconnecting: controls.thisDevice && device.state === 'reconnecting',
 			heldBack: device.needsTap && (device.detail.output === 'Playing' || (app.playerId === device.mac && app.playing)),
 			resume: device.wasActive && (device.state === 'off' || device.state === 'stopped' || device.state === 'error'),
 			update: appUpdate.offered,
 		}),
 	);
-	const ICONS = { moving: 'transfer', unreachable: 'offline', busy: 'clock', reconnecting: 'clock', held: 'play', resume: 'device', update: 'new' } as const;
+	const ICONS = { moving: 'transfer', unreachable: 'offline', busy: 'clock', outdated: 'new', reconnecting: 'clock', held: 'play', resume: 'device', update: 'new' } as const;
 </script>
 
 {#if status}
@@ -37,6 +38,8 @@
 		{#if status.kind === 'resume'}
 			<button class="btn primary small" onclick={() => device.start()}><Icon name="play" size={16} />Resume playing here</button>
 			<button class="btn small" onclick={() => device.stop()}>Dismiss</button>
+		{:else if status.kind === 'outdated'}
+			<button class="btn primary small" data-outdated-reload onclick={() => location.reload()}>Reload</button>
 		{:else if status.kind === 'update'}
 			<button class="btn primary small" data-update-reload onclick={() => appUpdate.apply()}>Reload</button>
 			<button class="btn small" data-update-later onclick={() => appUpdate.dismiss()}>Later</button>

@@ -8,6 +8,7 @@
 	import { documentTitle, pageTitle } from '#lib/title.svelte';
 	import { api, app, session } from '#lib/state/app.svelte';
 	import { device } from '#lib/player/device.svelte';
+	import { loadServerInfo } from '#lib/state/features.svelte';
 	import { describePageCommand } from '#lib/player/diagnostics';
 	import { appearance } from '#lib/theme/appearance.svelte';
 	import { install } from '#lib/pwa/install.svelte';
@@ -58,6 +59,13 @@
 		untrack(() => appUpdate.setPlaying(here));
 	});
 
+	// This device's player needs the gateway's player protocol (GET /v1/me): below this app's,
+	// it isn't started, and everything else (other players) works as ever.
+	device.protocolGate = async () => {
+		const info = await loadServerInfo();
+		return info ? info.protocol : undefined;
+	};
+
 	// A returning browser signs in silently through its refresh cookie.
 	void session.restore();
 
@@ -65,6 +73,8 @@
 	$effect(() => {
 		// Not before the server has confirmed the sign-in: the player needs a real token.
 		if (app.status === 'signed-in' && !app.provisional) {
+			// What the gateway is (its player protocol), early: a tap on Play then needn't wait.
+			untrack(() => void loadServerInfo());
 			// Test the media-element path quietly, so this device can use it at once. Then start
 			// this device's player by itself if it is the one to use (SPEC D20: player-first), or
 			// if it was playing before a reload: it connects now, and the first tap anywhere

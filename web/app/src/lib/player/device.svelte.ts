@@ -10,12 +10,14 @@ import { PlayheadSmoother, outputClock } from './output-clock';
 import { MEDIA_TYPE, MODE_LABELS, chooseMode, detectEnvironment, loadPreference, type ModeChoice } from './mode';
 import { LogLimiter, Reporter, buildReport, describePageCommand, diagnosticsSender } from './diagnostics';
 import { fadeGain } from '#lib/lms/sleep';
-import { nowPlaying as briefStatus, volumeControl } from '#lib/lms/commands';
+import { nowPlaying as briefStatus, seek as seekTo, volumeControl } from '#lib/lms/commands';
+import { playsHere } from '#lib/api/me';
 import { mayResumeMedia } from './local-plan';
 import { needsGesture, rememberAutoplay } from './autoplay';
 import {
+	LEVEL_LABELS,
 	connection,
-	effectiveQuality,
+	levelInForce,
 	loadPreference as loadQualityPreference,
 	savePreference as saveQualityPreference,
 	type QualityPreference,
@@ -72,9 +74,19 @@ export interface DeviceStatus {
 	received?: boolean;
 	/** The core's sequence number of the track last handed to the output. */
 	track?: number | null;
-	/** What the engine is decoding (`codec`, `lossless`, `bits`); checked by `streamOf` before use. */
+	/** What the engine is decoding (`codec`, `lossless`, `bits`, `channels`); checked by `streamOf` before use. */
 	source?: unknown;
+	/** What LMS served for that track, from the gateway's stream message; checked by `servedOf` before use. */
+	served?: unknown;
+	/** What the gateway sent for it (pass-through, or Opus at a level); checked by `sentOf` before use. */
+	sent?: unknown;
+	/** The gateway's stream number those two are for. */
+	stream_seq?: number | null;
 }
+
+/** Settings › About › Advanced, when the gateway is too old for this browser's player. */
+export const SERVER_TOO_OLD_TEXT =
+	"This browser can't play from this server until its Lyrion Anywhere plugin is updated to 0.7.3 or later. You can still control other players.";
 
 /** A player file, with the build version so a stale cached copy is never used. */
 const asset = (p: string) => {
@@ -128,7 +140,25 @@ class DevicePlayer {
 	/** "Streaming quality in this browser" in Settings, and the level it means now. */
 	qualityPreference = $state<QualityPreference>(loadQualityPreference());
 	quality = $state<StreamQuality>('original');
-	#qualityWatch = false;
+	/**
+	 * The level chosen on the signal path for this session (docs/plans/signal-path-redesign.md,
+	 * decision 5): it wins over the preference until the page reloads or the network type
+	 * changes (Wi-Fi to mobile data and back). Never saved.
+	 */
+	qualityOverride = $state<StreamQuality | null>(null);
+	/** The connection object whose changes are followed (the browser's, where it has one). */
+	#qualityWatch: EventTarget | null = null;
+	/** The network type last seen (where the browser reports one), to clear the override on a change. */
+	#netType: string | undefined;
+	/** The gateway closed this player with 4426: this page is older than it. Reload to update. */
+	outdated = $state(false);
+	/** The gateway's protocol is below this app's (or not stated): this browser's player can't run. */
+	serverTooOld = $state(false);
+	/**
+	 * Asks the gateway's player protocol (GET /v1/me): a number, null when the gateway doesn't
+	 * state one, or undefined when it couldn't be asked. Set by the app; without it, no check.
+	 */
+	protocolGate: (() => Promise<number | null | undefined>) | null = null;
 	/** How volume works while this device plays (null when it isn't playing). */
 	volumePlan = $state<VolumePlan | null>(null);
 	/** LMS's volume for this player, as linear [left, right] gains. */
@@ -339,22 +369,58 @@ class DevicePlayer {
 		return { mode, mediaVolume: this.#mediaVolume };
 	}
 
-	/** Change "Streaming quality in this browser"; applies from the next track. */
+	/** Change "Streaming quality in this browser"; applies from the next track. A choice made here ends any override. */
 	setQualityPreference(p: QualityPreference) {
 		this.qualityPreference = p;
 		saveQualityPreference(p);
+		this.qualityOverride = null;
 		this.#updateQuality();
 	}
 
-	/** The level for the preference and the network now; tells the player when it changes. */
+	/**
+	 * Override the streaming level from the signal path for this session, or (null) go back to
+	 * automatic. The gateway is told at once; when the track can be sought, this device seeks
+	 * to where it is ("time t"), so the new stream starts there within a second or two.
+	 * Returns 'now' when it was sought, 'next' when it applies from the next track (an
+	 * unseekable stream, or this device not playing), 'unchanged' when the level stays.
+	 */
+	overrideQuality(level: StreamQuality | null, at: { seekable: boolean; seconds?: number } = { seekable: false }): 'now' | 'next' | 'unchanged' {
+		const before = this.quality;
+		this.qualityOverride = level;
+		this.#updateQuality();
+		this.#note(level ? `streaming level overridden here: ${LEVEL_LABELS[level]}` : 'streaming level back to automatic');
+		if (this.quality === before) return 'unchanged';
+		if (!at.seekable || !this.mac || this.state !== 'connected') return 'next';
+		const s = at.seconds ?? Number(this.detail.elapsed_ms) / 1000;
+		const c = seekTo(Number.isFinite(s) && s > 0 ? s : 0);
+		this.#note(describePageCommand(c, 'the streaming level changed: the new stream starts here'));
+		api.rpc(this.mac, c).catch((e: Error) => this.#note(`could not restart the stream at the new level: ${e.message}`));
+		return 'now';
+	}
+
+	/** The level for the preference, the override and the network now; tells the player when it changes. */
 	#updateQuality() {
 		const c = connection();
-		if (c && !this.#qualityWatch) {
+		if (c && this.#qualityWatch !== c) {
 			// Follow the network (Wi-Fi to mobile data and back) while the page is open.
-			this.#qualityWatch = true;
-			c.addEventListener?.('change', () => this.#updateQuality());
+			this.#qualityWatch = c;
+			this.#netType = c.type;
+			c.addEventListener?.('change', () => {
+				if (this.#qualityWatch !== c) return;
+				// The network type changed: the per-network choice applies again (the event also
+				// fires for changes of speed, which leave an override alone).
+				const type = connection()?.type;
+				if (type !== this.#netType) {
+					this.#netType = type;
+					if (this.qualityOverride) {
+						this.qualityOverride = null;
+						this.#note('the network changed: the streaming level override ended');
+					}
+				}
+				this.#updateQuality();
+			});
 		}
-		const q = effectiveQuality(this.qualityPreference, c);
+		const q = levelInForce(this.qualityPreference, this.qualityOverride, c);
 		if (q === this.quality) return;
 		this.quality = q;
 		this.#worker?.postMessage({ cmd: 'quality', quality: q });
@@ -561,12 +627,15 @@ class DevicePlayer {
 	 * is ready, and the first tap anywhere turns the sound on. Not if another tab of this
 	 * browser already runs it ('busy').
 	 */
-	async autoStart(): Promise<'started' | 'busy' | 'unsupported' | 'failed'> {
+	async autoStart(): Promise<'started' | 'busy' | 'unsupported' | 'failed' | 'server-too-old' | 'outdated'> {
 		if (!this.supported) return 'unsupported';
+		if (this.outdated) return 'outdated';
+		if (this.serverTooOld) return 'server-too-old';
 		if (this.#worker || this.state === 'starting') return 'started';
 		if (!(await this.#holdTab(false))) return 'busy';
 		if (this.wasActive) this.#note('resuming after the page reloaded');
 		await this.start({ auto: true });
+		if (this.serverTooOld) return 'server-too-old';
 		return this.state === 'error' ? 'failed' : 'started';
 	}
 
@@ -576,6 +645,8 @@ class DevicePlayer {
 	 */
 	async start(opts: { auto?: boolean } = {}) {
 		if (this.#worker || this.state === 'starting' || !session.current) return;
+		// A stale page (4426) can't play until it reloads; an old gateway can't run it at all.
+		if (this.outdated || this.serverTooOld) return;
 		if (!opts.auto) void this.#holdTab(true);
 		// Stop may be pressed while this is still starting: after every wait, check that this
 		// start is still the current one, and if not, drop what it built and go no further.
@@ -659,6 +730,19 @@ class DevicePlayer {
 				if (!p || !live()) return; // #createAudio closes its context when stopped
 				port = p;
 				if (this.#ctx?.state !== 'running') this.#resumeOnNextTap();
+			}
+			// The gateway must speak this app's player protocol (asked after the audio is set up,
+			// which must happen inside the tap). An unanswered question doesn't stop it.
+			if (this.protocolGate) {
+				const protocol = await this.protocolGate();
+				if (!live()) return;
+				if (protocol !== undefined && !playsHere(protocol)) {
+					this.#note(`the server's player protocol is ${protocol ?? 'not stated'}; this browser needs 2: update the server's plugin`);
+					this.serverTooOld = true;
+					this.stop();
+					this.state = 'off';
+					return;
+				}
 			}
 			const w = new Worker(asset('player-worker.js'), { type: 'module' });
 			this.#worker = w;
@@ -1034,6 +1118,13 @@ class DevicePlayer {
 			void this.#syncFixedLevel('this player connected');
 		} else if (m.connection === 'reconnecting' || m.connection === 'restarting' || m.connection === 'reauthenticating') {
 			this.state = 'reconnecting';
+		} else if (m.connection === 'closed' && m.code === 4426) {
+			// This page is older than the gateway, which ships the app: a stale cached copy. It
+			// can't play until it reloads, and the worker never retries.
+			this.#note('the server needs a newer app (4426): reload the page to update it');
+			this.outdated = true;
+			this.stop();
+			return;
 		} else if (m.connection === 'closed') {
 			// The gateway ended this player for good (e.g. it was replaced elsewhere): release
 			// the worker and audio, so "Play on this device" can start again.

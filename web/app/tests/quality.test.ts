@@ -1,7 +1,7 @@
 // The quality badge (docs/plans: Wave 1 §5): format and resolution from LMS's status tags,
 // and the Hi-Res rule (more than 16-bit or more than 48 kHz, lossless only). The same
 // vectors are in mobile/src/model.rs (the Android app).
-import { badgeText, kbpsOf, quality, streamed } from '#lib/lms/quality';
+import { kbpsOf, quality } from '#lib/lms/quality';
 
 test('lossless: codec bits/kHz, and Hi-Res above CD resolution', () => {
 	const cases: [Record<string, unknown>, string, boolean][] = [
@@ -22,12 +22,10 @@ test('lossless: codec bits/kHz, and Hi-Res above CD resolution', () => {
 		expect(q.hiRes, JSON.stringify(t)).toBe(hiRes);
 		expect(q.lossless).toBe(true);
 	}
-	expect(badgeText(quality({ type: 'flc', samplesize: '24', samplerate: '96000' })!)).toBe('FLAC 24/96 · Hi-Res');
-	expect(badgeText(quality({ type: 'flc', samplesize: '16', samplerate: '44100' })!)).toBe('FLAC 16/44.1');
 });
 
 test('lossy: codec and bit rate, never Hi-Res however high the rate', () => {
-	expect(badgeText(quality({ type: 'mp3', bitrate: '320kbps', samplerate: '44100' })!)).toBe('MP3 320');
+	expect(quality({ type: 'mp3', bitrate: '320kbps', samplerate: '44100' })!.label).toBe('MP3 320');
 	expect(quality({ type: 'mp3', bitrate: '873kbps VBR' })!.label).toBe('MP3 873');
 	expect(quality({ type: 'aac', bitrate: '256000' })!.label).toBe('AAC 256');
 	expect(quality({ type: 'ops', bitrate: 128 })!.label).toBe('Opus 128');
@@ -57,30 +55,8 @@ test('every label is short plain text', () => {
 			for (const samplerate of [undefined, '44100', '96000', '352800', '11289600']) {
 				const q = quality({ type, samplesize, samplerate, bitrate: '320kbps' });
 				expect(q).not.toBeNull();
-				expect(badgeText(q!)).toMatch(/^[A-Za-z0-9 ./·-]{1,40}$/);
+				expect(q!.label).toMatch(/^[A-Za-z0-9 ./-]{1,40}$/);
 			}
 		}
 	}
-});
-
-test('the badge says what is streamed to this device: Opus when the gateway re-encoded the track', () => {
-	const flac = quality({ type: 'flc', samplesize: '24', samplerate: '96000' });
-	const opus = { codec: 'Opus', lossless: false, bits: null };
-	expect(badgeText(streamed(flac, opus, 'high')!)).toBe('Opus 160');
-	expect(badgeText(streamed(flac, opus, 'low')!)).toBe('Opus 96');
-	expect(streamed(flac, opus, 'high')).toMatchObject({ codec: 'Opus', lossless: false, hiRes: false, kbps: 160, rate: 48000 });
-	// The level not known: still Opus, never Hi-Res.
-	expect(badgeText(streamed(flac, opus, null)!)).toBe('Opus');
-	// Not re-encoded: the track's own badge, whatever level was asked for.
-	expect(streamed(flac, { codec: 'FLAC', lossless: true, bits: 24 }, 'high')).toBe(flac);
-	expect(streamed(flac, null, 'high')).toBe(flac);
-	const mp3 = quality({ type: 'mp3', bitrate: '320kbps' });
-	expect(streamed(mp3, { codec: 'MP3', lossless: false, bits: null }, 'high')).toBe(mp3);
-	// An Opus track in the library streamed as Opus is not the gateway's doing.
-	const ops = quality({ type: 'ops', bitrate: 128 });
-	expect(streamed(ops, opus, 'high')).toBe(ops);
-	// No track details from LMS: Opus at a lower level is the gateway's; at Original it is the track.
-	expect(badgeText(streamed(null, opus, 'high')!)).toBe('Opus 160');
-	expect(streamed(null, opus, 'original')).toBeNull();
-	expect(streamed(null, null, 'high')).toBeNull();
 });

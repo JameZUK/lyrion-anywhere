@@ -12,7 +12,7 @@ const V = new URL(self.location.href).searchParams.get('v');
 const early = [];
 onmessage = (e) => early.push(e);
 const VQ = V && /^[\w.-]{1,64}$/.test(V) ? `?v=${V}` : '';
-const { AuthWait, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, backoffMs, closeAction, describeSeek, downloadStream, loadCore, qualityMessage, routeMessage, sanitiseQuality, signInMessage, socketSilent } =
+const { AuthWait, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, StreamInfo, backoffMs, closeAction, describeSeek, downloadStream, loadCore, qualityMessage, routeMessage, sanitiseQuality, signInMessage, socketSilent } =
   await import(`./reconnect.js${VQ}`);
 const { Presentation } = await import(`./presentation.js${VQ}`);
 const { VisualTap } = await import(`./visual.js${VQ}`);
@@ -65,6 +65,13 @@ let disconnectedAt = 0;
 let lastHeard = 0;
 // Frames received in this session; on resume the gateway resends anything after this.
 let received = 0;
+// What the gateway said about each stream it relays (protocol 2: the stream message), tied
+// to the streams by the count of `strm s` frames.
+const streamInfo = new StreamInfo();
+// A malformed stream message is noted in the connection log once, not every time.
+let badStreamNoted = false;
+// The gateway closed with 4426: this page is older than it. Never connect again.
+let tooOld = false;
 const outbox = new Outbox(2000);
 const rateRequest = new RateRequest();
 const authWait = new AuthWait();
@@ -334,6 +341,7 @@ async function learnFeatures(timeoutMs = 0) {
 }
 
 function connect(resume) {
+  if (tooOld) return;
   const url = new URL('/v1/player', self.location.origin);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(url);
@@ -347,6 +355,12 @@ function connect(resume) {
     routeMessage(m.data, {
       frames: onFrames,
       greeting: onGreeting,
+      stream: (info) => streamInfo.add(info),
+      badStream: () => {
+        if (badStreamNoted) return;
+        badStreamNoted = true;
+        log('ignored a malformed stream message from the gateway');
+      },
       ignored: () => log('ignored an unexpected text message from the gateway'),
     });
   };
@@ -383,6 +397,7 @@ function onGreeting(g) {
     closeStream();
     outbox.clear();
     received = 0;
+    streamInfo.reset();
     player = new core.WasmPlayer(g.mac, g.name, CODECS);
     // Volume is applied at the output, where a change is heard at once.
     player.set_host_volume(true);
@@ -414,6 +429,7 @@ function onGreeting(g) {
 
 function onFrames(data) {
   received++;
+  streamInfo.frame(received, data);
   try {
     player.on_control(new Uint8Array(data), now());
     if (flushWatch.changed(player.flush_count())) {
@@ -476,6 +492,14 @@ function onClose(code, reason) {
     // Most likely an expired access token: the page renews it and sends it back.
     authWait.refused();
     postMessage({ connection: 'reauthenticating', authFailed: true });
+    return;
+  }
+  if (action === 'too-old') {
+    // A stale cached page: the gateway (which ships this app) has moved on. The same form
+    // can never succeed, so never retry; the page asks for a reload.
+    tooOld = true;
+    session = '';
+    postMessage({ connection: 'closed', code: CLOSE.TOO_OLD, reason: 'update the app' });
     return;
   }
   if (action === 'stop') {
@@ -615,6 +639,13 @@ function tick() {
   status.held = localHold.held;
   status.received = streamReceived;
   status.track = player.pulled_track() ?? null;
+  // What LMS served and what the gateway sent for the track handed to the output (the core
+  // numbers its tracks from 0, the gateway its streams from 1), else for the stream fetched.
+  const seq = status.track !== null ? status.track + 1 : (stream?.n ?? null);
+  const info = seq !== null ? streamInfo.of(seq) : null;
+  status.stream_seq = info ? seq : null;
+  status.served = info?.served ?? null;
+  status.sent = info?.sent ?? null;
   // Memory diagnostics: iOS reloads a page whose process uses too much memory.
   status.wasm_bytes = wasmMemory ? wasmMemory.buffer.byteLength : 0;
   status.mode = outputMode;

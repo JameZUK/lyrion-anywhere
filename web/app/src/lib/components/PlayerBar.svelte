@@ -15,6 +15,7 @@
 	import { haptics } from '#lib/haptics/haptics.svelte';
 	import { controls } from '#lib/player/controls.svelte';
 	import { now } from '#lib/player/now.svelte';
+	import { amber, qualityNow } from '#lib/player/quality-now.svelte';
 
 	let seeking = $state<number | null>(null);
 	let volume = $state<number | null>(null);
@@ -35,6 +36,9 @@
 				? [textOf(track?.artist), textOf(track?.album)].filter(Boolean).join(' · ')
 				: 'Choose a player',
 	);
+	/** What is heard, as Now playing's badge says it (only for the playing track). */
+	const diagram = $derived(track ? qualityNow.diagram : null);
+	const heard = $derived(diagram?.badge ?? null);
 	/** Which player is in use, when it isn't this device (Wave 3.5: no separate strip for it). */
 	const on = $derived(!now.downloads && app.remote ? playerLabel(app.playerId, app.now, app.players) || app.nameOf(app.playerId) || 'another player' : '');
 	/** Which controls work now (all of them while the server is in reach). */
@@ -166,7 +170,7 @@
 		<div class="meta">
 			<div class="title ellipsis">{title}</div>
 			<div class="sub ellipsis muted">
-				{#if sleepIn !== null}<span class="moon" title={`Sleep timer: ${formatLeft(sleepIn)}`}><Icon name="moon" size={13} /></span>{/if}{#if on}<span class="on" data-mini-on>on {on}</span>{#if sub}{' · '}{/if}{/if}<span class:pick={!app.current && !now.downloads}>{sub}</span>
+				{#if sleepIn !== null}<span class="moon" title={`Sleep timer: ${formatLeft(sleepIn)}`}><Icon name="moon" size={13} /></span>{/if}{#if on}<span class="on" data-mini-on>on {on}</span>{#if sub}{' · '}{/if}{/if}<span class:pick={!app.current && !now.downloads}>{sub}</span>{#if heard}{' · '}<span class="heard" class:amber={!!diagram && amber(diagram)} data-mini-quality data-verdict={heard.verdict}>{heard.text}</span>{/if}
 			</div>
 		</div>
 	</a>
@@ -284,6 +288,10 @@
 	}
 	.sub {
 		font-size: 0.85rem;
+	}
+	/* What is heard (the badge's text); Transcoded and Lossy in the amber tint. */
+	.heard.amber {
+		color: var(--amber);
 	}
 	/* The player in use, first so it is never cut off: "on Lounge · Artist · Album". */
 	.on,

@@ -829,6 +829,7 @@ export class DownloadManager {
 			duration: info.duration,
 			format,
 			codec: format === 'original' ? info.original.format : format,
+			...(info.original.format ? { source: info.original.format } : {}),
 			ext: format === 'original' ? info.original.ext : TRANSCODE_TYPES[format].ext,
 			size: p.received,
 			contentType,

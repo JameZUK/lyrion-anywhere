@@ -40,6 +40,9 @@ test('close codes map to the right recovery', () => {
   assert.equal(closeAction(CLOSE.ABNORMAL), 'resume');
   assert.equal(closeAction(CLOSE.TRY_AGAIN), 'resume');
   assert.equal(closeAction(1011), 'resume');
+  // A stale page (protocol too old for the gateway): stop for good, never retried.
+  assert.equal(CLOSE.TOO_OLD, 4426);
+  assert.equal(closeAction(4426), 'too-old');
 });
 
 test('backoff grows, is capped, and is jittered', () => {
@@ -234,7 +237,7 @@ test('flush watch reports each flush once, however the state looked in between',
 
 // --- Streaming quality ----------------------------------------------------------------
 
-import { QUALITIES, qualityMessage, sanitiseQuality, signInMessage } from '../../static/player/reconnect.js';
+import { PROTOCOL, QUALITIES, qualityMessage, sanitiseQuality, signInMessage } from '../../static/player/reconnect.js';
 
 test('levels are checked: anything else is original', () => {
   assert.deepEqual(QUALITIES, ['original', 'high', 'low']);
@@ -244,18 +247,23 @@ test('levels are checked: anything else is original', () => {
   }
 });
 
-test('the sign-in message: a bare token unless resuming or below original', () => {
-  assert.equal(signInMessage('tok', null, 'original'), 'tok');
-  assert.equal(signInMessage('tok', null, 'nonsense'), 'tok');
-  assert.deepEqual(JSON.parse(signInMessage('t"k', null, 'low')), { token: 't"k', quality: 'low' });
+test('the sign-in message always carries protocol 2 (never a bare token)', () => {
+  assert.equal(PROTOCOL, 2);
+  assert.deepEqual(JSON.parse(signInMessage('tok', null, 'original')), { token: 'tok', protocol: 2 });
+  assert.deepEqual(JSON.parse(signInMessage('tok', null, 'nonsense')), { token: 'tok', protocol: 2 });
+  assert.deepEqual(JSON.parse(signInMessage('t"k', null, 'low')), { token: 't"k', protocol: 2, quality: 'low' });
   assert.deepEqual(JSON.parse(signInMessage('t', { session: 's', secret: 'x', received: 4 }, 'high')), {
     token: 't',
+    protocol: 2,
     resume: { session: 's', secret: 'x', received: 4 },
     quality: 'high',
   });
   // Only the expected fields of the resume are sent.
   const m = JSON.parse(signInMessage('t', { session: 's', secret: 'x', received: 4, extra: 'leak' }, 'original'));
-  assert.deepEqual(m, { token: 't', resume: { session: 's', secret: 'x', received: 4 } });
+  assert.deepEqual(m, { token: 't', protocol: 2, resume: { session: 's', secret: 'x', received: 4 } });
+  // A whole JSON number, as the gateway requires (not "2", not 2.5).
+  assert.equal(typeof JSON.parse(signInMessage('t', null, 'original')).protocol, 'number');
+  assert.match(signInMessage('t', null, 'original'), /"protocol":2[,}]/);
 });
 
 test('the control message', () => {
@@ -268,12 +276,13 @@ test('the control message', () => {
 import { classifyText, routeMessage } from '../../static/player/reconnect.js';
 
 test('the sign-in asks for keepalives only when told to', () => {
-  assert.equal(signInMessage('tok', null, 'original', false), 'tok');
-  assert.equal(signInMessage('tok', null, 'original'), 'tok');
-  assert.equal(signInMessage('tok', null, 'original', 'yes'), 'tok'); // only a real true
-  assert.deepEqual(JSON.parse(signInMessage('tok', null, 'original', true)), { token: 'tok', keepalive: true });
+  assert.deepEqual(JSON.parse(signInMessage('tok', null, 'original', false)), { token: 'tok', protocol: 2 });
+  assert.deepEqual(JSON.parse(signInMessage('tok', null, 'original')), { token: 'tok', protocol: 2 });
+  assert.deepEqual(JSON.parse(signInMessage('tok', null, 'original', 'yes')), { token: 'tok', protocol: 2 }); // only a real true
+  assert.deepEqual(JSON.parse(signInMessage('tok', null, 'original', true)), { token: 'tok', protocol: 2, keepalive: true });
   assert.deepEqual(JSON.parse(signInMessage('t', { session: 's', secret: 'x', received: 4 }, 'low', true)), {
     token: 't',
+    protocol: 2,
     resume: { session: 's', secret: 'x', received: 4 },
     quality: 'low',
     keepalive: true,
@@ -330,7 +339,7 @@ test('junk text is ignored, never thrown on', () => {
     let s = '';
     for (let n = Math.floor(rnd() * 40); n > 0; n--) s += alphabet[Math.floor(rnd() * alphabet.length)];
     const r = classifyText(s);
-    assert.ok(r === null || r === 'keepalive' || typeof r === 'object');
+    assert.ok(r === null || r === 'keepalive' || r === 'bad-stream' || typeof r === 'object');
   }
 });
 

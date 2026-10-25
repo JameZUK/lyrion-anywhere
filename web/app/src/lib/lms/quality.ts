@@ -1,9 +1,11 @@
-// The quality badge on Now playing ("FLAC 24/96 · Hi-Res", "MP3 320"), from the format
-// details LMS reports for the current track (status tags o, T, I and r). Plain text only.
-//
-// Hi-Res means more than 16-bit or more than 48 kHz, on lossless sources only. The Android
-// app has the same rules in Rust (mobile/src/model.rs, `quality_of`).
-import { LEVEL_KBPS, reencoded, type StreamQuality, type StreamSource } from '#lib/player/stream-quality';
+// The library file's format, from the details LMS reports for a track (status tags o, T, I
+// and r): "FLAC 24/96", "MP3 320". The codec table, the labels and the Hi-Res rule are the
+// shared core's (lib/player/quality-path.ts, a port of core::quality), so the file reads the
+// same everywhere. The quality badge itself (what is heard: "Transcoded · Opus 160") is the
+// diagram's (see quality-path's `describe`), never this alone.
+import { codecName, formatLabel, isHiRes } from '#lib/player/quality-path';
+
+export { khz } from '#lib/player/quality-path';
 
 export interface Quality {
 	/** The codec's name ("FLAC", "MP3", …). */
@@ -18,32 +20,6 @@ export interface Quality {
 	/** Bit rate (kbps), when LMS gave one. */
 	kbps: number | null;
 }
-
-const CODECS: Record<string, [name: string, lossless: boolean]> = {
-	flc: ['FLAC', true],
-	flac: ['FLAC', true],
-	alc: ['ALAC', true],
-	alac: ['ALAC', true],
-	wav: ['WAV', true],
-	aif: ['AIFF', true],
-	aiff: ['AIFF', true],
-	pcm: ['PCM', true],
-	ape: ['APE', true],
-	wvp: ['WavPack', true],
-	wmal: ['WMA Lossless', true],
-	dsf: ['DSD', true],
-	dff: ['DSD', true],
-	mp3: ['MP3', false],
-	aac: ['AAC', false],
-	mp4: ['AAC', false],
-	m4a: ['AAC', false],
-	ogg: ['Ogg Vorbis', false],
-	ops: ['Opus', false],
-	opus: ['Opus', false],
-	wma: ['WMA', false],
-	wmap: ['WMA', false],
-	mpc: ['Musepack', false],
-};
 
 function int(v: unknown, lo: number, hi: number): number | null {
 	const n = typeof v === 'number' ? v : typeof v === 'string' && /^\s*\d{1,9}(\.\d+)?\s*$/.test(v) ? Number(v) : NaN;
@@ -60,41 +36,13 @@ export function kbpsOf(v: unknown): number | null {
 	return int(m[2] || n < 8000 ? n : n / 1000, 8, 100_000);
 }
 
-/** 44100 → "44.1", 96000 → "96". */
-export const khz = (hz: number): string =>
-	hz % 1000 === 0 ? String(hz / 1000) : (hz / 1000).toLocaleString('en-GB', { maximumFractionDigits: 1, useGrouping: false });
-
-/** The badge for a track's format details, or null when LMS gave no usable type. */
+/** The file's format, or null when LMS gave no usable type. */
 export function quality(t: { type?: unknown; samplerate?: unknown; samplesize?: unknown; bitrate?: unknown } | null | undefined): Quality | null {
-	const kind = typeof t?.type === 'string' ? t.type.trim().toLowerCase() : '';
-	if (!kind || kind.length > 12) return null;
-	const known = CODECS[kind];
-	const codec = known ? known[0] : /^[a-z0-9]{1,6}$/.test(kind) ? kind.toUpperCase() : null;
-	if (!codec) return null;
-	const lossless = known ? known[1] : false;
+	const c = typeof t?.type === 'string' ? codecName(t.type) : null;
+	if (!c) return null;
+	const [codec, lossless] = c;
 	const rate = int(t?.samplerate, 1000, 50_000_000);
 	const bits = int(t?.samplesize, 1, 64);
 	const kbps = kbpsOf(t?.bitrate);
-	let label = codec;
-	if (codec === 'DSD' && rate) label = `DSD${Math.round(rate / 44100)}`;
-	else if (lossless && bits && rate) label = `${codec} ${bits}/${khz(rate)}`;
-	else if (lossless && rate) label = `${codec} ${khz(rate)} kHz`;
-	else if (!lossless && kbps) label = `${codec} ${kbps}`;
-	const hiRes = lossless && ((bits !== null && bits > 16) || (rate !== null && rate > 48_000));
-	return { codec, label, lossless, hiRes, rate, bits, kbps };
-}
-
-/** The badge's text: "FLAC 24/96 · Hi-Res". */
-export const badgeText = (q: Quality): string => (q.hiRes ? `${q.label} · Hi-Res` : q.label);
-
-/**
- * The badge when this device is the player: what is actually streamed. If the gateway
- * re-encoded the track to Opus for a lower-data level, the badge says "Opus 160" rather than
- * the library track's "FLAC 24/96 · Hi-Res", which is what led people to think the panel
- * was wrong. Otherwise the track's own badge (the stream is the track as stored).
- */
-export function streamed(q: Quality | null, stream: StreamSource | null, level: StreamQuality | null): Quality | null {
-	if (!reencoded(q?.codec ?? null, stream, level)) return q;
-	const kbps = level ? LEVEL_KBPS[level] : null;
-	return { codec: 'Opus', label: kbps ? `Opus ${kbps}` : 'Opus', lossless: false, hiRes: false, rate: 48_000, bits: null, kbps };
+	return { codec, label: formatLabel(codec, lossless, bits, rate, kbps), lossless, hiRes: isHiRes(lossless, bits, rate), rate, bits, kbps };
 }
