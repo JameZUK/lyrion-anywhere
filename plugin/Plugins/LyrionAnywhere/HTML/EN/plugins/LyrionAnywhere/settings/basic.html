@@ -32,8 +32,8 @@
 	<input type="text" class="stdedit" name="pref_public_url" id="pref_public_url" value="[% shown_public_url | html %]" placeholder="https://music.example.com" aria-describedby="aw-http-warning aw-tunnel-override-url">
 	<p id="aw-http-warning" class="aw-note aw-warning"[% UNLESS shown_public_url.match('^(?i)http://') %] hidden[% END %]>
 		An http:// address sends passwords and sign-ins unencrypted. Use https://, unless this is a private address reached only over your VPN (see Trusted networks below), such as http://10.8.0.1:9443: then pairing links and QR codes work too.
-		<br><input type="checkbox" name="anywhere_allow_http" id="anywhere_allow_http" value="1"[% IF prefs.pref_public_url.match('^(?i)http://') %] checked[% END %]>
-		<label for="anywhere_allow_http">Allow http:// anyway (ticked while the saved address is http://)</label>
+		<br><input type="checkbox" name="anywhere_allow_http" id="anywhere_allow_http" value="1">
+		<label for="anywhere_allow_http">Allow http:// anyway (needed when you set or change an http:// address; the address already saved needs no tick)</label>
 	</p>
 	<p id="aw-tunnel-override-url" class="aw-note aw-warning" hidden></p>
 [% END %]

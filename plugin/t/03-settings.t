@@ -220,7 +220,53 @@ is($params->{anywhere_csrf}, $token, 'also after saving');
 	like($html, qr/\[% shown_public_url = anywhere_keep_public_url \|\| prefs\.pref_public_url %\]/, 'the shown address is the kept one, else the saved one');
 	like($html, qr/name="pref_public_url"[^>]*value="\[% shown_public_url \| html %\]"/, 'the field shows it, escaped');
 	like($html, qr/id="aw-http-warning"[^>]*\[% UNLESS shown_public_url\.match\('\^\(\?i\)http:\/\/'\) %\] hidden\[% END %\]/, 'the warning is shown for it');
-	like($html, qr/name="anywhere_allow_http"[^>]*\[% IF prefs\.pref_public_url\.match\('\^\(\?i\)http:\/\/'\) %\] checked\[% END %\]/, 'the box is ticked while the saved address is http://');
+	unlike($html, qr/name="anywhere_allow_http"[^>]*checked/, 'the box is never shown ticked: a different http:// address always needs a fresh tick');
+	like($html, qr/for="anywhere_allow_http">Allow http:\/\/ anyway \(needed when you set or change/, 'and the label says when it is needed');
+}
+
+# --- the confirmation is for setting or changing an http:// address: the address already
+# saved needs no tick (so Apply for another setting works), a different one always does, and a
+# hand-back value arriving with the request is never shown (review findings, 2026-10-25) -----
+{
+	$prefs->set(public_url => 'http://10.8.0.1:9443');
+	my ($o, $e, $n, $k) = $clean->({ pref_public_url => 'http://10.8.0.1:9443' });
+	is($o->{pref_public_url}, 'http://10.8.0.1:9443', 'the saved http:// address is accepted again without the box');
+	is_deeply([$e, $k], [[], {}], 'with no error and nothing kept');
+	($o, $e, $n, $k) = $clean->({ pref_public_url => 'http://10.8.0.1:9443/ ' });
+	is($o->{pref_public_url}, 'http://10.8.0.1:9443', 'also when typed with a slash or spaces');
+	($o, $e, $n, $k) = $clean->({ pref_public_url => 'http://music.example.com' });
+	ok(!exists $o->{pref_public_url}, 'a different http:// address is refused without the box');
+	is($k->{pref_public_url}, 'http://music.example.com', 'and kept for the field');
+	($o, $e, $n, $k) = $clean->({ pref_public_url => 'http://10.8.0.2:9443' });
+	ok(!exists $o->{pref_public_url}, 'even one that differs by a digit');
+	($o, $e, $n, $k) = $clean->({ pref_public_url => 'HTTP://10.8.0.1:9443' });
+	ok(!exists $o->{pref_public_url}, 'or in case (the saved spelling is the one that needs no tick)');
+	($o, $e, $n, $k) = $clean->({ pref_public_url => 'http://music.example.com', anywhere_allow_http => 1 });
+	is($o->{pref_public_url}, 'http://music.example.com', 'with the box the change is saved');
+	$prefs->set(public_url => '');
+
+	# The hand-back name is the handler's own: a value in the request never reaches the page.
+	require Plugins::LyrionAnywhere::Gateway;
+	no warnings 'redefine';
+	local *Plugins::LyrionAnywhere::Gateway::restart = sub { 1 };
+	local *Plugins::LyrionAnywhere::Gateway::stop = sub { };
+	$prefs->set(enabled => 0);
+	Plugins::LyrionAnywhere::Gateway::settings_saved();
+	for my $case (
+		['viewing the page', {}],
+		['a save with the token', { saveSettings => 1, anywhere_form_token => $token, pref_listen => '127.0.0.1:9443' }],
+		['a save without the token', { saveSettings => 1, pref_listen => '127.0.0.1:9443' }],
+	) {
+		my ($name, $req) = @$case;
+		my $p = { %$req, anywhere_keep_public_url => 'https://music.attacker.example' };
+		Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+		ok(!exists $p->{anywhere_keep_public_url}, "$name: a hand-back value in the request is dropped");
+		is($prefs->get('public_url'), '', "$name: and nothing is saved from it");
+	}
+	# A refused address of its own is still handed back after the request's value is dropped.
+	my $p = { saveSettings => 1, anywhere_form_token => $token, pref_public_url => 'http://music.example.com', anywhere_keep_public_url => 'https://music.attacker.example' };
+	Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+	is($p->{anywhere_keep_public_url}, 'http://music.example.com', 'the handler hands back only what it refused itself');
 }
 {
 	open my $fh, '<', 'Plugins/LyrionAnywhere/HTML/EN/plugins/LyrionAnywhere/settings/basic.html' or die;

@@ -72,8 +72,11 @@ sub clean {
 				next;
 			}
 			# Over plain http, passwords and sign-in tokens cross the internet unencrypted:
-			# saved only when the box saying so is ticked as well.
-			if ($v =~ m{\Ahttp://}i && !$params->{anywhere_allow_http}) {
+			# setting or changing such an address needs the box saying so ticked as well. The
+			# address already saved needs no tick (so Apply for another setting works), and the
+			# box is never shown ticked: a change to a different http:// address always needs a
+			# fresh confirmation.
+			if ($v =~ m{\Ahttp://}i && $v ne ($prefs->get('public_url') // '') && !$params->{anywhere_allow_http}) {
 				push @errors, 'Public URL not saved: an http:// address sends passwords unencrypted. Use https://, or tick "Allow http://" below the address to save it anyway.';
 				# Left in the field, with the box under it, so a retype is not needed.
 				$keep{pref_public_url} = $v;
@@ -180,6 +183,9 @@ sub handler {
 	my ($class, $client, $params) = @_;
 	# The token the form came back with (read before the page's own copy is set below).
 	my $form_token = $params->{anywhere_form_token};
+	# Only this handler hands a refused address back to the page (below): one arriving with
+	# the request, from a crafted link or another site's form, must not reach the field.
+	delete $params->{anywhere_keep_public_url};
 	# The page's script needs this to change accounts (see Commands.pm), and the form sends
 	# it back when saving. Only this page, which other web sites cannot read, carries it.
 	$params->{anywhere_csrf} = Plugins::LyrionAnywhere::Commands::csrf_token();
