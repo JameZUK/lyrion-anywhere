@@ -133,7 +133,23 @@ fun QualityBadge(badge: DiagramBadge, onClick: () -> Unit, modifier: Modifier = 
     }
 }
 
-/** The badge's text as a small chip for the mini player's second line (not a button: the bar opens Now playing). */
+/** The verdict word alone ("Hi-Res", "Lossless", "Transcoded", "Lossy"): the badge's compact form. */
+@Composable
+fun verdictWord(verdict: DiagramVerdict): String = stringResource(
+    when (verdict) {
+        DiagramVerdict.HI_RES -> R.string.badge_hi_res
+        DiagramVerdict.LOSSLESS -> R.string.badge_lossless
+        DiagramVerdict.TRANSCODED -> R.string.badge_transcoded
+        DiagramVerdict.LOSSY -> R.string.badge_lossy
+    },
+)
+
+/**
+ * The badge as a small chip for the mini player's second line: the verdict word alone, in
+ * the badge's colours (amber for Transcoded and Lossy), so the artist keeps its room; the
+ * full text ("Hi-Res · FLAC 24/96") is on Now playing and read out by TalkBack. Not a
+ * button: the bar opens Now playing.
+ */
 @Composable
 fun QualityChip(badge: DiagramBadge, modifier: Modifier = Modifier) {
     val (container, content) = badgeColours(badge)
@@ -141,13 +157,16 @@ fun QualityChip(badge: DiagramBadge, modifier: Modifier = Modifier) {
         shape = RoundedCornerShape(50),
         color = container,
         contentColor = content,
-        modifier = modifier.testTag("mini-quality").semantics(mergeDescendants = true) { amber = badge.lowered },
+        modifier = modifier.testTag("mini-quality").semantics(mergeDescendants = true) {
+            contentDescription = badge.text
+            amber = badge.lowered
+        },
     ) {
         Text(
-            badge.text,
+            verdictWord(badge.verdict),
             style = MaterialTheme.typography.labelSmall,
             maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+            softWrap = false,
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
         )
     }

@@ -110,7 +110,7 @@ class QualityBadgeAndDiagramTest {
     @Test
     fun theReportedCaseIsTranscodedInAmberInTheMiniPlayer() {
         show { MiniPlayer(phoneState(QualityVectors.expected(QualityVectors.REPORTED)), onOpen = {}, onTogglePlay = {}, onNext = {}) }
-        compose.onNodeWithTag("mini-quality").assertTextEquals("Transcoded · Opus 160").assert(amber)
+        compose.onNodeWithTag("mini-quality").assertTextEquals("Transcoded").assert(amber)
     }
 
     @Test
