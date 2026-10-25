@@ -1997,20 +1997,31 @@ async fn a_new_devices_player_is_set_to_full_volume_once() {
 }
 
 /// LMS failing the command: the device is not marked done, and the next session tries
-/// again; only once LMS accepts it is the device done for good.
+/// again (not the next LMS frame: LMS sends one every second or so, and a retry on each
+/// would add to the load of an LMS that is already unwell); only once LMS accepts it is
+/// the device done for good.
 #[tokio::test]
 async fn a_failed_initial_volume_is_tried_again_next_session() {
     let mut h = harness().await;
     let me = format_mac(&h.mac_a);
     h.lms.fail_rpc.lock().unwrap().insert("mixer volume".into());
     {
-        let (_ws, _lms) = attach_and_let_lms_speak(&mut h).await;
+        let (mut ws, mut lms) = attach_and_let_lms_speak(&mut h).await;
         assert_eq!(wait_calls(&h, &me, &initial_level(), 1).await, 1);
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(
             h.accounts.needs_initial_level(h.dev_a),
             "not done until LMS accepts it"
         );
+        // More from LMS in the same session (its status polls): not tried again.
+        for _ in 0..5 {
+            lms.write_all(&encode_server_frame(*b"vers", b"9.1.1"))
+                .await
+                .unwrap();
+            let _ = next(&mut ws).await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(calls_for(&h, &me, &initial_level()), 1, "once a session");
     }
     h.lms.fail_rpc.lock().unwrap().clear();
     let (_ws, _lms) = attach_and_let_lms_speak(&mut h).await;
@@ -2018,6 +2029,39 @@ async fn a_failed_initial_volume_is_tried_again_next_session() {
     wait_for(|| !h.accounts.needs_initial_level(h.dev_a)).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(calls_for(&h, &me, &initial_level()), 2);
+}
+
+/// LMS answering 200 without carrying the command out (an empty body, an `error`, no
+/// `result`): a failure, not done; the next session tries again, and only a real success
+/// (a `result` object) marks the device done.
+#[tokio::test]
+async fn an_initial_volume_answer_without_a_result_is_a_failure() {
+    let mut h = harness().await;
+    let me = format_mac(&h.mac_a);
+    let bodies = [
+        "",
+        "{}",
+        r#"{"id":1,"method":"slim.request"}"#,
+        r#"{"id":1,"error":"Invalid command"}"#,
+        r#"{"id":1,"result":null}"#,
+        r#"{"id":1,"result":"ok"}"#,
+    ];
+    for (i, body) in bodies.iter().enumerate() {
+        h.lms
+            .odd_rpc
+            .lock()
+            .unwrap()
+            .insert("mixer volume".into(), body.to_string());
+        let (_ws, _lms) = attach_and_let_lms_speak(&mut h).await;
+        assert_eq!(wait_calls(&h, &me, &initial_level(), i + 1).await, i + 1);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(h.accounts.needs_initial_level(h.dev_a), "{body:?}");
+    }
+    h.lms.odd_rpc.lock().unwrap().clear();
+    let (_ws, _lms) = attach_and_let_lms_speak(&mut h).await;
+    let n = bodies.len() + 1;
+    assert_eq!(wait_calls(&h, &me, &initial_level(), n).await, n);
+    wait_for(|| !h.accounts.needs_initial_level(h.dev_a)).await;
 }
 
 /// A device that already had its level (every device from before the gateway tracked it is

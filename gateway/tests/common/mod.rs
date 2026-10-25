@@ -483,6 +483,13 @@ pub struct FakeLms {
     /// JSON-RPC commands (by first word, or first two such as `mixer volume`) that are
     /// recorded and then refused with HTTP 500, as when LMS fails a request.
     pub fail_rpc: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// JSON-RPC commands (by first word, or first two) that are recorded and then answered
+    /// with status 200 and exactly this body (an empty one, an `error`, …), as an LMS that
+    /// did not carry the command out may.
+    pub odd_rpc: Arc<Mutex<std::collections::HashMap<String, String>>>,
+    /// When set, `/stream.mp3` sends its headers at once and its first bytes only after
+    /// this long (LMS slow to start: a spun-down disk, its own transcoder starting).
+    pub stream_first_delay: Arc<Mutex<Option<Duration>>>,
 }
 
 /// The fake LMS's saved playlists, and the length of every player's queue.
@@ -665,6 +672,10 @@ impl FakeLms {
         let hung = hang_rpc.clone();
         let fail_rpc: Arc<Mutex<std::collections::HashSet<String>>> = Default::default();
         let failing = fail_rpc.clone();
+        let odd_rpc: Arc<Mutex<std::collections::HashMap<String, String>>> = Default::default();
+        let odd = odd_rpc.clone();
+        let stream_first_delay: Arc<Mutex<Option<Duration>>> = Default::default();
+        let first_delay = stream_first_delay.clone();
         let (r, a, stall, ex, pl) = (
             rec.clone(),
             audio.clone(),
@@ -678,6 +689,8 @@ impl FakeLms {
             let sv = sv.clone();
             let hung = hung.clone();
             let failing = failing.clone();
+            let odd = odd.clone();
+            let delay = *first_delay.lock().unwrap();
             let playing = *st_track.lock().unwrap();
             let library = lib.lock().unwrap().clone();
             let a = sb.lock().unwrap().clone().unwrap_or_else(|| a.clone());
@@ -727,6 +740,14 @@ impl FakeLms {
                             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                             "fake LMS failure",
                         )
+                            .into_response_parts();
+                    }
+                    let odd_body = {
+                        let o = odd.lock().unwrap();
+                        o.get(&pair).or_else(|| o.get(&cmd)).cloned()
+                    };
+                    if let Some(b) = odd_body {
+                        return ([("content-type", "application/json")], Body::from(b))
                             .into_response_parts();
                     }
                     let added = track_id.and_then(|id| ex.lock().unwrap().get(&id).cloned());
@@ -875,6 +896,17 @@ impl FakeLms {
                     return ([("content-type", "audio/flac")], Body::from_stream(body))
                         .into_response_parts();
                 }
+                if req.uri().path() == "/stream.mp3"
+                    && let Some(d) = delay
+                {
+                    let all = bytes::Bytes::copy_from_slice(&a);
+                    let body = futures_util::stream::once(async move {
+                        tokio::time::sleep(d).await;
+                        Ok::<_, std::io::Error>(all)
+                    });
+                    return ([("content-type", "audio/flac")], Body::from_stream(body))
+                        .into_response_parts();
+                }
                 if req.uri().path() == "/stream.mp3" {
                     (
                         [("content-type", "audio/flac")],
@@ -934,6 +966,8 @@ impl FakeLms {
             saved,
             hang_rpc,
             fail_rpc,
+            odd_rpc,
+            stream_first_delay,
         }
     }
 
