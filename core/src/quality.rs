@@ -504,15 +504,47 @@ fn channels_of(v: Option<i64>) -> Option<u32> {
     in_range(v, 1, 64)
 }
 
-/// Text from an input: control characters, line and paragraph separators and the invisible
-/// formatting characters (zero-width and bidirectional controls, which could make a name
-/// read as something else) dropped, trimmed, at most `max` characters.
+/// The characters [`clean`] drops: controls (`Cc`), the line and paragraph separators, every
+/// format character (`Cf`, Unicode 16: soft hyphen, zero-width and bidirectional controls,
+/// the Arabic and Syriac marks, the tag characters, …) and the other characters that draw
+/// nothing (the combining grapheme joiner, the Hangul fillers, the variation selectors), any
+/// of which could make a name read as something else.
+pub fn is_invisible(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{00ad}'
+                | '\u{034f}'
+                | '\u{0600}'..='\u{0605}'
+                | '\u{061c}'
+                | '\u{06dd}'
+                | '\u{070f}'
+                | '\u{0890}'..='\u{0891}'
+                | '\u{08e2}'
+                | '\u{115f}'..='\u{1160}'
+                | '\u{180e}'
+                | '\u{200b}'..='\u{200f}'
+                | '\u{2028}'..='\u{202e}'
+                | '\u{2060}'..='\u{206f}'
+                | '\u{3164}'
+                | '\u{fe00}'..='\u{fe0f}'
+                | '\u{feff}'
+                | '\u{ffa0}'
+                | '\u{fff9}'..='\u{fffb}'
+                | '\u{110bd}'
+                | '\u{110cd}'
+                | '\u{13430}'..='\u{1343f}'
+                | '\u{1bca0}'..='\u{1bca3}'
+                | '\u{1d173}'..='\u{1d17a}'
+                | '\u{e0000}'..='\u{e007f}'
+                | '\u{e0100}'..='\u{e01ef}'
+        )
+}
+
+/// Text from an input: the [`is_invisible`] characters dropped, trimmed, at most `max`
+/// characters.
 fn clean(s: &str, max: usize) -> String {
-    let invisible = |c: char| {
-        c.is_control()
-            || matches!(c, '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
-    };
-    let t: String = s.chars().filter(|&c| !invisible(c)).collect();
+    let t: String = s.chars().filter(|&c| !is_invisible(c)).collect();
     t.trim()
         .chars()
         .take(max)
@@ -534,9 +566,16 @@ fn file_fmt(f: &FileFormat) -> Option<Fmt> {
 }
 
 /// LMS's stream; a lossy stream in the file's codec borrows the file's bit rate (LMS sent
-/// the file as it is), as a lossless one does its depth and rate when the stream message
-/// did not carry them.
-fn served_fmt(s: &Served, file: Option<&Fmt>) -> Option<Fmt> {
+/// the file as it is). A lossless stream whose message did not carry its depth or rate (a
+/// headerless stream after a seek) takes them from the decoder when the gateway passed it
+/// through in the same codec (what is decoded is what LMS sent, even when LMS lowered it),
+/// and otherwise from the file when it is in the file's codec.
+fn served_fmt(
+    s: &Served,
+    file: Option<&Fmt>,
+    sent: Option<&Sent>,
+    decoded: Option<&Fmt>,
+) -> Option<Fmt> {
     let token = s.codec.as_deref()?;
     let (name, lossless) = match file {
         // `ogg` is the container: Vorbis or Opus, as the file says.
@@ -554,6 +593,13 @@ fn served_fmt(s: &Served, file: Option<&Fmt>) -> Option<Fmt> {
         kbps: None,
         channels: channels_of(s.channels),
     };
+    if lossless
+        && matches!(sent, Some(Sent::Passthrough))
+        && let Some(d) = decoded.filter(|d| d.lossless && d.same_codec(&f))
+    {
+        f.bits = f.bits.or(d.bits);
+        f.rate = f.rate.or(d.rate);
+    }
     if let Some(file) = file.filter(|file| file.same_codec(&f)) {
         if lossless {
             f.bits = f.bits.or(file.bits);
@@ -645,10 +691,11 @@ fn badge(verdict: Verdict, stream: String) -> Badge {
     }
 }
 
-/// The verdict: a lossy file is Lossy; a lossless file heard through a lossy stream is
-/// Transcoded; otherwise the heard stream's own verdict.
-fn verdict_of(file: Option<&Fmt>, heard: &Fmt) -> Verdict {
-    match (file.map(|f| f.lossless), heard.lossless) {
+/// The verdict: a lossy source is Lossy; a lossless source heard through a lossy stream is
+/// Transcoded; otherwise the heard stream's own verdict. The source is the file when LMS
+/// reports its type, else LMS's stream (`served_lossless`).
+fn verdict_of(file: Option<&Fmt>, served_lossless: Option<bool>, heard: &Fmt) -> Verdict {
+    match (file.map(|f| f.lossless).or(served_lossless), heard.lossless) {
         (Some(false), _) => Verdict::Lossy,
         (Some(true), false) => Verdict::Transcoded,
         _ => heard.verdict(),
@@ -692,12 +739,7 @@ fn device_note(d: Option<&Device>) -> String {
     let Some(d) = d else {
         return String::new();
     };
-    let mut parts = Vec::new();
-    if let Some(name) = d.name.as_deref().map(|n| clean(n, MAX_NAME))
-        && !name.is_empty()
-    {
-        parts.push(name);
-    }
+    let mut parts: Vec<String> = Vec::new();
     if d.bit_perfect {
         parts.push("bit-perfect".into());
     } else {
@@ -711,7 +753,14 @@ fn device_note(d: Option<&Device>) -> String {
             parts.push("processed by DSP you turned on".into());
         }
     }
-    capitalise(parts.join(", "))
+    let clauses = parts.join(", ");
+    // The device's own name is shown as the platform gives it ("iBasso DC03", "moto buds");
+    // only a note that starts with one of our clauses is capitalised.
+    match d.name.as_deref().map(|n| clean(n, MAX_NAME)) {
+        Some(name) if !name.is_empty() && clauses.is_empty() => name,
+        Some(name) if !name.is_empty() => format!("{name}, {clauses}"),
+        _ => capitalise(clauses),
+    }
 }
 
 fn capitalise(s: String) -> String {
@@ -734,13 +783,8 @@ fn device_block(decoded: Option<&Fmt>, device: Option<&Device>) -> Block {
 /// The LMS block's note, when LMS changed something on the way out: converted the codec,
 /// lowered the rate or depth, or applied server ReplayGain. `None`: LMS sent the file as
 /// it is (or nothing is known), and the diagram has no LMS block.
-fn lms_changes(
-    file: Option<&Fmt>,
-    served: Option<&Fmt>,
-    gain: Option<f64>,
-) -> Option<(String, bool)> {
+fn lms_changes(file: Option<&Fmt>, served: Option<&Fmt>, gain: Option<f64>) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
-    let mut lowered = false;
     if let (Some(f), Some(s)) = (file, served) {
         if !f.same_codec(s) {
             parts.push(format!("converted from {}", f.name));
@@ -756,7 +800,6 @@ fn lms_changes(
                 _ => None,
             };
             if let Some(what) = what {
-                lowered = true;
                 parts.push(format!("lowered to {what}"));
             }
         }
@@ -767,50 +810,108 @@ fn lms_changes(
     if parts.is_empty() {
         return None;
     }
-    Some((capitalise(parts.join(", ")), lowered))
+    Some(capitalise(parts.join(", ")))
 }
 
-/// What the gateway block says it did.
-fn gateway_block(sent: Option<&Sent>, out: Option<&Fmt>, origin: Option<&Origin>) -> (Block, bool) {
-    let (format, note, reencoded) = match sent {
-        Some(Sent::Passthrough) => (
-            out.map(Fmt::label_with_channels).unwrap_or_default(),
-            "Passed through unchanged".to_string(),
-            false,
-        ),
+/// The level the stream heard was sent at, when the stream message shows it: an Opus
+/// re-encode is the level it was made for (High when the message does not say); a FLAC
+/// stream passed through is Original. The gateway re-encodes only FLAC, so any other stream
+/// passed through (an MP3, a PCM stream, an unknown codec) is passed through at every level
+/// and shows none.
+fn sent_level(sent: &Sent, served: Option<&Served>) -> Option<Level> {
+    match sent {
+        Sent::Opus {
+            level: Some(OpusLevel::Low),
+            ..
+        } => Some(Level::Low),
+        Sent::Opus { .. } => Some(Level::High),
+        Sent::Passthrough => served
+            .and_then(|s| s.codec.as_deref())
+            .and_then(codec)
+            .is_some_and(|(name, _)| name == "FLAC")
+            .then_some(Level::Original),
+    }
+}
+
+/// The reason for the level, as the gateway block and the switch say it.
+enum Reason {
+    /// The origin's reason for the level heard: "High, on mobile data".
+    InForce(String),
+    /// The chosen level is not the one heard: "Original applies from the next track".
+    Pending(String),
+}
+
+impl Reason {
+    /// The origin's reason when its level is the one the stream was sent at (or nothing
+    /// says what it was sent at), else "{Level} applies from the next track".
+    fn of(origin: &Origin, heard: Option<Level>) -> Reason {
+        match heard {
+            Some(l) if l != origin.level() => Reason::Pending(format!(
+                "{} applies from the next track",
+                origin.level().name()
+            )),
+            _ => Reason::InForce(origin.text()),
+        }
+    }
+
+    fn text(self) -> String {
+        match self {
+            Reason::InForce(t) | Reason::Pending(t) => t,
+        }
+    }
+}
+
+/// What the gateway block says it did. With nothing from the gateway but a lossy stream
+/// decoded from a lossless source (`reencode_unreported`), the gateway re-encoded it and its
+/// stream message is still on its way.
+fn gateway_block(inputs: &QualityInputs, out: Option<&Fmt>, reencode_unreported: bool) -> Block {
+    let sent = inputs.sent.as_ref();
+    let heard = sent.and_then(|s| sent_level(s, inputs.served.as_ref()));
+    let reason = inputs.origin.as_ref().map(|o| Reason::of(o, heard));
+    let (format, note) = match sent {
+        Some(Sent::Passthrough) => {
+            let note = match reason {
+                Some(Reason::Pending(p)) => format!("Passed through unchanged; {p}"),
+                _ => "Passed through unchanged".into(),
+            };
+            (out.map(Fmt::label_with_channels).unwrap_or_default(), note)
+        }
         Some(Sent::Opus { kbps, .. }) => {
-            let k = kbps_of(*kbps);
-            let action = match k {
+            let action = match kbps_of(*kbps) {
                 Some(k) => format!("Re-encoded to Opus {k} kb/s"),
                 None => "Re-encoded to Opus".into(),
             };
-            let note = match origin {
-                Some(o) => format!("{action} ({})", o.text()),
+            let note = match reason {
+                Some(Reason::InForce(r)) => format!("{action} ({r})"),
+                Some(Reason::Pending(p)) => format!("{action}; {p}"),
                 None => action,
             };
-            (opus_fmt(*kbps).label(), note, true)
+            (opus_fmt(*kbps).label(), note)
         }
-        None => (String::new(), String::new(), false),
+        None if reencode_unreported => (String::new(), "Re-encoded (details to follow)".into()),
+        None => (String::new(), String::new()),
     };
-    (
-        block(BlockKind::Gateway, "Lyrion gateway", format, note),
-        reencoded,
-    )
+    block(BlockKind::Gateway, "Lyrion gateway", format, note)
 }
 
+/// The switch: the level in force is the one the stream heard was sent at, when the stream
+/// message shows it; else the origin's; else Original.
 fn switch_of(inputs: &QualityInputs) -> Switch {
-    let in_force = match (&inputs.origin, &inputs.sent) {
-        (Some(o), _) => o.level(),
-        (None, Some(Sent::Opus { level, .. })) => match level {
-            Some(OpusLevel::Low) => Level::Low,
-            _ => Level::High,
-        },
-        _ => Level::Original,
-    };
+    let heard = inputs
+        .sent
+        .as_ref()
+        .and_then(|s| sent_level(s, inputs.served.as_ref()));
+    let in_force = heard
+        .or(inputs.origin.as_ref().map(Origin::level))
+        .unwrap_or(Level::Original);
     Switch {
         levels: [Level::Original, Level::High, Level::Low],
         in_force,
-        origin_text: inputs.origin.as_ref().map(Origin::text).unwrap_or_default(),
+        origin_text: inputs
+            .origin
+            .as_ref()
+            .map(|o| Reason::of(o, heard).text())
+            .unwrap_or_default(),
         overridden: matches!(inputs.origin, Some(Origin::Override { .. })),
         seekable: inputs.seekable,
     }
@@ -863,7 +964,7 @@ pub fn describe(inputs: &QualityInputs) -> Diagram {
                 device_block(decoded.as_ref(), inputs.device.as_ref()),
             ];
             let badge = decoded.as_ref().map(|d| {
-                let v = verdict_of(file.as_ref(), d);
+                let v = verdict_of(file.as_ref(), None, d);
                 if v.is_lowered() {
                     blocks[0].lowers = true;
                 }
@@ -877,19 +978,19 @@ pub fn describe(inputs: &QualityInputs) -> Diagram {
             }
         }
         Player::Local => {
+            let sent = inputs.sent.as_ref();
             let served = inputs
                 .served
                 .as_ref()
-                .and_then(|s| served_fmt(s, file.as_ref()));
-            let sent = inputs.sent.as_ref();
+                .and_then(|s| served_fmt(s, file.as_ref(), sent, decoded.as_ref()));
             let mut blocks = vec![file_block(file.as_ref())];
             let lms = lms_changes(
                 file.as_ref(),
                 served.as_ref(),
                 inputs.served.as_ref().and_then(|s| s.gain_db),
             );
-            let lms_lowered = lms.as_ref().is_some_and(|(_, l)| *l);
-            if let Some((note, _)) = lms {
+            let has_lms = lms.is_some();
+            if let Some(note) = lms {
                 blocks.push(block(
                     BlockKind::Lms,
                     "LMS",
@@ -900,24 +1001,34 @@ pub fn describe(inputs: &QualityInputs) -> Diagram {
                     note,
                 ));
             }
-            let (gateway, reencoded) = gateway_block(
-                sent,
+            let served_lossless = served.as_ref().map(|s| s.lossless);
+            let source_lossless = file.as_ref().map(|f| f.lossless).or(served_lossless);
+            let served_lossy = served_lossless == Some(false);
+            // The gateway has said nothing yet, but a lossy stream is decoded from a lossless
+            // source that LMS did not convert: only the gateway can have re-encoded it.
+            let reencode_unreported = sent.is_none()
+                && decoded.as_ref().is_some_and(|d| !d.lossless)
+                && source_lossless == Some(true)
+                && !served_lossy;
+            let reencoded = matches!(sent, Some(Sent::Opus { .. })) || reencode_unreported;
+            blocks.push(gateway_block(
+                inputs,
                 served.as_ref().or(file.as_ref()),
-                inputs.origin.as_ref(),
-            );
-            blocks.push(gateway);
+                reencode_unreported,
+            ));
             blocks.push(device_block(decoded.as_ref(), inputs.device.as_ref()));
 
             let heard = heard_local(file.as_ref(), served.as_ref(), sent, decoded.as_ref());
             let badge = heard.map(|h| {
-                let v = verdict_of(file.as_ref(), &h);
+                let v = verdict_of(file.as_ref(), served_lossless, &h);
                 let file_lossy = file.as_ref().is_some_and(|f| !f.lossless);
-                let served_lossy = served.as_ref().is_some_and(|s| !s.lossless);
                 let lowering = match v {
                     _ if file_lossy => Some(BlockKind::File),
                     Verdict::Transcoded | Verdict::Lossy if served_lossy => Some(BlockKind::Lms),
                     Verdict::Transcoded | Verdict::Lossy if reencoded => Some(BlockKind::Gateway),
-                    Verdict::Lossless if lms_lowered && file.as_ref().is_some_and(Fmt::hi_res) => {
+                    // LMS's conversion took a Hi-Res file to a stream that is not (lowered
+                    // it, or converted DSD to 16/44.1).
+                    Verdict::Lossless if has_lms && file.as_ref().is_some_and(Fmt::hi_res) => {
                         Some(BlockKind::Lms)
                     }
                     _ => None,
@@ -1273,11 +1384,18 @@ mod tests {
                 .iter()
                 .find(|b| b.kind == BlockKind::Gateway)
                 .unwrap();
-            assert_eq!(gw.note, format!("Re-encoded to Opus 160 kb/s ({want})"));
             assert!(gw.lowers);
             let sw = d.switch.unwrap();
-            assert_eq!(sw.origin_text, want);
-            assert_eq!(sw.in_force, o.level());
+            // The stream heard is High: another level chosen applies from the next track.
+            if o.level() == Level::High {
+                assert_eq!(gw.note, format!("Re-encoded to Opus 160 kb/s ({want})"));
+                assert_eq!(sw.origin_text, want);
+            } else {
+                let pending = format!("{} applies from the next track", o.level().name());
+                assert_eq!(gw.note, format!("Re-encoded to Opus 160 kb/s; {pending}"));
+                assert_eq!(sw.origin_text, pending);
+            }
+            assert_eq!(sw.in_force, Level::High);
             assert_eq!(sw.overridden, matches!(o, Origin::Override { .. }));
         }
     }
@@ -1334,5 +1452,299 @@ mod tests {
             ..QualityInputs::default()
         };
         assert_eq!(describe(&i).blocks[1].title, "Kitnehc");
+        // Every other character that draws nothing: the soft hyphen, the combining grapheme
+        // joiner, the Arabic and Mongolian format marks, the Hangul fillers, the variation
+        // selectors, the interlinear annotation marks, the tag characters.
+        let hidden = [
+            '\u{00ad}',
+            '\u{034f}',
+            '\u{0600}',
+            '\u{061c}',
+            '\u{06dd}',
+            '\u{070f}',
+            '\u{0890}',
+            '\u{08e2}',
+            '\u{115f}',
+            '\u{1160}',
+            '\u{180e}',
+            '\u{2064}',
+            '\u{206a}',
+            '\u{206f}',
+            '\u{3164}',
+            '\u{fe00}',
+            '\u{fe0f}',
+            '\u{ffa0}',
+            '\u{fff9}',
+            '\u{fffb}',
+            '\u{110bd}',
+            '\u{13430}',
+            '\u{1bca0}',
+            '\u{1d173}',
+            '\u{e0000}',
+            '\u{e0001}',
+            '\u{e0041}',
+            '\u{e007f}',
+            '\u{e0100}',
+            '\u{e01ef}',
+        ];
+        for c in hidden {
+            assert!(is_invisible(c), "{:04x}", c as u32);
+            let i = QualityInputs {
+                player: Player::Remote {
+                    name: format!("{c}Kit{c}chen{c}"),
+                },
+                ..QualityInputs::default()
+            };
+            assert_eq!(describe(&i).blocks[1].title, "Kitchen", "{:04x}", c as u32);
+            // A name of nothing but them is no name.
+            let i = QualityInputs {
+                player: Player::Remote {
+                    name: c.to_string().repeat(3),
+                },
+                ..QualityInputs::default()
+            };
+            assert_eq!(describe(&i).blocks[1].title, "Player", "{:04x}", c as u32);
+        }
+        // Visible text is kept: letters, accents, emoji, CJK, the replacement character.
+        for c in [
+            'a',
+            '\u{e9}',
+            '\u{301}',
+            '\u{1f3b5}',
+            '\u{4e2d}',
+            '\u{fffd}',
+            '\u{ac00}',
+        ] {
+            assert!(!is_invisible(c), "{:04x}", c as u32);
+        }
+    }
+
+    fn device_note_of(name: &str, bit_perfect: bool, resampled: bool) -> String {
+        let mut i = local(
+            flac(44_100, 16),
+            served("flac", Some(44_100), Some(16), None),
+            Sent::Passthrough,
+            dec("FLAC", 44_100, Some(16), true),
+        );
+        i.device = Some(Device {
+            name: Some(name.into()),
+            rate: Some(48_000),
+            bit_perfect,
+            resampled,
+            ..Device::default()
+        });
+        describe(&i).blocks.last().unwrap().note.clone()
+    }
+
+    #[test]
+    fn device_names_keep_their_own_case() {
+        assert_eq!(
+            device_note_of("iBasso DC03", true, false),
+            "iBasso DC03, bit-perfect"
+        );
+        assert_eq!(
+            device_note_of("moto buds", false, true),
+            "moto buds, resampled to 48 kHz"
+        );
+        assert_eq!(device_note_of("moto buds", false, false), "moto buds");
+        // With no name, our own clause starts the note and is capitalised.
+        assert_eq!(
+            device_note_of(" \u{200b}", false, true),
+            "Resampled to 48 kHz"
+        );
+        assert_eq!(device_note_of("", true, false), "Bit-perfect");
+    }
+
+    fn gateway(d: &Diagram) -> &Block {
+        d.blocks
+            .iter()
+            .find(|b| b.kind == BlockKind::Gateway)
+            .unwrap()
+    }
+
+    #[test]
+    fn the_switch_shows_the_level_heard_and_a_pending_change() {
+        // Original heard, High chosen in Settings: the next track is at High.
+        let mut i = local(
+            flac(96_000, 24),
+            served("flac", Some(96_000), Some(24), None),
+            Sent::Passthrough,
+            dec("FLAC", 96_000, Some(24), true),
+        );
+        i.origin = Some(Origin::Setting {
+            network: Some(Network::Mobile),
+            level: Level::High,
+        });
+        let d = describe(&i);
+        assert_eq!(
+            gateway(&d).note,
+            "Passed through unchanged; High applies from the next track"
+        );
+        let sw = d.switch.unwrap();
+        assert_eq!(sw.in_force, Level::Original);
+        assert_eq!(sw.origin_text, "High applies from the next track");
+        assert_eq!(d.badge.unwrap().verdict, Verdict::HiRes);
+
+        // Opus Low heard, overridden to Original on an unseekable stream.
+        let mut i = local(
+            flac(96_000, 24),
+            served("flac", Some(96_000), Some(24), None),
+            opus(96, OpusLevel::Low),
+            dec("Opus", 48_000, None, false),
+        );
+        i.origin = Some(Origin::Override {
+            level: Level::Original,
+        });
+        let d = describe(&i);
+        assert_eq!(
+            gateway(&d).note,
+            "Re-encoded to Opus 96 kb/s; Original applies from the next track"
+        );
+        let sw = d.switch.unwrap();
+        assert_eq!(sw.in_force, Level::Low);
+        assert!(sw.overridden);
+        assert_eq!(sw.origin_text, "Original applies from the next track");
+
+        // The gateway re-encodes only FLAC: an MP3 passed through at High is at High.
+        let mut mp3 = local(
+            FileFormat {
+                kind: Some("mp3".into()),
+                kbps: Some(320),
+                ..FileFormat::default()
+            },
+            served("mp3", Some(44_100), None, None),
+            Sent::Passthrough,
+            dec("MP3", 44_100, None, false),
+        );
+        mp3.origin = Some(Origin::Setting {
+            network: Some(Network::Mobile),
+            level: Level::High,
+        });
+        let d = describe(&mp3);
+        assert_eq!(gateway(&d).note, "Passed through unchanged");
+        let sw = d.switch.unwrap();
+        assert_eq!(sw.in_force, Level::High);
+        assert_eq!(sw.origin_text, "High, on mobile data");
+
+        // Before the stream message, the origin is all there is.
+        i.sent = None;
+        i.served = None;
+        let sw = describe(&i).switch.unwrap();
+        assert_eq!(sw.in_force, Level::Original);
+        assert_eq!(sw.origin_text, "Original, overridden here");
+    }
+
+    #[test]
+    fn a_hi_res_file_lms_converts_to_cd_quality_tints_lms() {
+        let dsd = FileFormat {
+            kind: Some("dsf".into()),
+            rate: Some(2_822_400),
+            bits: Some(1),
+            ..FileFormat::default()
+        };
+        let d = describe(&local(
+            dsd,
+            served("flac", Some(44_100), Some(16), None),
+            Sent::Passthrough,
+            dec("FLAC", 44_100, Some(16), true),
+        ));
+        assert_eq!(d.badge.unwrap().text, "Lossless \u{b7} FLAC 16/44.1");
+        let lms = &d.blocks[1];
+        assert_eq!(lms.kind, BlockKind::Lms);
+        assert_eq!(lms.note, "Converted from DSD");
+        assert!(lms.lowers);
+        // Converted to a Hi-Res stream, the verdict is not lowered: no tint.
+        let dsd = FileFormat {
+            kind: Some("dsf".into()),
+            rate: Some(2_822_400),
+            bits: Some(1),
+            ..FileFormat::default()
+        };
+        let d = describe(&local(
+            dsd,
+            served("flac", Some(88_200), Some(24), None),
+            Sent::Passthrough,
+            dec("FLAC", 88_200, Some(24), true),
+        ));
+        assert!(d.blocks.iter().all(|b| !b.lowers));
+    }
+
+    #[test]
+    fn an_unknown_file_re_encoded_is_transcoded() {
+        let mut i = local(
+            flac(96_000, 24),
+            served("flac", Some(96_000), Some(24), None),
+            opus(160, OpusLevel::High),
+            dec("Opus", 48_000, None, false),
+        );
+        i.file = None;
+        let d = describe(&i);
+        let b = d.badge.as_ref().unwrap();
+        assert_eq!(b.text, "Transcoded \u{b7} Opus 160");
+        assert!(gateway(&d).lowers);
+        assert_eq!(d.blocks[0].note, "Format not reported");
+        // An MP3 stream from an unknown file is Lossy, and nothing is tinted.
+        i.served = Some(served("mp3", Some(44_100), None, None));
+        i.sent = Some(Sent::Passthrough);
+        i.decoded = Some(dec("MP3", 44_100, None, false));
+        let d = describe(&i);
+        assert_eq!(d.badge.unwrap().verdict, Verdict::Lossy);
+        assert!(d.blocks.iter().all(|b| !b.lowers));
+    }
+
+    #[test]
+    fn a_re_encode_before_the_stream_message_tints_the_gateway() {
+        let mut i = local(
+            flac(96_000, 24),
+            served("flac", None, None, None),
+            Sent::Passthrough,
+            dec("Opus", 48_000, None, false),
+        );
+        i.served = None;
+        i.sent = None;
+        let d = describe(&i);
+        assert_eq!(d.badge.as_ref().unwrap().verdict, Verdict::Transcoded);
+        let gw = gateway(&d);
+        assert_eq!(gw.note, "Re-encoded (details to follow)");
+        assert_eq!(gw.format, "");
+        assert!(gw.lowers);
+        // A lossless decode before the message says nothing of the gateway.
+        i.decoded = Some(dec("FLAC", 96_000, Some(24), true));
+        let d = describe(&i);
+        assert_eq!(gateway(&d).note, "");
+        assert!(d.blocks.iter().all(|b| !b.lowers));
+        // LMS's own MP3 (served known, sent not): LMS lowered it, not the gateway.
+        i.served = Some(served("mp3", Some(44_100), None, None));
+        i.decoded = Some(dec("MP3", 44_100, None, false));
+        let d = describe(&i);
+        assert_eq!(gateway(&d).note, "");
+        assert!(!gateway(&d).lowers);
+    }
+
+    #[test]
+    fn a_headerless_stream_takes_its_rate_and_depth_from_the_decoder() {
+        // A seek after LMS downsampled a 24/96 file: the message has no rate or depth, the
+        // decoder hears 16/44.1.
+        let d = describe(&local(
+            flac(96_000, 24),
+            served("flac", None, None, None),
+            Sent::Passthrough,
+            dec("FLAC", 44_100, Some(16), true),
+        ));
+        let lms = &d.blocks[1];
+        assert_eq!(lms.kind, BlockKind::Lms);
+        assert_eq!(lms.format, "FLAC 16/44.1");
+        assert_eq!(lms.note, "Lowered to 16-bit, 44.1 kHz");
+        assert!(lms.lowers);
+        assert_eq!(gateway(&d).format, "FLAC 16/44.1");
+        assert_eq!(d.badge.unwrap().text, "Lossless \u{b7} FLAC 16/44.1");
+        // Re-encoded, the decoder says nothing of LMS's stream: the file's numbers stand.
+        let d = describe(&local(
+            flac(96_000, 24),
+            served("flac", None, None, None),
+            opus(160, OpusLevel::High),
+            dec("Opus", 48_000, None, false),
+        ));
+        assert!(!kinds(&d).contains(&BlockKind::Lms));
     }
 }
