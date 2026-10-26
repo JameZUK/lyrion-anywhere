@@ -370,7 +370,7 @@ For a phone streaming over patchy mobile data (design: [`plans/wave3-design.md`]
 
 **Phase A, built:**
 - **Disk spool:** each live stream is written to an app-private file as fast as the network allows (at most 256 MiB per stream, 512 MiB in all; in memory beyond that) and fed to the decoder as it wants it.
-- **Read-ahead:** a track is reported ready (`STMd`) once it is fully received, so LMS sends the next one long before the current one ends. A gap in the signal is covered by the rest of the current track plus the whole next one. On by default, including on mobile data; switches in *Settings › Playback on this phone › Gaps in the signal*.
+- **Read-ahead:** a track is reported ready (`STMd`) once it is fully received, so LMS sends the next one long before the current one ends. A gap in the signal is covered by the rest of the current track plus the whole next one. On by default, including on mobile data; the switches are under *Gaps in the signal* in *Settings › About › Advanced*.
 - **Longer grace:** the phone asks for 600 s and the gateway grants up to `--max-resume-grace`; while detached, the phone keeps its status reports in an outbox that drops heartbeats first.
 - **After a gap longer than the grace:** the new session restarts the track heard last at the point last heard, after checking with LMS that it is still at that queue position and that nobody has started or paused anything since.
 - **The cushion:** the signal path and *Play on…* show how much listening is held on the phone.
