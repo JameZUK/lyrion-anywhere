@@ -2,6 +2,15 @@
 
 Dated entries, newest first.
 
+## 2026-10-26: an update from the zip could leave the settings page's script and template at the previous release (issue #29 follow-up); plugin 0.7.6
+
+The piCorePlayer reporter of [#29](https://github.com/JameZUK/lyrion-anywhere/issues/29) updated to 0.7.5 and saw no transcoding line in the Status panel: their browser was still running the 0.7.4 page script against the 0.7.5 plugin. The cause is in how the plugin and LMS cache the page.
+
+- **The page's script, stylesheet and QR-encoder URLs are stamped with a hash of the files' contents** (sixteen hex digits), no longer with their modification dates. The release zip dated every file 2020-01-01 for a reproducible build, LMS keeps that date when it installs a plugin, and LMS tells browsers to keep plugin files for a week; so the stamp was the same for every release installed from the zip, and a browser that had opened the page before went on using the old script until a forced reload or the week ran out. Installs copied from a checkout, whose files carry real dates, never showed it.
+- **Release zips are dated with the commit they are built from**, not a constant: the same for every build of a release, later for each release. LMS compiles page templates into its cache directory and keeps using the compiled copy while the template's date is unchanged (that cache is cleared only when LMS itself is updated), so the constant date would also have kept the previous release's page template after an update from the zip.
+- Nothing to do after updating: the 0.7.6 page refers to its script by the new stamp, so browsers fetch it. On 0.7.5, a forced reload of the settings page (Ctrl+F5, or Shift+reload on a Mac) gets the current script.
+- **Tests:** `03-settings.t`: the stamp is a hash and the same for the same files; two copies of the page files with identical 2020-01-01 dates but a changed script get different stamps (failed on the date stamp); a newer date alone changes nothing; the file names are part of the hash; a missing file still gives a stamp. PROTOCOL's note on the gateway's content ETags now says why a date is no proof of the same bytes.
+
 ## 2026-10-25: ffmpeg's own Opus encoder when libopus is missing; the settings page says what ffmpeg the gateway found (issue #29, piCorePlayer)
 
 A piCorePlayer user reported ([#29](https://github.com/JameZUK/lyrion-anywhere/issues/29)) that the plugin offered no MP3 or Opus downloads and never re-encoded streams, with the ffmpeg path set, and concluded ffmpeg wasn't detected. piCorePlayer's `pcp-ffmpeg.tcz` is a minimal static build: no libmp3lame, no libopus, only ffmpeg's own Opus encoder, which ffmpeg marks experimental. The gateway looked for libmp3lame and libopus by name and otherwise gave up, saying why only in its log.

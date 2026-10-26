@@ -309,13 +309,51 @@ is($params->{anywhere_csrf}, $token, 'also after saving');
 # that changes with the files (regression: an old cached script left sections blank).
 {
 	my $stamp = Plugins::LyrionAnywhere::Settings::assets_stamp();
-	like($stamp, qr/\A[1-9]\d*\z/, 'assets stamp is the files\' modification time');
+	like($stamp, qr/\A[0-9a-f]{16}\z/, 'assets stamp is a hash of the files');
+	is(Plugins::LyrionAnywhere::Settings::assets_stamp(), $stamp, 'the same files hash the same');
 	open my $fh, '<', 'Plugins/LyrionAnywhere/HTML/EN/plugins/LyrionAnywhere/settings/basic.html' or die;
 	my $html = do { local $/; <$fh> };
 	like($html, qr{anywhere\.js\?v=\[% anywhere_assets \| uri %\]}, 'script URL is stamped');
 	like($html, qr{anywhere\.css\?v=\[% anywhere_assets \| uri %\]}, 'stylesheet URL is stamped');
 	like($html, qr{qr\.js\?v=\[% anywhere_assets \| uri %\]}, 'QR encoder URL is stamped');
 	like($html, qr{qr\.js[^\n]*\n<script src="/plugins/LyrionAnywhere/settings/anywhere\.js}, 'the encoder loads before the page script');
+}
+
+# The stamp comes from the files' contents, never their dates (regression, issue #29): the
+# release zip dates every file 2020-01-01 and LMS keeps that date when it installs the
+# plugin, so a stamp made of dates was the same for every release, and browsers kept the
+# previous release's script for the week LMS lets them cache it.
+{
+	my @files = qw(anywhere.js qr.js anywhere.css basic.html);
+	my $jan2020 = 1577836800;
+	my $write = sub {
+		my ($dir, %content) = @_;
+		for my $f (@files) {
+			open my $fh, '>', "$dir/$f" or die "$dir/$f: $!";
+			print $fh $content{$f} // "// $f\n";
+			close $fh;
+			utime $jan2020, $jan2020, "$dir/$f" or die "utime: $!";
+		}
+	};
+	my ($same1, $same2, $changed) = map { tempdir(CLEANUP => 1) } 1 .. 3;
+	$write->($same1);
+	$write->($same2);
+	$write->($changed, 'anywhere.js' => "// anywhere.js\nfunction transcodingText() {}\n");
+	my $stamp = Plugins::LyrionAnywhere::Settings::assets_stamp($same1);
+	like($stamp, qr/\A[0-9a-f]{16}\z/, 'stamp is sixteen hex digits');
+	is(Plugins::LyrionAnywhere::Settings::assets_stamp($same2), $stamp, 'the same files give the same stamp wherever they are');
+	isnt(Plugins::LyrionAnywhere::Settings::assets_stamp($changed), $stamp,
+		'a changed script changes the stamp although every file is still dated 2020-01-01');
+	my $now = time;
+	utime $now, $now, "$same1/anywhere.js" or die "utime: $!";
+	is(Plugins::LyrionAnywhere::Settings::assets_stamp($same1), $stamp, 'a newer date alone changes nothing');
+	# Content moving between files changes it too, and a missing file is not fatal.
+	$write->($same2, 'qr.js' => "// anywhere.js\n", 'anywhere.js' => "// qr.js\n");
+	isnt(Plugins::LyrionAnywhere::Settings::assets_stamp($same2), $stamp, 'the file names are part of the hash');
+	unlink "$same1/qr.js" or die "unlink: $!";
+	my $missing = Plugins::LyrionAnywhere::Settings::assets_stamp($same1);
+	like($missing, qr/\A[0-9a-f]{16}\z/, 'a missing file still gives a stamp');
+	isnt($missing, $stamp, 'and a different one');
 }
 
 # "Add a device": the page gets the public URL for the QR code's link, only as an escaped

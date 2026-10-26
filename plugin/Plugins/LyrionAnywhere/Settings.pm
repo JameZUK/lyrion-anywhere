@@ -9,6 +9,7 @@ use strict;
 use warnings;
 use base qw(Slim::Web::Settings);
 
+use Digest::SHA ();
 use File::Basename ();
 use File::Spec;
 use Slim::Utils::Log;
@@ -168,15 +169,25 @@ sub clean {
 	return (\%out, \@errors, \@notices, \%keep);
 }
 
-# The latest modification time of the settings page's own files, as digits only.
+# A stamp for the settings page's own files, put in their URLs so browsers fetch them again
+# when they change (LMS tells browsers to keep plugin files for a week). It is a hash of
+# their contents, never a date: the release zip dates every file the same, LMS keeps that
+# date when it installs the plugin, and a stamp made of dates left browsers running the
+# previous release's script against the new plugin (issue #29). Sixteen hex digits.
 sub assets_stamp {
-	my $dir = File::Spec->catdir(File::Basename::dirname(__FILE__), 'HTML', 'EN', 'plugins', 'LyrionAnywhere', 'settings');
-	my $latest = 0;
+	my $dir = shift // File::Spec->catdir(File::Basename::dirname(__FILE__), 'HTML', 'EN', 'plugins', 'LyrionAnywhere', 'settings');
+	my $sha = Digest::SHA->new(256);
 	for my $f (qw(anywhere.js qr.js anywhere.css basic.html)) {
-		my $m = (stat(File::Spec->catfile($dir, $f)))[9] // 0;
-		$latest = $m if $m > $latest;
+		$sha->add("$f\n");
+		if (open my $fh, '<:raw', File::Spec->catfile($dir, $f)) {
+			$sha->addfile($fh);
+			close $fh;
+		} else {
+			$sha->add("(missing)\n");
+		}
+		$sha->add("\n");
 	}
-	return $latest =~ /\A\d+\z/ ? $latest : 0;
+	return substr($sha->hexdigest, 0, 16);
 }
 
 sub handler {

@@ -38,16 +38,22 @@ cp -R dist/build/web dist/LyrionAnywhere/web
   | xargs sha256sum > SHA256SUMS)
 
 ZIP=LyrionAnywhere-$VERSION.zip
-# Sorted entries and fixed timestamps; Unix modes kept so the gateways stay executable.
-python3 - "dist/LyrionAnywhere" "dist/$ZIP" <<'PY'
-import os, sys, zipfile
-src, out = sys.argv[1], sys.argv[2]
+# Sorted entries, Unix modes kept so the gateways stay executable, and every member dated
+# with the commit being built (UTC): the same for every build of a release, and later for
+# each release. Never a constant: LMS keeps the dates when it installs the plugin and goes
+# on using its compiled copy of a page template while the template's date is unchanged, so
+# a constant date hid changes to the settings page from updates (issue #29).
+ZIP_DATE=$(git log -1 --format=%ct)
+python3 - "dist/LyrionAnywhere" "dist/$ZIP" "$ZIP_DATE" <<'PY'
+import os, sys, time, zipfile
+src, out, epoch = sys.argv[1], sys.argv[2], int(sys.argv[3])
+stamp = time.gmtime(max(epoch, 315532800))[:6]   # zip dates start in 1980
 with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
     for root, dirs, files in os.walk(src):
         dirs.sort()
         for name in sorted(files):
             path = os.path.join(root, name)
-            info = zipfile.ZipInfo(os.path.relpath(path, src), date_time=(2020, 1, 1, 0, 0, 0))
+            info = zipfile.ZipInfo(os.path.relpath(path, src), date_time=stamp)
             info.external_attr = (os.stat(path).st_mode & 0o777 | 0o100000) << 16
             info.compress_type = zipfile.ZIP_DEFLATED
             with open(path, "rb") as f:
