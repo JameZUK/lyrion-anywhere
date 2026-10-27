@@ -1471,6 +1471,85 @@ async fn read_ahead_fetches_the_next_track_long_before_the_current_one_ends() {
     r.player.stop();
 }
 
+/// Regression (#30, 2026-10-27): a phone with the rest of this track and the whole of the
+/// next on it showed "1 min buffered ahead", counting down to nothing at each track's end.
+/// Tracks under the core's input high-water mark (every MP3 or Opus track of ordinary
+/// length) go into the core whole: the current track's input then ends, and the next track
+/// is fed into the core's queued input rather than waiting in its spool. The cushion must
+/// still count those bytes, and must not take them as decoded when it works out the byte
+/// rate. Before and after the boundary, the figure is what is really left to hear.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_cushion_counts_the_next_track_once_the_decoder_holds_it() {
+    let mut r = rig_opts(RigOpts {
+        spool: true,
+        ready_after_ms: Some(1000),
+        pace: Some(4.0),
+        ..RigOpts::default()
+    })
+    .await;
+    // Track 1 is far longer than the core decodes ahead (`OUTPUT_TARGET_SECS`), so for most
+    // of it track 2 waits in the core's queued slot, as a four-minute MP3's next track does.
+    let rate = 22_050usize;
+    let t1_s = 60usize;
+    let t2_s = 30usize;
+    let t1 = flac::encode(rate as u32, 16, &flac::noise(rate * t1_s, 16, 61));
+    let t2 = flac::encode(rate as u32, 16, &flac::noise(rate * t2_s, 16, 62));
+    assert!(
+        t1.len() < anywhere_core::player::INPUT_HIGH_WATER
+            && t2.len() < anywhere_core::player::INPUT_HIGH_WATER,
+        "each track fits in the core's input whole: {} and {} bytes",
+        t1.len(),
+        t2.len()
+    );
+    {
+        let mut s = r.h.lms.streams.lock().unwrap();
+        s.push_back(StreamPlan::whole(t1));
+        s.push_back(StreamPlan::whole(t2));
+    }
+    let mac = r.mac;
+    r.send(audg_full()).await;
+    r.send(strm_s(b'f', &mac)).await;
+    r.wait_event("STMd", 1, 20).await;
+    r.send(strm_s(b'f', &mac)).await;
+    r.wait_event("DSCO", 2, 20).await;
+    // Both tracks whole in the core (their spools fed and gone), with enough heard for a
+    // byte rate.
+    let cache = r.cache.clone().unwrap();
+    wait_for("both spools fed to the core", move || {
+        spool_files(&cache).is_empty()
+    })
+    .await;
+    let pulled = r.pulled.clone();
+    wait_for("two seconds heard", move || pulled.frames() >= rate * 2).await;
+    let heard = r.pulled.frames();
+    assert!(heard < rate * t1_s, "still in track 1: {heard} frames");
+    let st = r.player.status();
+    let left_ms = ((rate * (t1_s + t2_s) - heard) * 1000 / rate) as u64;
+    assert!(
+        st.cushion_ms >= left_ms * 85 / 100 && st.cushion_ms <= left_ms * 115 / 100,
+        "the rest of track 1 and all of track 2 are on the phone: cushion {} ms, about {left_ms} ms left to hear",
+        st.cushion_ms
+    );
+    // Into track 2, the figure is the rest of it: the hand-over did not inflate the rate.
+    r.wait_event("STMs", 2, 30).await;
+    let pulled = r.pulled.clone();
+    wait_for("five seconds of track 2 heard", move || {
+        pulled.frames() >= rate * (t1_s + 5)
+    })
+    .await;
+    let heard = r.pulled.frames();
+    let st = r.player.status();
+    let left_ms = ((rate * (t1_s + t2_s) - heard) * 1000 / rate) as u64;
+    assert!(
+        st.cushion_ms >= left_ms * 85 / 100 && st.cushion_ms <= left_ms * 115 / 100,
+        "the rest of track 2 is on the phone: cushion {} ms, about {left_ms} ms left to hear",
+        st.cushion_ms
+    );
+    r.wait_event("STMu", 1, 60).await;
+    r.stop_pulling();
+    r.player.stop();
+}
+
 /// The phone loses its network for 90 s, five seconds before a track boundary, with a
 /// grace of 120 s: the music carries on from the spool, bit for bit, across the boundary;
 /// the session resumes (no new HELO, LMS never sees the player leave), and LMS hears about

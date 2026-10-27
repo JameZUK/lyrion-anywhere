@@ -196,6 +196,10 @@ struct Track {
     bytes_received: u64,
     /// Bytes handed to the decoder ([`Player::on_stream_data`]).
     bytes_fed: u64,
+    /// Frames the decoder has produced from them, and their rate: with the bytes it has
+    /// consumed, the track's byte rate ([`Player::decoded_rate`]).
+    decoded_frames: u64,
+    decoded_rate: u32,
     replay_gain: f32,
     /// The network stream has ended (`DSCO` sent), or was never opened: nothing to fetch.
     stream_ended: bool,
@@ -256,6 +260,10 @@ pub struct Status {
     pub output: OutputState,
     pub elapsed_ms: u64,
     pub buffered_ms: u64,
+    /// Stream bytes handed to the player and not yet decoded: the track being decoded and,
+    /// in read-ahead mode, the queued next track (which the host feeds whole into the
+    /// player once the current track's input has ended). A host's "buffered ahead" figure
+    /// counts them with what it still spools (see [`Player::decoded_rate`]).
     pub input_bytes: usize,
     pub sample_rate: u32,
     pub volume: (f32, f32),
@@ -1056,12 +1064,36 @@ impl Player {
         }
     }
 
+    /// The byte rate of the track being decoded, in bytes per millisecond of audio: the
+    /// stream bytes its decoder has consumed past the headers (tags and embedded artwork
+    /// left out) over the audio they gave, once a second of it has been decoded (`None`
+    /// before that, and between tracks). With the bytes still undecoded
+    /// ([`Status::input_bytes`], and whatever the host spools), it says how much listening
+    /// is held ahead. Per track, so a skipped track's bytes or an earlier track at another
+    /// bitrate never skew it.
+    pub fn decoded_rate(&self) -> Option<f64> {
+        let t = self.track.as_ref()?;
+        if t.decoded_rate == 0 {
+            return None;
+        }
+        let decoded_ms = t.decoded_frames as f64 * 1000.0 / f64::from(t.decoded_rate);
+        let consumed = t
+            .bytes_fed
+            .saturating_sub(t.input.unread() as u64)
+            .saturating_sub(t.decoder.audio_from());
+        (decoded_ms >= 1000.0 && consumed > 0).then(|| consumed as f64 / decoded_ms)
+    }
+
     pub fn status(&self) -> Status {
         Status {
             output: self.output,
             elapsed_ms: self.elapsed_ms(),
             buffered_ms: self.buffered_ms(),
-            input_bytes: self.track.as_ref().map_or(0, |t| t.input.unread()),
+            input_bytes: [self.track.as_ref(), self.next.as_ref()]
+                .into_iter()
+                .flatten()
+                .map(|t| t.input.unread())
+                .sum(),
             sample_rate: self.output_rate().unwrap_or(0),
             volume: self.gain,
             name: self.cfg.name.clone(),
@@ -1200,6 +1232,8 @@ impl Player {
             threshold: s.threshold as usize * 1024,
             bytes_received: 0,
             bytes_fed: 0,
+            decoded_frames: 0,
+            decoded_rate: 0,
             replay_gain: if s.replay_gain == 0 {
                 1.0
             } else {
@@ -1377,7 +1411,9 @@ impl Player {
         }
         let (pcm, segments, seq, rg) = (&mut self.pcm, &mut self.segments, t.seq, t.replay_gain);
         let source = t.decoder.source_format().copied();
+        let mut produced = (0u64, 0u32);
         let status = t.decoder.work(PACKETS_PER_TICK, &mut |rate, samples| {
+            produced = (produced.0 + (samples.len() / 2) as u64, rate);
             let need_new = match segments.back() {
                 Some(s) => s.seq != seq || s.rate != rate,
                 None => true,
@@ -1407,6 +1443,10 @@ impl Player {
             }
             seg.frames += (samples.len() / 2) as u64;
         });
+        if produced.0 > 0 {
+            t.decoded_frames += produced.0;
+            t.decoded_rate = produced.1;
+        }
         // The headers are probed inside `work`: record the format on this track's segments.
         if let Some(f) = t.decoder.source_format().copied() {
             for s in self.segments.iter_mut().filter(|s| s.seq == seq) {
@@ -2884,6 +2924,88 @@ mod tests {
         assert_eq!(count(&events(&p.take_actions()), "STMd"), 1);
         play_ms(&mut p, 3100, &mut now);
         assert_eq!(count(&events(&p.take_actions()), "STMd"), 0);
+    }
+
+    /// Regression (#30): a track small enough to fit the input whole has its input end at
+    /// once, so the host feeds the queued next track whole into the queued slot. The status
+    /// counts that track's undecoded bytes too, and the byte rate is the decoding track's
+    /// own: a "buffered ahead" figure that saw only the current track's input, and took the
+    /// session's every byte as decoded, showed a third of what was really held.
+    #[test]
+    fn status_counts_the_queued_tracks_input_and_the_byte_rate_is_the_tracks_own() {
+        let mut p = read_ahead();
+        let mut now = 0;
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        assert_eq!(p.decoded_rate(), None, "nothing decoded yet");
+        let t1 = wav(44100, 44100 * 15);
+        p.on_stream_data(&t1, now);
+        p.on_stream_end(now);
+        play_ms(&mut p, 2100, &mut now);
+        p.take_actions();
+        let st = p.status();
+        assert!(
+            st.input_bytes > 0 && st.input_bytes < t1.len(),
+            "the track's bytes beyond what is decoded ahead: {}",
+            st.input_bytes
+        );
+        let rate = p.decoded_rate().expect("a second decoded");
+        assert!(
+            (rate - 176.4).abs() < 176.4 * 0.02,
+            "CD-quality PCM is 176.4 bytes a millisecond: {rate}"
+        );
+
+        // The next track, queued and fed whole, counts; the rate is still track 1's.
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        p.take_actions();
+        let before = p.status().input_bytes;
+        let t2 = wav(44100, 44100 * 5);
+        assert!(p.wants_stream_data(), "the queued track takes bytes");
+        p.on_stream_data(&t2, now);
+        p.on_stream_end(now);
+        assert_eq!(p.status().input_bytes, before + t2.len());
+        assert_eq!(p.decoded_rate(), Some(rate));
+
+        // Past the hand-over, the rate is track 2's own, from its bytes and its audio.
+        play_ms(&mut p, 14_000, &mut now);
+        assert_eq!(p.status().input_bytes, 0, "both decoded");
+        let rate2 = p.decoded_rate().expect("a second of track 2 decoded");
+        assert!(
+            (rate2 - 176.4).abs() < 176.4 * 0.02,
+            "track 2's rate from its own bytes: {rate2}"
+        );
+        play_ms(&mut p, 5000, &mut now);
+        let ev = events(&p.take_actions());
+        assert_eq!(count(&ev, "STMu"), 1, "{ev:?}");
+    }
+
+    /// The byte rate leaves out what came before the audio: a tag with a megabyte of
+    /// artwork is read by the probe and gives no audio, and would otherwise make the start
+    /// of a track look far denser than it is (a cushion a third short for its first minute).
+    #[test]
+    fn the_byte_rate_leaves_out_tags_and_artwork_ahead_of_the_audio() {
+        let mut p = read_ahead();
+        let mut now = 0;
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        // A JUNK chunk of 1 MiB between the format and the data, as artwork would be.
+        let mut t = wav(44100, 44100 * 20);
+        let junk = 1usize << 20;
+        let mut chunk = b"JUNK".to_vec();
+        chunk.extend_from_slice(&(junk as u32).to_le_bytes());
+        chunk.resize(8 + junk, 0);
+        t.splice(36..36, chunk);
+        let riff_len = (t.len() - 8) as u32;
+        t[4..8].copy_from_slice(&riff_len.to_le_bytes());
+        p.on_stream_data(&t, now);
+        p.on_stream_end(now);
+        play_ms(&mut p, 2100, &mut now);
+        assert_eq!(p.status().output, OutputState::Playing);
+        let rate = p.decoded_rate().expect("a second decoded");
+        // Without the junk left out, about 260: the reader's first read past the headers
+        // is the only give.
+        assert!(
+            (rate - 176.4).abs() < 176.4 * 0.05,
+            "the audio's own rate, not the junk's: {rate}"
+        );
     }
 
     /// The next `strm s` comes while the current track is still decoding: it is queued and

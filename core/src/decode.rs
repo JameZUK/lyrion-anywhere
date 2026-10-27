@@ -73,6 +73,11 @@ impl InputBuffer {
         (b.base + b.data.len() as u64 - b.pos) as usize
     }
 
+    /// The demuxer's read position, in bytes from the stream's first.
+    pub fn position(&self) -> u64 {
+        self.0.lock().unwrap().pos
+    }
+
     fn rewind(&self) {
         let mut b = self.0.lock().unwrap();
         b.pos = b.base;
@@ -561,6 +566,8 @@ pub struct StreamDecoder {
     rate: Option<u32>,
     /// Frames the reader failed to parse in a row.
     demux_errors: u32,
+    /// The demuxer's position once the headers were probed ([`StreamDecoder::audio_from`]).
+    audio_from: u64,
 }
 
 /// The error [`StreamDecoder::work`] reports when it caught a panic in a third-party demuxer
@@ -593,7 +600,14 @@ impl StreamDecoder {
             synthesised: None,
             rate: None,
             demux_errors: 0,
+            audio_from: 0,
         }
+    }
+
+    /// Where the audio begins, in bytes from the stream's first: what the probe read
+    /// before it (tags, embedded artwork, headers). Zero until the headers are probed.
+    pub fn audio_from(&self) -> u64 {
+        self.audio_from
     }
 
     /// An earlier stream's (rate, channels, bits): what a made FLAC header falls back on
@@ -820,6 +834,7 @@ impl StreamDecoder {
                         self.rate = params.sample_rate;
                         self.source = Some(source_format(&params, reader.as_mut()));
                     }
+                    self.audio_from = self.input.position();
                     self.input.release();
                     self.state = State::Decoding {
                         reader,

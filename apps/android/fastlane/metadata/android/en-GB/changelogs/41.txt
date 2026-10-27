@@ -1,0 +1,1 @@
+The "buffered ahead" figure now counts the next track once it is on the phone and works the time out from the track's own byte rate: it used to sit at about a minute with the whole next track already fetched. Needs plugin 0.7.3 or later, as 1.17.0 did.

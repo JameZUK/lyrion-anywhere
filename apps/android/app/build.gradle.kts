@@ -28,8 +28,8 @@ android {
         applicationId = "io.github.jamezuk.lyrionanywhere"
         minSdk = 29
         targetSdk = 36
-        versionCode = 40
-        versionName = "1.17.1"
+        versionCode = 41
+        versionName = "1.17.2"
         // Only the ABIs the Rust layer is built for (above). Per-ABI APKs filter through
         // `splits` instead (AGP refuses both at once); the packaging rule below keeps the
         // universal APK to the same ABIs.

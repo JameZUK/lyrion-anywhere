@@ -16,18 +16,28 @@
 //! own files pass through untouched: no transcoding). Two tracks of [`MIN_TRACK_S`] or more
 //! are loaded on the test player and it plays.
 //!
-//! **What is measured** from the engine's status (`cushion_ms`: the decoded audio plus what
-//! is spooled, at the stream's byte rate), every half second from the start of play:
+//! **What is measured** from the engine's status (`cushion_ms`: the decoded audio plus
+//! every byte not yet decoded, spooled or inside the core, at the byte rate of the track
+//! being decoded), every half second from the start of play:
 //! 1. when the rest of track 1 is on the phone (`elapsed + cushion` reaches the track's
 //!    length, within [`RATE_SLACK`] for the byte-rate estimate);
 //! 2. when the next track is being fetched (the cushion exceeds the rest of track 1 by
-//!    [`NEXT_MARGIN_MS`]), which can only happen once LMS has sent it on the engine's early
-//!    `STMd` (after [`anywhere_core::player::DEFAULT_READY_AFTER_MS`] heard);
-//! 3. when the whole of track 2 is on the phone too (its spool file holds about the audio
-//!    bytes LMS reports for it: the cushion's byte rate is track 1's, so it can't say).
+//!    [`NEXT_FRACTION`] of track 2), which can only happen once LMS has sent it on the
+//!    engine's early `STMd` (after [`anywhere_core::player::DEFAULT_READY_AFTER_MS`]
+//!    heard);
+//! 3. when the whole of track 2 is on the phone too: its spool file holds about the audio
+//!    bytes LMS reports for it, or the cushion counts them (track 2's bytes at track 1's
+//!    rate, within [`RATE_SLACK`]).
 //!
-//! Each must happen within its bound ([`NEXT_WITHIN_S`], [`FULL_WITHIN_S`]); the samples
-//! are printed on failure or with `--nocapture`.
+//! Each must happen within its bound ([`NEXT_WITHIN_S`], [`FULL_WITHIN_S`]), and the
+//! figure at the end is the rest of track 1 plus track 2 at track 1's rate, within the
+//! slack (#30: it left out the next track once the core held it); the samples are printed
+//! on failure or with `--nocapture`.
+//!
+//! Tracks whose file fits the core's input whole
+//! ([`anywhere_core::player::INPUT_HIGH_WATER`]) are preferred: the usual MP3 or Opus
+//! track, whose next track the core holds in its queued slot rather than the spool, which
+//! is where #30 hid. Without two such tracks, any two long enough.
 //!
 //! **Clean-up**, also on failure: stop, clear the test player's queue, put its name back,
 //! stop the engine and delete the spool folder. No other player is touched: the test
@@ -42,6 +52,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use anywhere_core::player::INPUT_HIGH_WATER;
 use anywhere_core::proto::{format_mac, parse_mac};
 use anywhere_gateway::accounts::{Accounts, Role};
 use anywhere_gateway::{Config, Gateway, router};
@@ -56,13 +67,17 @@ use serde_json::{Value, json};
 /// Tracks shorter than this are not used (the check needs time to show the next track
 /// arriving well before the end).
 const MIN_TRACK_S: f64 = 240.0;
-/// The cushion is bytes at the byte rate seen so far and a FLAC track's rate varies, so
-/// "the rest of track 1" is this fraction of its length or more; likewise track 2's spool
-/// against LMS's average bitrate over its length.
+/// The cushion is bytes at the byte rate of the track so far, and a FLAC or VBR track's
+/// rate varies, so "the rest of track 1" is this fraction of its length or more; likewise
+/// track 2's spool against LMS's average bitrate over its length, and the figure at the
+/// end against both tracks.
 const RATE_SLACK: f64 = 0.85;
+/// The figure at the end may exceed what LMS's averages give by this much: early in a VBR
+/// track the rate so far can sit well under the track's average (seen: 8% on an MP3).
+const RATE_DRIFT: f64 = 1.35;
 /// The next track counts as being fetched once the cushion exceeds the rest of the current
-/// one by this much.
-const NEXT_MARGIN_MS: u64 = 30_000;
+/// one by this fraction of track 2 (at track 1's rate): a jump no drift of the rate gives.
+const NEXT_FRACTION: f64 = 0.5;
 /// The next track must be arriving within this long of play starting: 20 s heard (the
 /// default) plus the fetch of the rest of track 1 and the first of track 2.
 const NEXT_WITHIN_S: u64 = 90;
@@ -434,12 +449,14 @@ fn spool_files(root: &std::path::Path) -> Vec<(u64, u64)> {
     out
 }
 
-/// What LMS says of a track: its length (ms) and about how many bytes of audio it holds
-/// (its average bitrate over its length; the file's size when the bitrate isn't given).
+/// What LMS says of a track: its length (ms), about how many bytes of audio it holds (its
+/// average bitrate over its length; the file's size when the bitrate isn't given) and the
+/// file's size (0 when LMS doesn't say).
 struct Track {
     id: String,
     duration_ms: u64,
     audio_bytes: u64,
+    file_bytes: u64,
 }
 
 fn track_of(t: &Value) -> Option<Track> {
@@ -447,7 +464,12 @@ fn track_of(t: &Value) -> Option<Track> {
     let id = t
         .get("id")
         .map(|i| i.to_string().trim_matches('"').to_string())?;
-    let filesize = t.get("filesize").and_then(Value::as_u64).unwrap_or(0);
+    // A number, or a string of digits.
+    let filesize = match t.get("filesize") {
+        Some(Value::Number(n)) => n.as_u64().unwrap_or(0),
+        Some(Value::String(s)) => s.trim().parse().unwrap_or(0),
+        _ => 0,
+    };
     // "1,017kbps" or a number (bps).
     let bps = match t.get("bitrate") {
         Some(Value::Number(n)) => n.as_f64(),
@@ -465,6 +487,7 @@ fn track_of(t: &Value) -> Option<Track> {
         id,
         duration_ms: (d * 1000.0) as u64,
         audio_bytes,
+        file_bytes: filesize,
     })
 }
 
@@ -476,6 +499,10 @@ struct Outcome {
     /// … when track 2 was on the phone whole too.
     track2_whole_s: Option<f64>,
     samples: Vec<Sample>,
+    /// Track 1's length, and track 2 at track 1's byte rate (ms): what the cushion should
+    /// show at the end, less what has been heard of track 1.
+    d1_ms: u64,
+    expect2_ms: f64,
 }
 
 /// Load the two tracks, play, and sample the engine until both tracks are on the phone or
@@ -489,27 +516,49 @@ async fn run(env: &LiveEnv, e: &Engine) -> Outcome {
     rpc_async(env, tm, &["mixer", "volume", "0"]).await;
 
     let titles = rpc_async(env, "", &["titles", "0", "300", "tags:dfr"]).await;
-    let picked: Vec<Track> = titles
+    let long: Vec<Track> = titles
         .get("titles_loop")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(track_of)
         .filter(|t| t.duration_ms >= (MIN_TRACK_S * 1000.0) as u64)
-        .take(2)
         .collect();
+    // The reporter's case first: tracks the core takes in whole (see the module doc).
+    let fits = |t: &&Track| t.file_bytes > 0 && t.file_bytes < INPUT_HIGH_WATER as u64;
+    let small: Vec<&Track> = long.iter().filter(fits).take(2).collect();
+    let picked: Vec<&Track> = if small.len() == 2 {
+        small
+    } else {
+        long.iter().take(2).collect()
+    };
     assert!(
         picked.len() == 2,
         "the library needs two tracks of {MIN_TRACK_S} s or more"
     );
     let (d1, d2) = (picked[0].duration_ms, picked[1].duration_ms);
-    let bytes2 = picked[1].audio_bytes;
+    let (bytes1, bytes2) = (picked[0].audio_bytes, picked[1].audio_bytes);
+    // Track 2 at track 1's average byte rate: what the cushion makes of its bytes while
+    // track 1 is the track being decoded.
+    let expect2_ms = if bytes1 > 0 {
+        bytes2 as f64 * d1 as f64 / bytes1 as f64
+    } else {
+        d2 as f64
+    };
     eprintln!(
-        "live_read_ahead: track 1 is {:.0} s ({} bytes of audio), track 2 is {:.0} s ({} bytes)",
+        "live_read_ahead: track 1 is {:.0} s ({} bytes of audio, file {} bytes), track 2 is \
+         {:.0} s ({} bytes, file {} bytes){}",
         d1 as f64 / 1000.0,
-        picked[0].audio_bytes,
+        bytes1,
+        picked[0].file_bytes,
         d2 as f64 / 1000.0,
-        bytes2
+        bytes2,
+        picked[1].file_bytes,
+        if picked.iter().all(fits) {
+            "; both fit the core's input whole"
+        } else {
+            ""
+        }
     );
     let tracks = format!("track_id:{},{}", picked[0].id, picked[1].id);
     rpc_async(env, tm, &["playlistcontrol", "cmd:load", &tracks]).await;
@@ -524,6 +573,8 @@ async fn run(env: &LiveEnv, e: &Engine) -> Outcome {
         next_fetched_s: None,
         track2_whole_s: None,
         samples: Vec::new(),
+        d1_ms: d1,
+        expect2_ms,
     };
     while start.elapsed() < Duration::from_secs(FULL_WITHIN_S) {
         let s = e.player.status();
@@ -543,19 +594,21 @@ async fn run(env: &LiveEnv, e: &Engine) -> Outcome {
         {
             out.track1_whole_s = Some(secs);
         }
-        if out.next_fetched_s.is_none() && s.cushion_ms >= rest1 + NEXT_MARGIN_MS {
+        if out.next_fetched_s.is_none()
+            && s.cushion_ms as f64 >= rest1 as f64 + expect2_ms * NEXT_FRACTION
+        {
             out.next_fetched_s = Some(secs);
         }
         // Track 2 is whole once its spool (the newer stream's file) holds about the
-        // track's audio bytes: the byte-rate estimate behind the cushion is track 1's, so
-        // it can't judge track 2.
-        if out.track2_whole_s.is_none()
-            && sample.spools.len() >= 2
+        // track's audio bytes, or once the cushion counts them: a track the core takes in
+        // whole leaves its spool within a second of arriving.
+        let spooled_whole = sample.spools.len() >= 2
             && sample
                 .spools
                 .last()
-                .is_some_and(|&(_, len)| len >= (bytes2 as f64 * RATE_SLACK) as u64)
-        {
+                .is_some_and(|&(_, len)| len >= (bytes2 as f64 * RATE_SLACK) as u64);
+        let counted_whole = s.cushion_ms as f64 >= rest1 as f64 + expect2_ms * RATE_SLACK;
+        if out.track2_whole_s.is_none() && (spooled_whole || counted_whole) {
             out.track2_whole_s = Some(secs);
         }
         out.samples.push(sample);
@@ -675,4 +728,16 @@ async fn read_ahead_puts_the_next_track_on_the_phone_long_before_the_current_one
         .track2_whole_s
         .unwrap_or_else(|| panic!("track 2 never arrived in full within {FULL_WITHIN_S} s"));
     assert!(whole2 <= FULL_WITHIN_S as f64);
+    // The figure itself (#30): with both tracks on the phone, "buffered ahead" is the rest
+    // of track 1 plus track 2 at track 1's rate, within the slack either way.
+    let last = out.samples.last().expect("a sample");
+    let expect = out.d1_ms.saturating_sub(last.elapsed_ms) as f64 + out.expect2_ms;
+    let shown = last.cushion_ms as f64;
+    assert!(
+        shown >= expect * RATE_SLACK && shown <= expect * RATE_DRIFT,
+        "the cushion counts the rest of track 1 and all of track 2: {:.1} s shown, about \
+         {:.1} s held",
+        shown / 1000.0,
+        expect / 1000.0
+    );
 }

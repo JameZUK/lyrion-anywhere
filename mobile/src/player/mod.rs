@@ -151,8 +151,9 @@ pub struct LocalPlayerStatus {
     pub held: bool,
     pub last_error: Option<String>,
     /// About how much listening is on the phone ahead of what is heard (ms): the decoded
-    /// audio plus what is spooled, at the stream's byte rate. What a gap in the signal can
-    /// last without the music stopping.
+    /// audio plus every byte not yet decoded (spooled, or inside the core for this track
+    /// and the queued next one), at the byte rate of the track being decoded. What a gap
+    /// in the signal can last without the music stopping.
     #[uniffi(default = 0)]
     pub cushion_ms: u64,
     /// How long after its connection drops the player keeps resuming the same LMS session

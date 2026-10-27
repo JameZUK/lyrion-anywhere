@@ -2,6 +2,15 @@
 
 Dated entries, newest first.
 
+## 2026-10-27: "buffered ahead" left out the next track once the core held it (issue #30); Android 1.17.2
+
+The reporter of [#29](https://github.com/JameZUK/lyrion-anywhere/issues/29) opened [#30](https://github.com/JameZUK/lyrion-anywhere/issues/30): with read-ahead on and a fast link, the phone's *buffered ahead* figure sat at about a minute, showed four or five minutes as a track began and fell at once, and counted down to nothing at each track's end, although with mobile data off the music carried on to the end of the following track. Read-ahead was working; the figure was wrong.
+
+- **Cause.** The core takes up to 8 MiB of a track's stream into its own input, so a track under that (an ordinary MP3 or Opus track) goes in whole and its input ends at once; the next track is then fed whole into the core's queued slot rather than waiting in its spool. The figure counted the spools and the core's input for the current track only, so the whole next track vanished from it; and it took every byte fed to the core as decoded when working out the byte rate, so the rest of the current track was scaled down as well (29 s shown for 88 s held, in the test). FLAC tracks of 40 MB never showed it, which is why the live check of 2026-10-26 looked right.
+- **Fix.** The core's status counts the undecoded input of both tracks, and gives the byte rate of the track being decoded from its own bytes past the headers (tags and embedded artwork left out) over the audio they gave; the engine keeps the last such rate across the hand-over to the next track. The session-wide total, which a skipped track or an earlier track at another bitrate skewed, is gone. The web's *Downloaded, not yet decoded* diagnostic counts the queued track too.
+- **Tests:** core: the status counts the queued track's input and the rate is per track; a megabyte of artwork ahead of the audio leaves the rate alone. Fake LMS (`mobile/tests/player.rs`): two tracks that fit the core whole, the figure within 15% of what is really left to hear before and after the boundary. The live check (`mobile/tests/live_read_ahead.rs`) prefers tracks that fit the core whole and checks the figure against LMS's own bitrate and length; run against a real LMS 9.1 with two MP3 tracks of 7.5 MB and 6.5 MB, the figure read 289 s at the start and 539 s once the next track had arrived, 20 s in (the rest of track 1 plus the whole of track 2). Its "next track arriving" test is now a jump of half the next track rather than a 30 s margin, which an early dip in a VBR track's byte rate could cross.
+- Goes out as Android 1.17.2. The player protocol stays at 2 (needs plugin 0.7.3 or later, as 1.17.0 did); no plugin release.
+
 ## 2026-10-26: an update from the zip could leave the settings page's script and template at the previous release (issue #29 follow-up); plugin 0.7.6
 
 The piCorePlayer reporter of [#29](https://github.com/JameZUK/lyrion-anywhere/issues/29) updated to 0.7.5 and saw no transcoding line in the Status panel: their browser was still running the 0.7.4 page script against the 0.7.5 plugin. The cause is in how the plugin and LMS cache the page.

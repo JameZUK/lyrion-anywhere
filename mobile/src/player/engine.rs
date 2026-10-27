@@ -225,18 +225,18 @@ pub(crate) fn stall_step(
 }
 
 /// An estimate of how much listening is held ahead, in ms: the audio decoded, plus the
-/// compressed bytes not yet decoded (`undecoded_bytes`) at the byte rate seen so far
-/// (`decoded_bytes` over `decoded_ms`). Without a second of history, only what is decoded.
+/// compressed bytes not yet decoded (`undecoded_bytes`: spooled, or inside the core for
+/// this track and the queued next one) at the byte rate of the track being decoded
+/// (`bytes_per_ms`, see [`Player::decoded_rate`]). Without a rate yet, only what is
+/// decoded.
 pub(crate) fn cushion_ms(
     decoded_ahead_ms: u64,
     undecoded_bytes: u64,
-    decoded_bytes: u64,
-    decoded_ms: f64,
+    bytes_per_ms: Option<f64>,
 ) -> u64 {
-    if decoded_ms < 1000.0 || decoded_bytes == 0 || !decoded_ms.is_finite() {
+    let Some(per_ms) = bytes_per_ms.filter(|r| r.is_finite() && *r > 0.0) else {
         return decoded_ahead_ms;
-    }
-    let per_ms = decoded_bytes as f64 / decoded_ms;
+    };
     let ahead = undecoded_bytes as f64 / per_ms;
     decoded_ahead_ms.saturating_add(ahead.min(1e12) as u64)
 }
@@ -440,10 +440,10 @@ pub(crate) struct Engine {
     /// How much must be heard before read-ahead reports a track ready (`None`: the core's
     /// default).
     ready_after_ms: Option<u64>,
-    /// Bytes handed to the decoder, and milliseconds of audio heard, this session (for
-    /// the cushion's byte rate).
-    fed_total: u64,
-    heard_ms: f64,
+    /// The byte rate of the track decoded last (bytes per ms of audio, from the core once
+    /// a second of a track is decoded), kept across the hand-over to the next track: what
+    /// the cushion turns undecoded bytes into time with.
+    byte_rate: Option<f64>,
     // The replay cache (Phase B).
     /// This user's cache on this server (`None`: no cache folder).
     cache: Option<SharedCache>,
@@ -555,8 +555,7 @@ impl Engine {
             from_cache: VecDeque::new(),
             downloads,
             from_downloads: VecDeque::new(),
-            fed_total: 0,
-            heard_ms: 0.0,
+            byte_rate: None,
             in_sync_group: false,
             stall_wait: None,
             rejoin: None,
@@ -1072,8 +1071,7 @@ impl Engine {
             self.drop_spools();
             self.outbox.clear();
             self.received = 0;
-            self.fed_total = 0;
-            self.heard_ms = 0.0;
+            self.byte_rate = None;
             self.from_cache.clear();
             self.from_downloads.clear();
             // Stream numbers start again with the session.
@@ -1974,7 +1972,6 @@ impl Engine {
                 match front.read(FEED_CHUNK.min(budget)) {
                     Ok(bytes) => {
                         budget -= bytes.len();
-                        self.fed_total += bytes.len() as u64;
                         p.on_stream_data(&bytes, now);
                     }
                     Err(SpoolReadError::Broken) => {
@@ -2092,11 +2089,13 @@ impl Engine {
             self.publish_status(false);
             return;
         };
-        if let Some(rate) = p.output_rate().filter(|r| *r > 0) {
-            self.heard_ms += played as f64 * 1000.0 / f64::from(rate);
-        }
         p.presented(played, now);
         p.tick(now);
+        // The cushion's byte rate: the track being decoded, once a second of it is; across
+        // the hand-over to the next track, the last one's.
+        if let Some(rate) = p.decoded_rate() {
+            self.byte_rate = Some(rate);
+        }
         self.run_actions();
         self.follow_flushes();
         self.apply_corrections();
@@ -2713,8 +2712,7 @@ impl Engine {
         let cushion = cushion_ms(
             core_ms + ring_ms,
             self.unfed_bytes() + input_bytes,
-            self.fed_total.saturating_sub(input_bytes),
-            self.heard_ms + core_ms as f64,
+            self.byte_rate,
         );
         let previous_error = self
             .shared
@@ -3948,16 +3946,18 @@ mod tests {
     }
 
     #[test]
-    fn the_cushion_counts_decoded_audio_and_spooled_bytes_at_the_byte_rate() {
-        // No history yet: only what is decoded.
-        assert_eq!(cushion_ms(3000, 10_000_000, 0, 0.0), 3000);
-        assert_eq!(cushion_ms(3000, 10_000_000, 1000, 999.0), 3000);
-        // 176.4 kB/s (CD-quality PCM): 17.64 MB spooled is 100 s.
-        assert_eq!(cushion_ms(10_000, 17_640_000, 1_764_000, 10_000.0), 110_000);
+    fn the_cushion_counts_decoded_audio_and_undecoded_bytes_at_the_tracks_byte_rate() {
+        // No rate yet: only what is decoded.
+        assert_eq!(cushion_ms(3000, 10_000_000, None), 3000);
+        // 176.4 kB/s (CD-quality PCM): 17.64 MB undecoded is 100 s.
+        assert_eq!(cushion_ms(10_000, 17_640_000, Some(176.4)), 110_000);
         // Junk never panics or overflows.
-        assert_eq!(cushion_ms(5, u64::MAX, 1, 1e300), 5 + 1_000_000_000_000);
-        assert_eq!(cushion_ms(5, 100, 100, f64::NAN), 5);
-        assert_eq!(cushion_ms(u64::MAX, u64::MAX, 1, 2000.0), u64::MAX);
+        assert_eq!(cushion_ms(5, u64::MAX, Some(1e-300)), 5 + 1_000_000_000_000);
+        assert_eq!(cushion_ms(5, 100, Some(f64::NAN)), 5);
+        assert_eq!(cushion_ms(5, 100, Some(0.0)), 5);
+        assert_eq!(cushion_ms(5, 100, Some(-1.0)), 5);
+        assert_eq!(cushion_ms(5, 100, Some(f64::INFINITY)), 5);
+        assert_eq!(cushion_ms(u64::MAX, u64::MAX, Some(0.5)), u64::MAX);
     }
 
     /// Retries back off normally; with no network they wait for it (and go at once when
