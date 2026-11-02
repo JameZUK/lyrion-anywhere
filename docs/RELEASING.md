@@ -45,6 +45,19 @@ gh attestation verify LyrionAnywhere-android-<version>.apk --repo JameZUK/lyrion
 - Releases published before CI started attesting them (18 October 2026) have none.
 - Only the files on the GitHub release are attested. Copies installed from Google Play or F-Droid are built or signed by those stores' pipelines and are not.
 
+## Helper scripts
+
+The steps below are scripted under `tools/release/` (they need the [GitHub CLI](https://cli.github.com/) signed in; the Android one also the SDK's build-tools). Each prints what it checked and stops at the first problem.
+
+| Script | What it does |
+|---|---|
+| `tools/release/ci-wait.sh run <id>` \| `branch <branch> [<commit>]` \| `tag <tag>` | Waits for a CI run to finish (polling every 45 s) and fails unless it succeeded, listing the failed jobs. A tag's run is found by its head branch, a commit's by its full sha (`gh run list --commit` with a short sha finds nothing). |
+| `tools/release/tag.sh [--push] [plugin <v>] [android <v>]` | Checks the tree is ready (clean, on `origin/main`, the versions in `install.xml` / `build.gradle.kts`, the release notes, the F-Droid changelog for the versionCode) and makes the annotated tags; prints the push command, or pushes with `--push`. |
+| `tools/release/verify-plugin.sh <v> [<dir>]` | Downloads the `v<v>` release, checks `SHA256SUMS`, the build provenance of the zip and `repo.xml`, the plugin repository URL (`tools/check-latest.sh`), unpacks the zip (into `dist/releases/v<v>/unpacked` by default) and checks `install.xml` and `Bin/SHA256SUMS` inside; prints the unpacked directory last, for the deploy. |
+| `tools/release/verify-android.sh <v> [<previous>]` | Downloads the `android-v<v>` release into `dist/android/<v>/`, checks `SHA256SUMS`, the build provenance of every APK and the bundle, the signing certificate, the version against `build.gradle.kts`, the merged manifest against the previous release's APK (only the version lines may differ; the providers and `androidx.startup` initialisers are listed), and that the release is not marked *Latest*. |
+
+A release, end to end: push `main` and `tools/release/ci-wait.sh branch main <commit>`; `tools/release/tag.sh plugin <v> android <v>` and push the tags; `tools/release/ci-wait.sh tag v<v>` (and `tag android-v<v>`); `tools/release/verify-plugin.sh <v>` and `tools/release/verify-android.sh <v> <previous>`; then deploy. Deploying to a particular installation and checking it live are specific to that installation, so those scripts live outside the repository (gitignored `dev/local.*` files, see `CLAUDE.md`): a deploy script that installs the verified zip's web app, gateway binary and plugin files and restarts LMS (resuming whatever was playing), and a live check (health, static files, the content-hash ETag, a sign-in with a test account, an image through the image proxy, the transcoding set-up).
+
 ## Plugin releases (`v*`)
 
 1. **Version:** set `<version>` in `plugin/Plugins/LyrionAnywhere/install.xml`. The tag must equal `v` plus that version; the job checks this.
