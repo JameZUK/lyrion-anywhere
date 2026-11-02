@@ -500,6 +500,23 @@ impl FakeLms {
                     return ([("content-type", "text/html")], "<script>alert(1)</script>")
                         .into_response();
                 }
+                if let Some(rest) = path.strip_prefix("/imageproxy/")
+                    && let Some((encoded, name)) = rest.rsplit_once('/')
+                    && name.starts_with("image.")
+                {
+                    // As LMS does when asked for a proxied image with an extension but no
+                    // size: a redirect to the external URL, not the image (issue #37).
+                    let url = encoded
+                        .replace("%3A", ":")
+                        .replace("%2F", "/")
+                        .replace("%2E", ".");
+                    return (
+                        axum::http::StatusCode::MOVED_PERMANENTLY,
+                        [("location", url)],
+                        Body::empty(),
+                    )
+                        .into_response();
+                }
                 if path.starts_with("/music/")
                     || path.starts_with("/html/images/")
                     || path.starts_with("/imageproxy/")

@@ -67,7 +67,7 @@
 	const diagram = $derived(qualityNow.diagram);
 	const badge = $derived(diagram.badge);
 	const sleepIn = $derived(downloads ? null : sleepLeft(app.now));
-	const coverOf = (size: number) => cmd.coverPath(track?.coverid ?? track?.artwork_track_id, size);
+	const coverOf = (size: number) => cmd.trackCover(track, size);
 	/** Art and title cross-fade between tracks (not under "reduce motion"). */
 	const trackKey = $derived(`${track?.id ?? ''}|${title}`);
 	const swap = { duration: reducedMotion() ? 0 : 350 };

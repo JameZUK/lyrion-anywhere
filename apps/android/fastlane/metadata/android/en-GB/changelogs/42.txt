@@ -1,0 +1,1 @@
+Streams show their artwork: the station or programme image from BBC Sounds, radio directories and other plugins came up blank, as did plugin menu icons at external URLs. Needs plugin 0.7.3 or later, as 1.17.0 did.

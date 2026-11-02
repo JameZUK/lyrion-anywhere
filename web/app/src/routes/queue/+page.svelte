@@ -469,7 +469,7 @@
 			disabled={!playable}
 			data-mark={mark ?? undefined}
 		>
-			<div class="thumb"><Art path={cmd.coverPath(t.coverid ?? t.artwork_track_id, 96)} alt="" label={textOf(t.title)} /></div>
+			<div class="thumb"><Art path={cmd.trackCover(t, 96)} alt="" label={textOf(t.title)} /></div>
 			<span class="text">
 				<span class="title ellipsis">{textOf(t.title)}</span>
 				<span class="sub ellipsis muted">{[textOf(t.artist), textOf(t.album)].filter(Boolean).join(' · ')}</span>

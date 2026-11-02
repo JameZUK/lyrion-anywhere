@@ -137,6 +137,73 @@ async fn image_proxy_only_fetches_urls_lms_handed_out() {
     assert_eq!(h.art(Some(&h.tok_a), internal).await.status(), S::NOT_FOUND);
 }
 
+/// Regression (issue #37): LMS's own responses name remote artwork as
+/// `/imageproxy/<escaped URL>/image.<ext>`, and asked for exactly that LMS answers with a
+/// redirect to the external URL (as the fake does), which the gateway never follows. Such a
+/// request must reach LMS as `image`, so that the image itself comes back.
+#[tokio::test]
+async fn unsized_proxied_images_are_fetched_without_a_redirect() {
+    let h = harness().await;
+    let r = reqwest::Client::new()
+        .post(h.url("/v1/rpc"))
+        .bearer_auth(&h.tok_a)
+        .json(&json!({ "cmd": ["favorites", "items", 0, 10] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), S::OK);
+    // The fake behaves as LMS does: an unsized `image.jpg` is a redirect, not an image.
+    let direct = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+        .get(format!(
+            "http://{}/imageproxy/https%3A%2F%2Fcdn.example.com%2Fa.jpg/image.jpg",
+            h.lms.http_addr
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(direct.status(), S::MOVED_PERMANENTLY);
+    assert_eq!(
+        direct.headers()["location"],
+        "https://cdn.example.com/a.jpg"
+    );
+
+    let seen = h.lms.http_paths().len();
+    let r = h
+        .art(
+            Some(&h.tok_a),
+            "imageproxy/https%3A%2F%2Fcdn.example.com%2Fa.jpg/image.jpg",
+        )
+        .await;
+    assert_eq!(r.status(), S::OK);
+    assert_eq!(r.headers()["content-type"], "image/jpeg");
+    assert_eq!(r.bytes().await.unwrap().as_ref(), b"IMAGEDATA");
+    let paths = h.lms.http_paths();
+    assert_eq!(
+        paths[seen..],
+        ["/imageproxy/https%3A%2F%2Fcdn.example.com%2Fa.jpg/image"],
+        "{paths:?}"
+    );
+    // A sized request goes to LMS as asked.
+    let r = h
+        .art(
+            Some(&h.tok_a),
+            "imageproxy/https%3A%2F%2Fcdn.example.com%2Fa.jpg/image_100x100.jpg",
+        )
+        .await;
+    assert_eq!(r.status(), S::OK);
+    assert!(
+        h.lms
+            .http_paths()
+            .last()
+            .is_some_and(|p| p.ends_with("/image_100x100.jpg")),
+        "{:?}",
+        h.lms.http_paths()
+    );
+}
+
 #[tokio::test]
 async fn current_cover_requires_permission_for_the_player() {
     let h = harness().await;

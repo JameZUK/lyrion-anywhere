@@ -2,7 +2,7 @@
 	import { go } from '#lib/nav';
 	import { app } from '#lib/state/app.svelte';
 	import * as cmd from '#lib/lms/commands';
-	import { coverPath } from '#lib/lms/commands';
+	import { trackCover } from '#lib/lms/commands';
 	import { duration, textOf } from '#lib/lms/format';
 	import Art from './Art.svelte';
 	import Icon from './Icon.svelte';
@@ -50,7 +50,7 @@
 	const g = $derived(controls.gates);
 	const canSeek = $derived(total > 0 && (now.downloads || app.now?.can_seek !== 0) && g.seek);
 	const sleepIn = $derived(now.downloads ? null : sleepLeft(app.now));
-	const thumb = $derived(now.downloads ? null : coverPath(track?.coverid ?? track?.artwork_track_id, 120));
+	const thumb = $derived(now.downloads ? null : trackCover(track, 120));
 
 	// --- gestures on the mini player (gesture.ts): swipe for next/previous, up to open, a
 	// long-press for Play on…; each also has a button and a keyboard shortcut ---------------

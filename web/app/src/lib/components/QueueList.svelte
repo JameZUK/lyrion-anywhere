@@ -96,7 +96,7 @@
 					aria-label={`Play ${textOf(t.title)}${t.artist ? ` by ${textOf(t.artist)}` : ''}${mark ? `. ${MARK_LABELS[mark]}` : ''}`}
 					data-mark={mark ?? undefined}
 				>
-					<span class="thumb"><Art path={cmd.coverPath(t.coverid ?? t.artwork_track_id, 96)} alt="" label={textOf(t.title)} /></span>
+					<span class="thumb"><Art path={cmd.trackCover(t, 96)} alt="" label={textOf(t.title)} /></span>
 					<span class="text">
 						<span class="title ellipsis">{textOf(t.title)}</span>
 						<span class="sub ellipsis muted">{textOf(t.artist)}</span>

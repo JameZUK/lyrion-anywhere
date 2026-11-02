@@ -194,6 +194,29 @@ test('cover paths only for real cover ids', () => {
 	}
 });
 
+// Regression (issue #37): a stream's artwork comes as `/imageproxy/<url>/image.<ext>` with no
+// size, which LMS answers with a redirect the gateway never follows, and a stream's coverid is
+// its negative id. Streams showed no artwork at all.
+test("a track's artwork is its cover by id, or a stream's artwork through the image proxy, sized", () => {
+	expect(c.trackCover({ coverid: 'deadbeef' }, 96)).toBe('music/deadbeef/cover_96x96');
+	expect(c.trackCover({ artwork_track_id: 42 }, 96)).toBe('music/42/cover_96x96');
+	expect(
+		c.trackCover(
+			{ coverid: -123, artwork_url: '/imageproxy/https%3A%2F%2Fimages.example.com%2Fic%2F320x320%2Fp0abcd.jpg/image.jpg' },
+			800,
+		),
+	).toBe('imageproxy/https%3A%2F%2Fimages.example.com%2Fic%2F320x320%2Fp0abcd.jpg/image_800x800');
+	expect(c.trackCover({ coverid: '-123', artwork_url: 'https://images.example.com/a.png' })).toBe(
+		'imageproxy/https%3A%2F%2Fimages.example.com%2Fa.png/image_300x300',
+	);
+	// A library cover wins over a stream image; nothing to show is null, never a bogus path.
+	expect(c.trackCover({ coverid: 'deadbeef', artwork_url: 'https://images.example.com/a.png' })).toBe('music/deadbeef/cover_300x300');
+	expect(c.trackCover({ coverid: -9 })).toBeNull();
+	expect(c.trackCover({ coverid: -9, artwork_url: 'javascript:alert(1)' })).toBeNull();
+	expect(c.trackCover(undefined)).toBeNull();
+	expect(c.trackCover(null)).toBeNull();
+});
+
 test('in-app links only for real ids', () => {
 	expect(c.link('album', 7)).toBe('#/album/7');
 	expect(c.link('artist', '12,34')).toBe('#/artist/12');
@@ -217,10 +240,14 @@ test('menu images map only to paths the gateway relays', () => {
 	expect(c.imagePath('https://img.example.com/a.jpg', 100)).toBe(
 		'imageproxy/https%3A%2F%2Fimg.example.com%2Fa.jpg/image_100x100',
 	);
+	// LMS's own proxied form (what status and menus carry) is asked for at a size: LMS answers
+	// the unsized `image.png` with a redirect, not an image (issue #37).
 	expect(c.imagePath('/imageproxy/https%3A%2F%2Fcdn.example.com%2Fb.png/image.png')).toBe(
-		'imageproxy/https%3A%2F%2Fcdn.example.com%2Fb.png/image.png',
+		'imageproxy/https%3A%2F%2Fcdn.example.com%2Fb.png/image_300x300',
 	);
-	expect(c.imagePath('imageproxy/https%3a%2f%2fcdn.example.com%2Fb.png/image_300x300_o')).not.toBeNull();
+	expect(c.imagePath('imageproxy/https%3a%2f%2fcdn.example.com%2Fb.png/image_300x300_o', 96)).toBe(
+		'imageproxy/https%3a%2f%2fcdn.example.com%2Fb.png/image_96x96',
+	);
 	for (const bad of [
 		'html/images/../../etc/passwd.png', 'html//images/x.png', 'html/images/x.php', 'javascript:alert(1)',
 		'file:///etc/x.png', 'C:\\x.png', 'plugins/../x.png', 'html/images/%2e%2e/x.png', 42, null, 'x'.repeat(3000),

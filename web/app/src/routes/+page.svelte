@@ -218,7 +218,7 @@
 	<NowPlayingPhone {reduce} />
 {:else}
 <section class="np page" class:wide class:has-side={!!side} class:has-queue={queueSide} bind:this={section} data-layout={layout}>
-	<Ambient path={cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 120)} />
+	<Ambient path={cmd.trackCover(track, 120)} />
 	<div class="bar">
 		{#if roomy && (app.current || downloads)}
 			<!-- With room for it, Queue pins or hides the queue beside Now playing. -->
@@ -287,9 +287,9 @@
 			{:else}
 				{#key trackKey}
 					<div class="art-box" class:glowing in:fade={swap}>
-						{#if glowing}<GlowHalo path={cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 120)} playing={app.playing} still={reduce} />{/if}
+						{#if glowing}<GlowHalo path={cmd.trackCover(track, 120)} playing={app.playing} still={reduce} />{/if}
 						<div class="cover">
-							<Art path={cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 800)} local={now.localCover} alt={title ? `Cover of ${textOf(track?.album)}` : ''} label={title} rounded="var(--radius)" eager />
+							<Art path={cmd.trackCover(track, 800)} local={now.localCover} alt={title ? `Cover of ${textOf(track?.album)}` : ''} label={title} rounded="var(--radius)" eager />
 						</div>
 						{#if visualising}<Visualiser style="glow" onstyle={(s) => nowPlaying.setStyle(s)} {onglow} />{/if}
 					</div>

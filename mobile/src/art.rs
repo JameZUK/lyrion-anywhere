@@ -4,7 +4,12 @@
 //! Records carry an artwork *key*, which doubles as a stable cache key for the app's image
 //! loader:
 //! - `music/<id>/cover`: a library cover, sized on request (`cover_300x300`);
-//! - `imageproxy/<encoded http(s) URL>/image`: a remote image LMS named, sized on request;
+//! - `imageproxy/<encoded http(s) URL>/image`: a remote image LMS named, as a plain URL or
+//!   through its own image proxy (`/imageproxy/<escaped URL>/image.<ext>`, the form its
+//!   `status` and menu responses carry), sized on request. One key per URL, whichever
+//!   form it came in. LMS answers a request for its own unsized form with a redirect to the
+//!   external URL rather than the image, which the gateway never follows (issue #37), so
+//!   the size is always added at fetch time;
 //! - `html/images/…`, `plugins/…`: LMS and plugin icons, as they are.
 //!
 //! Keys are validated again before every fetch, with the same rules as the web app
@@ -47,18 +52,34 @@ pub(crate) fn image_key(v: &Value) -> Option<String> {
     }
     let lower = s.to_ascii_lowercase();
     if lower.starts_with("http://") || lower.starts_with("https://") {
-        if s.chars()
-            .any(|c| c.is_whitespace() || c.is_control() || c == '\\')
-        {
-            return None;
-        }
-        return Some(format!(
-            "imageproxy/{}/image",
-            utf8_percent_encode(s, NON_ALPHANUMERIC)
-        ));
+        return proxy_key(s);
     }
     let p = s.trim_start_matches('/');
-    valid_path(p).then(|| p.to_string())
+    if !valid_path(p) {
+        return None;
+    }
+    // LMS's own proxied form, `imageproxy/<escaped URL>/image[.ext]`, carries no size: the
+    // same key as the plain URL would give, sized at fetch time (see the module notes).
+    if let Some(rest) = p.strip_prefix("imageproxy/") {
+        let seg = rest.split('/').next()?;
+        let url = percent_decode_str(seg).decode_utf8().ok()?;
+        return proxy_key(&url);
+    }
+    Some(p.to_string())
+}
+
+/// The key of a remote image at an http(s) URL: `imageproxy/<encoded URL>/image`.
+fn proxy_key(url: &str) -> Option<String> {
+    if url
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || c == '\\')
+    {
+        return None;
+    }
+    Some(format!(
+        "imageproxy/{}/image",
+        utf8_percent_encode(url, NON_ALPHANUMERIC)
+    ))
 }
 
 /// A well-formed percent-encoded segment that decodes to an http(s) URL.
@@ -303,6 +324,29 @@ mod tests {
             "imageproxy/https%3A%2F%2Fcdn%2Eexample%2Ecom%2Fa%2Ejpg/image"
         );
         assert!(valid_path(&format!("{k}_300x300")));
+        // LMS's own proxied form (what `status` and menus carry), with or without an
+        // extension or a size, is the same key: one per URL (issue #37).
+        for lms in [
+            "/imageproxy/https%3A%2F%2Fcdn.example.com%2Fa.jpg/image.jpg",
+            "imageproxy/https%3A%2F%2Fcdn.example.com%2Fa.jpg/image.png",
+            "/imageproxy/https%3A%2F%2Fcdn.example.com%2Fa.jpg/image",
+            "/imageproxy/https%3A%2F%2Fcdn.example.com%2Fa.jpg/image_300x300_o.png",
+            "/imageproxy/https%3a%2f%2fcdn%2Eexample%2Ecom%2Fa%2Ejpg/image.jpg",
+        ] {
+            assert_eq!(image_key(&json!(lms)).as_deref(), Some(k.as_str()), "{lms}");
+        }
+        assert_eq!(
+            image_key(&json!("/imageproxy/https%3A%2F%2Fx.example/evil")),
+            None
+        );
+        assert_eq!(
+            image_key(&json!("/imageproxy/https%3A%2F%2Fx%20y.example/image.png")),
+            None
+        );
+        assert_eq!(
+            image_key(&json!("/imageproxy/file%3A%2F%2F%2Fetc%2Fpasswd/image.png")),
+            None
+        );
         assert_eq!(
             image_key(&json!("/html/images/radio.png")).as_deref(),
             Some("html/images/radio.png")
@@ -332,6 +376,16 @@ mod tests {
         assert_eq!(
             art_path("html/images/radio.png", 300).unwrap(),
             "html/images/radio.png"
+        );
+        // A remote image is always fetched at a size, never as LMS's unsized `image.<ext>`
+        // (which LMS answers with a redirect, not an image; issue #37).
+        let k = image_key(&json!(
+            "/imageproxy/https%3A%2F%2Fcdn.example.com%2Fa.jpg/image.jpg"
+        ))
+        .unwrap();
+        assert_eq!(
+            art_path(&k, 600).unwrap(),
+            "imageproxy/https%3A%2F%2Fcdn%2Eexample%2Ecom%2Fa%2Ejpg/image_600x600"
         );
     }
 

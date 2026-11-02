@@ -158,7 +158,7 @@
 	{#if view === 'playing'}
 		<div class="stage">
 			<div class="art">
-				<Art path={cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 800)} alt={title ? `Cover of ${textOf(track?.album)}` : ''} label={title} rounded="12px" eager />
+				<Art path={cmd.trackCover(track, 800)} alt={title ? `Cover of ${textOf(track?.album)}` : ''} label={title} rounded="12px" eager />
 			</div>
 			<div class="about">
 				<p class="title">{title || (app.current ? 'Nothing playing' : 'No player chosen')}</p>

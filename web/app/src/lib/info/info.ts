@@ -56,9 +56,8 @@ export function plainText(v: unknown, max = MAX_TEXT): string | null {
 export function photoPath(v: unknown, size = 600): string | null {
 	if (typeof v !== 'string' || v.length > 4096) return null;
 	const m = v.match(/^\/v1\/art\/(imageproxy\/[^/?#\s]+)\/image$/);
-	if (!m || imagePath(`${m[1]}/image`) === null) return null;
-	const px = Math.max(50, Math.min(1000, Math.round(size)));
-	return imagePath(`${m[1]}/image_${px}x${px}`);
+	if (!m) return null;
+	return imagePath(`${m[1]}/image`, size);
 }
 
 const record = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {});

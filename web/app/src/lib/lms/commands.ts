@@ -377,8 +377,14 @@ export function imagePath(image: unknown, size = 300): string | null {
 	if (p.includes('\\') || p.includes('//') || /[?#\s]/.test(p)) return null;
 	// Image proxy: exactly one percent-encoded http(s) URL segment, then the image name.
 	// That segment is the only place a '%' may appear.
+	// LMS names a remote image through its own proxy with no size (`…/image.png`), and
+	// answers a request for exactly that with a redirect to the external URL rather than the
+	// image, which the gateway never follows (issue #37): ask at a size, by one key per URL.
 	const proxy = p.match(/^imageproxy\/([^/]+)\/([^/]+)$/);
-	if (proxy) return proxySegment(proxy[1]!) && PROXY_NAME.test(proxy[2]!) ? p : null;
+	if (proxy) {
+		if (!proxySegment(proxy[1]!) || !PROXY_NAME.test(proxy[2]!)) return null;
+		return `imageproxy/${proxy[1]}/image_${px}x${px}`;
+	}
 	if (p.includes('%') || p.includes('..') || p.split('/').some((s) => s === '.')) return null;
 	if (/^(html\/images|plugins\/cache\/icons|plugins\/[A-Za-z0-9_]+\/html)\/[A-Za-z0-9._\/-]+\.(png|jpe?g|gif|svg)$/i.test(p)) return p;
 	return null;
@@ -390,6 +396,19 @@ export function coverPath(cover: unknown, size = 300): string | null {
 	if (typeof cover !== 'string' || !/^(?:\d{1,15}|[0-9a-f]{8,40})$/i.test(cover)) return null;
 	const px = Math.max(50, Math.min(1000, Math.round(size)));
 	return `music/${cover}/cover_${px}x${px}`;
+}
+
+/**
+ * Path (for Api.art) of a track's artwork: a library track's cover by id, or a stream's
+ * artwork as LMS names it (`artwork_url`, through its image proxy); null if it has neither.
+ * A stream's `coverid` is its negative id, which names no cover.
+ */
+export function trackCover(
+	t: { coverid?: unknown; artwork_track_id?: unknown; artwork_url?: unknown } | null | undefined,
+	size = 300,
+): string | null {
+	if (!t) return null;
+	return coverPath(t.coverid ?? t.artwork_track_id, size) ?? imagePath(t.artwork_url, size);
 }
 
 /**

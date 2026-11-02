@@ -874,6 +874,24 @@ impl FakeLms {
                     )
                         .into_response_parts();
                 }
+                if let Some(rest) = p.strip_prefix("/imageproxy/")
+                    && let Some((encoded, name)) = rest.rsplit_once('/')
+                    && name.starts_with("image.")
+                {
+                    // As LMS does when asked for a proxied image with an extension but no
+                    // size ("No resizing requested"): a redirect to the external URL, not
+                    // the image (issue #37).
+                    let url = encoded
+                        .replace("%3A", ":")
+                        .replace("%2F", "/")
+                        .replace("%2E", ".");
+                    return (
+                        axum::http::StatusCode::MOVED_PERMANENTLY,
+                        [("location", url)],
+                        Body::empty(),
+                    )
+                        .into_response_parts();
+                }
                 if p.starts_with("/music/")
                     || p.starts_with("/imageproxy/")
                     || p.starts_with("/html/images/")

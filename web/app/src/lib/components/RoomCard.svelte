@@ -117,7 +117,7 @@
 <div class="room" class:current class:dragging class:target role="group" aria-label={name} data-room={id}>
 	<div class="top">
 		<!-- The cover is where a pointer drag starts (to sync with another room). -->
-		<span class="thumb" aria-hidden="true" onpointerdown={ondrag} data-room-drag><Art path={cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 120)} alt="" label={title || name} /></span>
+		<span class="thumb" aria-hidden="true" onpointerdown={ondrag} data-room-drag><Art path={cmd.trackCover(track, 120)} alt="" label={title || name} /></span>
 		<button
 			class="main"
 			aria-label={`Play on ${name}${current ? ' (in use)' : ''}${mode ? `: ${mode.toLowerCase()}` : ''}${title ? `, ${title}${artist ? ` by ${artist}` : ''}` : ''}`}

@@ -1510,6 +1510,47 @@ mod tests {
         assert_eq!(status_from(&json!("nonsense")).mode, PlaybackMode::Stopped);
     }
 
+    /// A remote stream's cover as LMS reports it (issue #37): `status` runs the handler's
+    /// cover URL through its image proxy (`/imageproxy/<escaped URL>/image.<ext>`), and a
+    /// remote track's `coverid` is its negative id, which names no cover.
+    #[test]
+    fn a_remote_streams_proxied_cover_is_its_artwork() {
+        let proxied = "/imageproxy/https%3A%2F%2Fimages.example.com%2Fimages%2Fic%2F320x320%2Fp0abcd.jpg/image.jpg";
+        let s = status_from(
+            &json!({"mode": "play", "remote": 1, "current_title": "Radio",
+            "playlist_loop": [{"id": -123, "remote": 1, "coverid": -123, "artwork_url": proxied,
+                               "title": "Song", "artist": "Artist"}]}),
+        );
+        let t = s.current.unwrap();
+        let key = t.artwork.expect("the proxied cover is the artwork");
+        // The canonical key for that URL (the same a plain URL would give), sized on fetch:
+        // never LMS's unsized `image.jpg`, which it answers with a redirect, not an image.
+        assert_eq!(
+            key,
+            "imageproxy/https%3A%2F%2Fimages%2Eexample%2Ecom%2Fimages%2Fic%2F320x320%2Fp0abcd%2Ejpg/image"
+        );
+        assert_eq!(
+            crate::art::art_path(&key, 600).unwrap(),
+            format!("{key}_600x600")
+        );
+        // A string coverid of a negative id is no cover either.
+        let s = status_from(&json!({"mode": "play", "playlist_loop": [
+            {"id": "-7", "remote": 1, "coverid": "-7",
+             "artwork_url": "/imageproxy/https%3A%2F%2Fimages.example.com%2Flogo_600x600.png/image.png"}]}));
+        assert!(
+            s.current
+                .unwrap()
+                .artwork
+                .unwrap()
+                .starts_with("imageproxy/")
+        );
+        // Only the station icon, no cover: nothing to show rather than a bogus key.
+        let s = status_from(
+            &json!({"mode": "play", "playlist_loop": [{"id": -9, "remote": 1, "coverid": -9}]}),
+        );
+        assert_eq!(s.current.unwrap().artwork, None);
+    }
+
     #[test]
     fn status_reads_the_fixed_output_level() {
         // Absent (older servers, or a status without it) means the volume works as usual.

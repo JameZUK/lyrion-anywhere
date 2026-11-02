@@ -388,3 +388,43 @@ async fn rooms_read_every_permitted_player_and_refuse_bad_input() {
         Err(ApiError::Forbidden { .. })
     ));
 }
+
+/// Regression (issue #37): a stream's artwork comes from LMS as
+/// `/imageproxy/<escaped URL>/image.<ext>` with no size, which LMS answers with a redirect to
+/// the external URL (as the fake does) that the gateway never follows. The app must ask for
+/// it at a size, and get the image.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_streams_artwork_is_fetched_at_a_size() {
+    let h = Harness::start().await;
+    let (s, _) = h.alice().await;
+    let me = s.current().unwrap().device.player_id;
+    *h.lms.status.lock().unwrap() = Some(json!({
+        "player_name": "Phone", "mode": "play", "time": 30.5, "remote": 1,
+        "current_title": "Radio Two", "mixer volume": 40, "playlist_tracks": 1,
+        "playlist_cur_index": "0",
+        "playlist_loop": [{
+            "id": -123, "remote": 1, "coverid": -123, "title": "Song", "artist": "Artist",
+            "artwork_url": "/imageproxy/https%3A%2F%2Fimages.example.com%2Fimages%2Fic%2F320x320%2Fp0abcd.jpg/image.jpg",
+            "playlist index": 0
+        }]
+    }));
+    let status = Players::new(s.clone()).status(me).await.unwrap();
+    let key = status
+        .current
+        .unwrap()
+        .artwork
+        .expect("the stream's artwork");
+    let img = Art::new(s.clone()).fetch(key, 300).await.unwrap();
+    assert_eq!(img.mime_type, "image/jpeg");
+    assert_eq!(img.bytes, b"IMAGEDATA");
+    let paths = h.lms.http_paths();
+    assert!(
+        paths.iter().any(|p| p
+            == "/imageproxy/https%3A%2F%2Fimages%2Eexample%2Ecom%2Fimages%2Fic%2F320x320%2Fp0abcd%2Ejpg/image_300x300"),
+        "{paths:?}"
+    );
+    assert!(
+        !paths.iter().any(|p| p.ends_with("/image.jpg")),
+        "{paths:?}"
+    );
+}

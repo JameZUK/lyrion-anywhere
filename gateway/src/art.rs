@@ -8,6 +8,9 @@
 //!   fetch anything on the home network (SSRF). LMS follows redirects itself when it
 //!   fetches, which the gateway can't see: a public host redirecting to the home network is
 //!   a documented limit (SPEC §5.2, Artwork), bounded by the `image/*` and size rules below.
+//!   A name with no size but an extension (`image.png`: the form LMS's own responses carry)
+//!   is sent to LMS as `image`. Asked for the former, LMS answers with a redirect to the
+//!   external URL instead of the image, and the gateway follows no redirects (issue #37).
 //! - **Icons:** `plugins/<Name>/html/…`, `plugins/cache/icons/…`, `html/images/…` image files.
 //!
 //! Only `image/*` responses are relayed, at most [`MAX_IMAGE`] bytes, with a sandboxing CSP
@@ -116,7 +119,7 @@ pub fn target(path: &str) -> Option<Target> {
             let url = percent_decode(encoded)?;
             (url.starts_with("http://") || url.starts_with("https://")).then(|| Target::Proxy {
                 url,
-                name: name.to_string(),
+                name: lms_proxy_name(name),
                 encoded: encoded.to_string(),
             })
         }
@@ -158,6 +161,18 @@ fn percent_decode(s: &str) -> Option<String> {
     }
     let s = String::from_utf8(out).ok()?;
     (!s.chars().any(char::is_control) && s.len() <= 2048).then_some(s)
+}
+
+/// The image name sent to LMS for a proxied image. Asked for a proxied image with an
+/// extension but no size (`image.png`, `image.jpg`: the form LMS's own `status` and menu
+/// responses carry), LMS answers with a redirect to the external URL instead of the image
+/// ("no resizing requested"), which the gateway never follows; asked for `image` it serves
+/// the original. Sized names go through as they are.
+fn lms_proxy_name(name: &str) -> String {
+    match name.split_once('.') {
+        Some(("image", _)) => "image".to_string(),
+        _ => name.to_string(),
+    }
 }
 
 /// Bounded set of image URLs LMS has handed out.
@@ -462,6 +477,12 @@ pub async fn art(
         Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => {
             return status(StatusCode::NOT_FOUND);
         }
+        Ok(r) if r.status().is_redirection() => {
+            // Never followed: the gateway fetches nothing it hasn't vetted. LMS redirects
+            // when asked for an unsized `image.<ext>`, which `lms_proxy_name` avoids.
+            tracing::warn!(status = %r.status(), "LMS redirected an artwork request; not followed");
+            return status(StatusCode::BAD_GATEWAY);
+        }
         Ok(r) => {
             tracing::warn!(status = %r.status(), "LMS refused an artwork request");
             return status(StatusCode::BAD_GATEWAY);
@@ -640,6 +661,77 @@ mod tests {
         let mut out = vec![];
         learn_images(&v, &mut out);
         assert_eq!(out, vec!["https://cdn.example.com/ok.jpg"]);
+    }
+
+    /// LMS answers an unsized `image.<ext>` under `imageproxy/` with a redirect to the
+    /// external URL, which the gateway doesn't follow (issue #37): such a name is sent to
+    /// LMS as `image`; sized names as they are.
+    #[test]
+    fn unsized_proxied_image_names_are_sent_to_lms_without_their_extension() {
+        for (asked, sent) in [
+            ("image.png", "image"),
+            ("image.jpg", "image"),
+            ("image", "image"),
+            ("image_300x300.png", "image_300x300.png"),
+            ("image_300x300_o", "image_300x300_o"),
+        ] {
+            match target(&format!(
+                "imageproxy/https%3A%2F%2Fcdn.example.com%2Fa.jpg/{asked}"
+            )) {
+                Some(Target::Proxy { name, url, .. }) => {
+                    assert_eq!(name, sent, "{asked}");
+                    assert_eq!(url, "https://cdn.example.com/a.jpg");
+                }
+                other => panic!("{asked}: {other:?}"),
+            }
+        }
+    }
+
+    /// A remote stream's cover as LMS reports it in `status` (issue #37): the handler's URL
+    /// through LMS's own image proxy, `/imageproxy/<escaped URL>/image.<ext>`, with a path
+    /// of several segments. It must survive the response filter, be learned, and name the
+    /// same URL when the client fetches it.
+    #[test]
+    fn a_remote_streams_proxied_cover_is_learned_and_relayed() {
+        let cover = "https://images.example.com/images/ic/320x320/p0abcd.jpg";
+        let logo = "https://files.example.com/v2/networks/radio_two/blocks-colour_600x600.png";
+        let v = serde_json::json!({
+            "mode": "play", "remote": 1, "playlist_cur_index": 0,
+            "playlist_loop": [{
+                "id": -123, "remote": 1, "coverid": -123, "title": "Song",
+                "artwork_url": "/imageproxy/https%3A%2F%2Fimages.example.com%2Fimages%2Fic%2F320x320%2Fp0abcd.jpg/image.jpg",
+                "icon": "/imageproxy/https%3A%2F%2Ffiles.example.com%2Fv2%2Fnetworks%2Fradio_two%2Fblocks-colour_600x600.png/image.png"
+            }]
+        });
+        let filtered =
+            crate::rpc_policy::filter_response(crate::rpc_policy::Kind::Plain, v, &|_| true);
+        let entry = &filtered["playlist_loop"][0];
+        assert!(entry["artwork_url"].is_string(), "{filtered}");
+        assert!(entry["icon"].is_string(), "{filtered}");
+        let mut out = vec![];
+        learn_images(&filtered, &mut out);
+        out.sort();
+        assert_eq!(out, vec![logo, cover]);
+        for (key, url) in [
+            (
+                "imageproxy/https%3A%2F%2Fimages.example.com%2Fimages%2Fic%2F320x320%2Fp0abcd.jpg/image.jpg",
+                cover,
+            ),
+            (
+                "imageproxy/https%3A%2F%2Ffiles.example.com%2Fv2%2Fnetworks%2Fradio_two%2Fblocks-colour_600x600.png/image.png",
+                logo,
+            ),
+            (
+                "imageproxy/https%3A%2F%2Fimages.example.com%2Fimages%2Fic%2F320x320%2Fp0abcd.jpg/image_600x600.jpg",
+                cover,
+            ),
+        ] {
+            match target(key) {
+                Some(Target::Proxy { url: u, .. }) => assert_eq!(u, url, "{key}"),
+                other => panic!("{key}: {other:?}"),
+            }
+            assert!(!local_url(url));
+        }
     }
 
     #[test]

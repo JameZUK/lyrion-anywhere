@@ -78,7 +78,7 @@
 		const title = textOf(track?.title ?? app.now?.current_title);
 		const artist = textOf(track?.artist);
 		const album = textOf(track?.album);
-		const path = cmd.coverPath(track?.coverid ?? track?.artwork_track_id, 512);
+		const path = cmd.trackCover(track, 512);
 		let live = true;
 		const set = (artwork: MediaImage[]) => {
 			if (live) ms.metadata = title ? new MediaMetadata({ title, artist, album, artwork }) : null;
