@@ -60,6 +60,8 @@ jobs:
         run: python3 tools/check-docs.py --self-test && python3 tools/check-docs.py
       - name: The demo's fake LMS (its Slimproto side) never raises on bad client bytes
         run: python3 -m unittest tools/demo/test_fake_lms.py
+      - name: disk-gc finds cargo-sweep through cargo's subcommand list, not the shell's PATH
+        run: tools/test-disk-gc.sh
 
   web:
     runs-on: ubuntu-latest

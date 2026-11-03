@@ -50,11 +50,16 @@ fi
 before=$(df -P "$root" | awk 'NR==2{print $4}')
 echo "disk-gc: $(df -h "$root" | awk 'NR==2{print $4" free of "$2}') before"
 
-# 1. Stale Rust artefacts (cargo-sweep: `cargo install --locked cargo-sweep`).
-if command -v cargo-sweep >/dev/null 2>&1 && [ -d "$target" ]; then
-	run cargo sweep --time "$days" -r "$root" >/dev/null 2>&1 || echo "disk-gc: cargo sweep failed" >&2
-else
-	echo "disk-gc: cargo-sweep not installed; skipping artefact sweep" >&2
+# 1. Stale Rust artefacts (cargo-sweep: `cargo install --locked cargo-sweep`). Cargo finds its
+#    subcommands in $CARGO_HOME/bin as well as on PATH, so ask cargo whether sweep is there
+#    rather than the shell: a timer's PATH has no ~/.cargo/bin, and the shell test made every
+#    timer run skip the sweep while reporting the tool missing.
+if [ -d "$target" ]; then
+	if cargo --list 2>/dev/null | grep -qE '^[[:space:]]+sweep([[:space:]]|$)'; then
+		run cargo sweep --time "$days" -r "$root" || echo "disk-gc: cargo sweep failed" >&2
+	else
+		echo "disk-gc: cargo-sweep not installed; skipping artefact sweep" >&2
+	fi
 fi
 
 # 2. Incremental caches: large, and only ever a speed-up.
