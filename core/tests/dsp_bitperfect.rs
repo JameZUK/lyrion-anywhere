@@ -40,6 +40,10 @@ fn sequence(bits: u32, frames: usize, seed: u64) -> Vec<i32> {
         .collect()
 }
 
+fn depth(bits: u32) -> pcm::Depth {
+    pcm::Depth::new(bits).unwrap()
+}
+
 /// Run integer PCM through a chain in uneven blocks, back to integers at `out_bits`.
 fn through_chain(chain: &mut Chain, input: &[i32], in_bits: u32, out_bits: u32) -> Vec<i32> {
     let mut out = Vec::with_capacity(input.len());
@@ -47,13 +51,14 @@ fn through_chain(chain: &mut Chain, input: &[i32], in_bits: u32, out_bits: u32) 
     let mut q = vec![0i32; 4096 * 2];
     let mut pos = 0;
     let mut step = 1;
+    let (in_depth, out_depth) = (depth(in_bits), depth(out_bits));
     while pos < input.len() {
         // Block sizes vary from 1 frame to 4096 frames.
         step = (step * 7 + 3) % 4096 + 1;
         let n = (step * 2).min(input.len() - pos);
-        pcm::to_f64(&input[pos..pos + n], in_bits, &mut f[..n]);
+        pcm::to_f64(&input[pos..pos + n], in_depth, &mut f[..n]);
         chain.process(&mut f[..n]);
-        chain.quantise(&f[..n], Some(in_bits), out_bits, &mut q[..n]);
+        chain.quantise(&f[..n], Some(in_bits), out_depth, &mut q[..n]);
         out.extend_from_slice(&q[..n]);
         pos += n;
     }
@@ -112,11 +117,11 @@ fn widening_and_float_output_are_exact() {
         let mut f32s = vec![0.0f32; input.len()];
         let mut back64 = vec![0.0; input.len()];
         let mut back = vec![0; input.len()];
-        pcm::to_f64(&input, bits, &mut f);
+        pcm::to_f64(&input, depth(bits), &mut f);
         chain.process(&mut f);
         pcm::f64_to_f32(&f, &mut f32s);
         pcm::f32_to_f64(&f32s, &mut back64);
-        pcm::from_f64(&back64, bits, &mut back);
+        pcm::from_f64(&back64, depth(bits), &mut back);
         assert!(back == input, "{bits}-bit via f32");
     }
 }

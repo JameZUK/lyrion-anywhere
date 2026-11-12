@@ -12,7 +12,7 @@
 //! sign, which moves the noise towards high frequencies (`1 - z⁻¹`), where hearing is less
 //! sensitive. The random generator is a seeded xorshift, so output is deterministic.
 
-use super::pcm::{int_range, int_scale, quantise_one};
+use super::pcm::{Depth, int_range, int_scale, quantise_one};
 
 /// Whether requantising to `output_bits` needs dither.
 ///
@@ -71,10 +71,10 @@ impl Dither {
         self.err.fill(0.0);
     }
 
-    /// Quantise interleaved `src` to `bits`-deep integers with dither.
-    pub fn quantise(&mut self, src: &[f64], bits: u32, dst: &mut [i32]) {
-        let s = int_scale(bits);
-        let (lo, hi) = int_range(bits);
+    /// Quantise interleaved `src` to integers of `depth` with dither.
+    pub fn quantise(&mut self, src: &[f64], depth: Depth, dst: &mut [i32]) {
+        let s = int_scale(depth);
+        let (lo, hi) = int_range(depth);
         let ch = self.err.len();
         for (i, (d, x)) in dst.iter_mut().zip(src).enumerate() {
             let x = super::sanitise(*x) * s;
@@ -124,7 +124,7 @@ mod tests {
             let n = 100_000;
             let x: Vec<f64> = (0..n).map(|i| (i as f64 * 0.001).sin() * 0.25).collect();
             let mut q = vec![0; n];
-            d.quantise(&x, 16, &mut q);
+            d.quantise(&x, Depth::D16, &mut q);
             let mut sum = 0.0;
             for (a, b) in x.iter().zip(&q) {
                 let e = f64::from(*b) - a * 32768.0;
@@ -144,7 +144,7 @@ mod tests {
             .map(|i| 0.3 / 32768.0 * (2.0 * std::f64::consts::PI * i as f64 / 100.0).sin())
             .collect();
         let mut q = vec![0; n];
-        d.quantise(&x, 16, &mut q);
+        d.quantise(&x, Depth::D16, &mut q);
         let corr: f64 = x
             .iter()
             .zip(&q)
@@ -153,7 +153,7 @@ mod tests {
         let energy: f64 = x.iter().map(|a| (a * 32768.0).powi(2)).sum();
         assert!((corr / energy - 1.0).abs() < 0.1, "{}", corr / energy);
         let mut plain = vec![0; n];
-        super::super::pcm::from_f64(&x, 16, &mut plain);
+        super::super::pcm::from_f64(&x, Depth::D16, &mut plain);
         assert!(plain.iter().all(|v| *v == 0));
     }
 }

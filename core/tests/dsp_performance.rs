@@ -12,6 +12,7 @@ use anywhere_core::dsp::chain::{Chain, ChainConfig};
 use anywhere_core::dsp::crossfeed::CrossfeedPreset;
 use anywhere_core::dsp::eq::parse_autoeq;
 use anywhere_core::dsp::limiter::LimiterConfig;
+use anywhere_core::dsp::pcm::Depth;
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -86,7 +87,7 @@ fn full_chain_is_far_faster_than_real_time() {
     let start = Instant::now();
     for c in x.chunks_mut(4096) {
         chain.process(c);
-        chain.quantise(c, Some(16), 16, &mut out[..c.len()]);
+        chain.quantise(c, Some(16), Depth::D16, &mut out[..c.len()]);
     }
     let elapsed = start.elapsed().as_secs_f64();
     let factor = secs as f64 / elapsed;

@@ -212,20 +212,20 @@ impl Chain {
         }
     }
 
-    /// Convert processed samples to `output_bits`-deep integers, dithering only where the
+    /// Convert processed samples to integers of `output` depth, dithering only where the
     /// depth is reduced (see [`needs_dither`]). `source_bits` is the source's integer
     /// depth (`None` for float or lossy sources).
     pub fn quantise(
         &mut self,
         src: &[f64],
         source_bits: Option<u32>,
-        output_bits: u32,
+        output: super::pcm::Depth,
         dst: &mut [i32],
     ) {
-        if needs_dither(Some(output_bits), source_bits, !self.is_bit_transparent()) {
-            self.dither.quantise(src, output_bits, dst);
+        if needs_dither(Some(output.bits()), source_bits, !self.is_bit_transparent()) {
+            self.dither.quantise(src, output, dst);
         } else {
-            super::pcm::from_f64(src, output_bits, dst);
+            super::pcm::from_f64(src, output, dst);
         }
     }
 

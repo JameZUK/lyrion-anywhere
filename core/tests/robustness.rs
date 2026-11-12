@@ -317,6 +317,7 @@ fn dsp_chain_survives_hostile_samples() {
     use anywhere_core::dsp::crossfeed::CrossfeedPreset;
     use anywhere_core::dsp::eq::parse_autoeq;
     use anywhere_core::dsp::limiter::LimiterConfig;
+    use anywhere_core::dsp::pcm;
     let cfg = ChainConfig {
         preamp_db: 12.0,
         eq: Some(parse_autoeq(AUTOEQ).unwrap()),
@@ -358,7 +359,7 @@ fn dsp_chain_survives_hostile_samples() {
                 buf[..whole].iter().all(|x| x.is_finite()),
                 "non-finite output at {rate} Hz"
             );
-            chain.quantise(&buf, Some(24), 16, &mut q[..n]);
+            chain.quantise(&buf, Some(24), pcm::Depth::D16, &mut q[..n]);
         }
     }
 }

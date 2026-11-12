@@ -11,7 +11,23 @@
 
 use anywhere_core::decode::{DecodeStatus, InputBuffer, StreamDecoder};
 use anywhere_core::dsp::dither::{Dither, DitherMode};
-use anywhere_core::dsp::pcm::{self, F32_EXACT_BITS, f32_on_grid, f32_to_int, int_to_f32};
+use anywhere_core::dsp::pcm::{self, Depth, F32_EXACT_BITS};
+
+fn depth(bits: u32) -> Depth {
+    Depth::new(bits).unwrap()
+}
+
+fn f32_to_int(x: f32, bits: u32) -> i32 {
+    pcm::f32_to_int(x, depth(bits))
+}
+
+fn f32_on_grid(x: f32, bits: u32) -> bool {
+    pcm::f32_on_grid(x, depth(bits))
+}
+
+fn int_to_f32(src: &[i32], bits: u32, dst: &mut [f32]) {
+    pcm::int_to_f32(src, depth(bits), dst).unwrap();
+}
 
 const RATES: [u32; 6] = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
 
@@ -89,7 +105,7 @@ fn thirty_two_bit_sources_do_not_survive_f32() {
 #[test]
 fn conversion_clamps_and_survives_hostile_samples() {
     for bits in [16, 24, 32] {
-        let (lo, hi) = pcm::int_range(bits);
+        let (lo, hi) = pcm::int_range(depth(bits));
         assert_eq!(f32_to_int(1.0, bits), hi as i32);
         assert_eq!(f32_to_int(-1.0, bits), lo as i32);
         assert_eq!(f32_to_int(f32::NAN, bits), 0);
@@ -115,7 +131,7 @@ fn dithered_audio_survives_the_f32_ring_exactly() {
         .map(|_| (r.next() as i64) as f64 / i64::MAX as f64 * 0.9)
         .collect();
     let mut q = vec![0i32; src.len()];
-    d.quantise(&src, 24, &mut q);
+    d.quantise(&src, Depth::D24, &mut q);
     let mut f = vec![0f32; q.len()];
     int_to_f32(&q, 24, &mut f);
     for (i, x) in q.iter().zip(&f) {
