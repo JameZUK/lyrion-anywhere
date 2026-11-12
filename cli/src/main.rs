@@ -10,11 +10,14 @@
 //! ```
 //!
 //! With `--gateway`, the player connects through a Lyrion Anywhere gateway instead of
-//! directly. The password comes from `ANYWHERE_PASSWORD` or standard input, never argv.
+//! directly. The password comes from `ANYWHERE_PASSWORD` or standard input (not echoed at a
+//! terminal), never argv. Plain `http://` is only for a gateway on this machine, named by
+//! its loopback address; redirects are never followed. Text from either server is printed
+//! with control and invisible characters escaped.
 
 mod gateway;
 
-use std::io::{Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -85,7 +88,8 @@ fn parse_args() -> Result<Args, String> {
                 println!(
                     "anywhere-cli (--server HOST[:PORT] | --gateway URL --user NAME [--ca-file F]) \
                      [--name NAME] [--mac 02:..] [--codecs flc,mp3,ogg] [--null] [-v]\n\
-                     With --gateway the password is read from $ANYWHERE_PASSWORD or standard input."
+                     With --gateway the password is read from $ANYWHERE_PASSWORD or standard input\n\
+                     (not echoed at a terminal); http:// only for 127.0.0.1 or [::1]."
                 );
                 std::process::exit(0);
             }
@@ -102,13 +106,117 @@ fn main() {
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("error: {e}");
+            eprintln!("error: {}", shown(&e));
             std::process::exit(2);
         }
     };
     if let Err(e) = run(args) {
-        eprintln!("error: {e}");
+        eprintln!("error: {}", shown(&e));
         std::process::exit(1);
+    }
+}
+
+/// Most characters of a server's text printed.
+const SHOWN_MAX: usize = 300;
+
+/// Text that came from a server (LMS or the gateway), made safe to print: control and
+/// invisible characters (terminal escape sequences, bidirectional overrides) are printed
+/// escaped instead of reaching the terminal, and it is cut at [`SHOWN_MAX`] characters.
+pub(crate) fn shown(s: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i == SHOWN_MAX {
+            out.push('…');
+            break;
+        }
+        if anywhere_core::names::invisible(c) {
+            out.extend(c.escape_unicode());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Most bytes of a stream's response headers (LMS sends a few hundred). A server that sends
+/// more before ending them is refused rather than buffered without end.
+const MAX_HEADER_BYTES: usize = 64 * 1024;
+
+/// Splits a stream's response headers from its body as the bytes arrive.
+#[derive(Default)]
+struct HeaderSplit {
+    head: Vec<u8>,
+}
+
+/// A stream's response headers, and the start of its body.
+type HeadersAndBody = (Vec<u8>, Vec<u8>);
+
+impl HeaderSplit {
+    /// Feed the next bytes: `Ok(None)` while the headers are still arriving, then once
+    /// `Ok(Some((headers, start of the body)))`. Headers longer than [`MAX_HEADER_BYTES`]
+    /// are an error.
+    fn push(&mut self, data: &[u8]) -> Result<Option<HeadersAndBody>, String> {
+        // The end may straddle the previous read: look from three bytes back.
+        let from = self.head.len().saturating_sub(3);
+        self.head.extend_from_slice(data);
+        let end = self.head[from..]
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .map(|i| from + i + 4);
+        match end {
+            Some(end) if end <= MAX_HEADER_BYTES => {
+                let body = self.head.split_off(end);
+                Ok(Some((std::mem::take(&mut self.head), body)))
+            }
+            None if self.head.len() < MAX_HEADER_BYTES => Ok(None),
+            _ => Err(format!(
+                "the stream's response headers are longer than {MAX_HEADER_BYTES} bytes"
+            )),
+        }
+    }
+}
+
+/// Runs `stty` with the given arguments on the terminal (standard input) and returns what
+/// it printed.
+type Stty<'a> = dyn Fn(&[&str]) -> Result<String, String> + 'a;
+
+fn stty(args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("stty")
+        .args(args)
+        .stdin(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("stty: {e}"))?;
+    if !out.status.success() {
+        return Err("stty failed".into());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// The terminal's echo, off until this is dropped, so a password typed at the prompt isn't
+/// shown. Made only once the terminal's settings are saved and echo is off.
+struct NoEcho<'a> {
+    saved: String,
+    stty: &'a Stty<'a>,
+}
+
+impl<'a> NoEcho<'a> {
+    fn on(stty: &'a Stty<'a>) -> Result<NoEcho<'a>, String> {
+        let saved = stty(&["-g"])?;
+        // `stty -g` prints its own settings format, which is passed back as one argument:
+        // anything else (which could read as an option) is not.
+        let plain = |c: char| c.is_ascii_alphanumeric() || c == ':' || c == '=';
+        if saved.is_empty() || !saved.chars().all(plain) {
+            return Err("stty: unexpected settings".into());
+        }
+        stty(&["-echo"])?;
+        Ok(NoEcho { saved, stty })
+    }
+}
+
+impl Drop for NoEcho<'_> {
+    fn drop(&mut self) {
+        let _ = (self.stty)(&[&self.saved]);
     }
 }
 
@@ -130,15 +238,27 @@ enum Control {
     Gateway(gateway::GatewayConn),
 }
 
+/// The password: `$ANYWHERE_PASSWORD`, or a line of standard input. Typed at a terminal,
+/// it isn't echoed; where echo can't be turned off, it isn't asked for.
 fn read_password() -> Result<String, String> {
     if let Ok(p) = std::env::var("ANYWHERE_PASSWORD") {
         return Ok(p);
     }
+    let stdin = std::io::stdin();
+    let terminal = stdin.is_terminal();
+    let _quiet = if terminal {
+        Some(NoEcho::on(&stty).map_err(|e| {
+            format!("{e}: can't hide the password as it is typed; set ANYWHERE_PASSWORD")
+        })?)
+    } else {
+        None
+    };
     eprint!("password: ");
     let mut line = String::new();
-    std::io::stdin()
-        .read_line(&mut line)
-        .map_err(|e| e.to_string())?;
+    stdin.read_line(&mut line).map_err(|e| e.to_string())?;
+    if terminal {
+        eprintln!(); // the Enter wasn't echoed
+    }
     Ok(line.trim_end_matches(['\r', '\n']).to_string())
 }
 
@@ -212,7 +332,7 @@ fn run(args: Args) -> Result<(), String> {
             Ok(Event::StreamData(id, d)) if id == stream_id => p.on_stream_data(&d, t),
             Ok(Event::StreamEnd(id)) if id == stream_id => p.on_stream_end(t),
             Ok(Event::StreamError(id, e)) if id == stream_id => {
-                eprintln!("stream error: {e}");
+                eprintln!("stream error: {}", shown(&e));
                 p.on_stream_error(t)
             }
             _ => {}
@@ -226,7 +346,7 @@ fn run(args: Args) -> Result<(), String> {
                 Event::StreamData(id, d) if id == stream_id => p.on_stream_data(&d, t),
                 Event::StreamEnd(id) if id == stream_id => p.on_stream_end(t),
                 Event::StreamError(id, e) if id == stream_id => {
-                    eprintln!("stream error: {e}");
+                    eprintln!("stream error: {}", shown(&e));
                     p.on_stream_error(t)
                 }
                 _ => {}
@@ -282,14 +402,18 @@ fn run(args: Args) -> Result<(), String> {
                             ) {
                                 Ok(a) => a,
                                 Err(e) => {
-                                    eprintln!("refused stream request: {e}");
+                                    eprintln!("refused stream request: {}", shown(&e));
                                     p.on_stream_error(t);
                                     continue;
                                 }
                             };
                             if args.verbose {
+                                // The server's request line: printed made safe.
                                 let line = request.split(|b| *b == b'\r').next().unwrap_or(&[]);
-                                println!("-> stream {addr} {}", String::from_utf8_lossy(line));
+                                println!(
+                                    "-> stream {addr} {}",
+                                    shown(&String::from_utf8_lossy(line))
+                                );
                             }
                             stream = Some(spawn_stream(stream_id, addr, request, tx.clone()));
                         }
@@ -330,7 +454,7 @@ fn run(args: Args) -> Result<(), String> {
                 status.volume.0,
                 status
                     .last_error
-                    .map(|e| format!(", last error: {e}"))
+                    .map(|e| format!(", last error: {}", shown(&e)))
                     .unwrap_or_default()
             );
         }
@@ -385,7 +509,7 @@ fn spawn_stream(id: u64, addr: SocketAddr, request: Vec<u8>, tx: Sender<Event>) 
             sock.set_read_timeout(Some(Duration::from_secs(30))).ok();
             sock.write_all(&request).map_err(|e| e.to_string())?;
             let mut buf = vec![0u8; 64 * 1024];
-            let mut head = Vec::new();
+            let mut headers = HeaderSplit::default();
             let mut in_headers = true;
             loop {
                 if c.load(Ordering::Relaxed) {
@@ -401,11 +525,9 @@ fn spawn_stream(id: u64, addr: SocketAddr, request: Vec<u8>, tx: Sender<Event>) 
                     return Ok(());
                 }
                 if in_headers {
-                    head.extend_from_slice(&buf[..n]);
-                    if let Some(end) = head.windows(4).position(|w| w == b"\r\n\r\n") {
+                    if let Some((head, body)) = headers.push(&buf[..n])? {
                         in_headers = false;
-                        let body = head.split_off(end + 4);
-                        let _ = tx.send(Event::StreamHeaders(id, std::mem::take(&mut head)));
+                        let _ = tx.send(Event::StreamHeaders(id, head));
                         if !body.is_empty() {
                             let _ = tx.send(Event::StreamData(id, body));
                         }
@@ -514,4 +636,112 @@ fn spawn_null_sink(player: Arc<Mutex<Player>>, rate: u32) -> Arc<AtomicBool> {
         }
     });
     stop
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    /// Security (review low): server strings were printed raw, so a hostile server could
+    /// send terminal escape sequences (retitle or clear the terminal, hide text) or
+    /// bidirectional overrides. They are printed escaped, and long ones cut.
+    #[test]
+    fn server_text_is_printed_safely() {
+        let hostile = "Kitchen\u{1b}]0;owned\u{7}\u{1b}[2J\r\nx\u{202e}gpj.exe\u{200b}";
+        let s = shown(hostile);
+        assert!(!s.chars().any(anywhere_core::names::invisible), "{s:?}");
+        assert!(s.starts_with("Kitchen\\u{1b}]0;owned\\u{7}"), "{s:?}");
+        assert!(s.contains("\\u{202e}gpj.exe"), "{s:?}");
+        assert_eq!(shown("Sigur Rós – 日本"), "Sigur Rós – 日本");
+        let long = shown(&"é".repeat(10_000));
+        assert_eq!(long.chars().count(), SHOWN_MAX + 1);
+        assert!(long.ends_with('…'));
+    }
+
+    /// Security (review low): in direct mode the stream's response headers were buffered
+    /// until the blank line, with no limit, so a server that never ended them filled memory.
+    #[test]
+    fn stream_headers_are_bounded() {
+        let head = b"HTTP/1.0 200 OK\r\nContent-Type: audio/flac\r\n\r\n";
+        // The end of the headers in every place across two reads.
+        for cut in 0..=head.len() {
+            let mut h = HeaderSplit::default();
+            let first = h.push(&head[..cut]).unwrap();
+            let (headers, mut body) = match first {
+                Some(done) => {
+                    assert_eq!(cut, head.len());
+                    done
+                }
+                None => h.push(&head[cut..]).unwrap().expect("the headers end"),
+            };
+            if cut == head.len() {
+                assert!(body.is_empty());
+            }
+            body.extend_from_slice(b"fLaC");
+            assert_eq!(headers, head.to_vec(), "cut at {cut}");
+            assert_eq!(body, b"fLaC".to_vec(), "cut at {cut}");
+        }
+        let mut h = HeaderSplit::default();
+        let (headers, body) = h.push(b"HTTP/1.0 200 OK\r\n\r\nfLaC").unwrap().unwrap();
+        assert_eq!((headers.len(), body), (19, b"fLaC".to_vec()));
+        // Headers that never end are refused once past the limit, not kept for ever.
+        let mut h = HeaderSplit::default();
+        let mut pushed = 0;
+        let refused = loop {
+            match h.push(&[b'x'; 4096]) {
+                Ok(None) => pushed += 4096,
+                Ok(Some(_)) => panic!("no end was sent"),
+                Err(e) => break e,
+            }
+            assert!(pushed <= MAX_HEADER_BYTES, "still buffering");
+        };
+        assert!(refused.contains("longer than"), "{refused}");
+        // Headers that end past the limit are refused too.
+        let mut big = vec![b'x'; MAX_HEADER_BYTES];
+        big.extend_from_slice(b"\r\n\r\nbody");
+        assert!(HeaderSplit::default().push(&big).is_err());
+    }
+
+    /// Security (review low): the password was echoed as it was typed. Echo is turned off
+    /// for the prompt and the terminal's settings put back after; if echo can't be turned
+    /// off, the password isn't asked for.
+    #[test]
+    fn the_password_prompt_hides_what_is_typed() {
+        let calls = RefCell::new(Vec::new());
+        let fake = |args: &[&str]| -> Result<String, String> {
+            calls.borrow_mut().push(args.join(" "));
+            Ok(if args == ["-g"] {
+                "500:5:bf:8a3b:3:1c".into()
+            } else {
+                String::new()
+            })
+        };
+        {
+            let _quiet = NoEcho::on(&fake).unwrap();
+            assert_eq!(*calls.borrow(), ["-g", "-echo"]);
+        }
+        assert_eq!(*calls.borrow(), ["-g", "-echo", "500:5:bf:8a3b:3:1c"]);
+        // Echo can't be turned off, or the settings can't be saved: no prompt at all.
+        let echo_stays = |args: &[&str]| -> Result<String, String> {
+            if args == ["-echo"] {
+                Err("stty failed".into())
+            } else {
+                Ok("500:5".into())
+            }
+        };
+        assert!(NoEcho::on(&echo_stays).is_err());
+        let no_terminal = |_: &[&str]| -> Result<String, String> { Err("stty failed".into()) };
+        assert!(NoEcho::on(&no_terminal).is_err());
+        // A saved state that isn't stty's own format is never passed back to it.
+        for odd in ["", "-echo raw", "500:5 ; x", "a\nb"] {
+            let calls = RefCell::new(Vec::new());
+            let fake = |args: &[&str]| -> Result<String, String> {
+                calls.borrow_mut().push(args.join(" "));
+                Ok(odd.to_string())
+            };
+            assert!(NoEcho::on(&fake).is_err(), "{odd:?}");
+            assert_eq!(*calls.borrow(), ["-g"], "{odd:?}");
+        }
+    }
 }

@@ -39,8 +39,12 @@ use crate::proto::{ClientMsg, DEVICE_ID_SOFTWARE, Helo, ServerFrameReader, Serve
 
 /// Stop reading the network stream once this many compressed bytes are waiting.
 pub const INPUT_HIGH_WATER: usize = 8 * 1024 * 1024;
-/// Decode ahead until this many seconds of PCM are queued.
+/// Decode ahead until this many seconds of PCM are queued, up to
+/// [`OUTPUT_TARGET_MAX_BYTES`].
 pub const OUTPUT_TARGET_SECS: u32 = 10;
+/// The most decoded PCM queued ahead, in bytes (8 a stereo frame): the whole
+/// [`OUTPUT_TARGET_SECS`] up to 192 kHz, less above it (under 3 s at 768 kHz).
+pub const OUTPUT_TARGET_MAX_BYTES: u64 = 16 * 1024 * 1024;
 /// Packets decoded per `tick`, to bound the time spent per call.
 const PACKETS_PER_TICK: usize = 48;
 const HEARTBEAT_MS: u64 = 1000;
@@ -1020,7 +1024,7 @@ impl Player {
     }
 
     /// Report that `frames` previously pulled have now been played.
-    pub fn played(&mut self, mut frames: u64) {
+    pub fn played(&mut self, frames: u64) {
         // Audio flowing again after an `STMo` (read-ahead mode tells LMS with `STMr`).
         let resumed = frames > 0 && self.underrun_reported && !self.underrun_withdrawn;
         if frames > 0 {
@@ -1028,6 +1032,16 @@ impl Player {
             self.underrun_withdrawn = false;
             self.stall_since = None;
         }
+        let started = self.count_played(frames);
+        if resumed && !started && self.ready_when_received {
+            self.send_stat(*b"STMr", 0);
+        }
+    }
+
+    /// Count `frames` of the pulled audio as played, in queue order. Each track entered is
+    /// started (`STMs`, never twice for one track), and segments fully played are dropped,
+    /// keeping the audible one for elapsed time. Returns whether a track was started.
+    fn count_played(&mut self, mut frames: u64) -> bool {
         let mut started = false;
         while frames > 0 {
             let Some(idx) = self.segments.iter().position(|s| s.played < s.pulled) else {
@@ -1050,9 +1064,6 @@ impl Player {
             seg.played += n;
             frames -= n;
         }
-        if resumed && !started && self.ready_when_received {
-            self.send_stat(*b"STMr", 0);
-        }
         // Drop fully played segments, keeping the one that is audible for elapsed time.
         while self.segments.len() > 1 {
             let s = &self.segments[0];
@@ -1062,6 +1073,7 @@ impl Player {
                 break;
             }
         }
+        started
     }
 
     /// The byte rate of the track being decoded, in bytes per millisecond of audio: the
@@ -1303,6 +1315,9 @@ impl Player {
         self.next = None;
         self.stmu_deferred = false;
         self.stall_since = None;
+        // An underrun that never recovered is over: the next track's is its own.
+        self.underrun_reported = false;
+        self.underrun_withdrawn = false;
         self.pcm.clear();
         self.segments.clear();
         self.playing_seq = None;
@@ -1368,29 +1383,42 @@ impl Player {
     }
 
     /// Drop up to `ms` of decoded audio as if played; returns the milliseconds dropped.
+    /// Each track's share is counted at its own rate, and every track the skip enters is
+    /// started (`STMs`), as if its audio had been heard.
     fn skip_ahead(&mut self, ms: u64) -> u64 {
-        let Some(rate) = self.output_rate().filter(|r| *r > 0) else {
-            return 0;
-        };
-        let want = ms.saturating_mul(u64::from(rate)) / 1000;
-        let mut frames = want;
+        // In microseconds, so a skip across tracks at different rates doesn't drift.
+        let total_us = u128::from(ms) * 1000;
+        let mut left_us = total_us;
+        let mut dropped = 0u64;
         for seg in self.segments.iter_mut() {
-            if frames == 0 {
-                break;
+            let unpulled = seg.frames - seg.pulled;
+            if unpulled == 0 {
+                continue;
             }
-            let n = (seg.frames - seg.pulled).min(frames);
+            let rate = u128::from(seg.rate.max(1));
+            let n = u64::try_from(left_us * rate / 1_000_000).map_or(unpulled, |f| f.min(unpulled));
             self.pcm.drain(..(n as usize * 2).min(self.pcm.len()));
             seg.pulled += n;
-            seg.played += n;
-            frames -= n;
+            dropped += n;
+            left_us -= u128::from(n) * 1_000_000 / rate;
+            if n < unpulled {
+                break; // less than a frame of the skip is left
+            }
         }
-        (want - frames) * 1000 / u64::from(rate)
+        self.count_played(dropped);
+        u64::try_from((total_us - left_us) / 1000).unwrap_or(u64::MAX)
+    }
+
+    /// Frames to decode ahead: [`OUTPUT_TARGET_SECS`] at the output rate, at most
+    /// [`OUTPUT_TARGET_MAX_BYTES`]. In `u64`, so it can't overflow on 32-bit hosts (wasm32);
+    /// the decoders refuse rates outside 8 kHz to 768 kHz, so it is never 0.
+    fn decode_target_frames(&self) -> u64 {
+        let rate = u64::from(self.output_rate().unwrap_or(48_000));
+        (u64::from(OUTPUT_TARGET_SECS) * rate).min(OUTPUT_TARGET_MAX_BYTES / 8)
     }
 
     fn decode_some(&mut self) {
-        let target_frames =
-            OUTPUT_TARGET_SECS as usize * self.output_rate().unwrap_or(48_000) as usize;
-        if self.pcm.len() / 2 >= target_frames {
+        if (self.pcm.len() / 2) as u64 >= self.decode_target_frames() {
             return;
         }
         // A header made for bare FLAC frames (a seek): noted once, for the Connection log.
@@ -1674,13 +1702,64 @@ mod tests {
         v.extend_from_slice(&1u16.to_le_bytes());
         v.extend_from_slice(&2u16.to_le_bytes());
         v.extend_from_slice(&rate.to_le_bytes());
-        v.extend_from_slice(&(rate * 4).to_le_bytes());
+        v.extend_from_slice(&rate.wrapping_mul(4).to_le_bytes());
         v.extend_from_slice(&4u16.to_le_bytes());
         v.extend_from_slice(&16u16.to_le_bytes());
         v.extend_from_slice(b"data");
         v.extend_from_slice(&(data_len as u32).to_le_bytes());
         v.resize(44 + data_len, 0x10);
         v
+    }
+
+    /// Security (M2): the declared sample rate was never range-checked. At 0 the
+    /// decode-ahead target was nothing, so the track never finished and LMS never heard
+    /// `STMd` or `STMn`; a huge rate made the target unbounded, so the whole stream was
+    /// decoded into memory (and on wasm32 the multiplication overflowed). Anything outside
+    /// 8 kHz to 768 kHz is refused with `STMn`, and the player is not left decoding.
+    #[test]
+    fn a_hostile_declared_sample_rate_is_refused() {
+        for rate in [0, 1, 7_999, 768_001, 1_000_000_000, u32::MAX] {
+            let mut p = Player::new(cfg());
+            p.on_control_data(&strm(b's', b'1', b'p', 0), 0).unwrap();
+            p.on_stream_data(&wav(rate, 44_100 * 4), 1);
+            p.on_stream_end(2);
+            tick_n(&mut p, 3, 50);
+            let ev = events(&p.take_actions());
+            assert!(ev.contains(&"STMn".to_string()), "rate {rate}: {ev:?}");
+            assert!(p.pcm.is_empty(), "rate {rate}: nothing decoded");
+            let err = p.status().last_error.unwrap_or_default();
+            assert!(err.contains("sample rate"), "rate {rate}: {err}");
+            assert!(p.audio_exhausted(), "rate {rate}: left decoding");
+        }
+    }
+
+    /// The edges of the range play. At 768 kHz the decode-ahead stops at its byte cap
+    /// (a little under 3 s there) rather than at 10 s.
+    #[test]
+    fn the_edge_sample_rates_play_and_the_decode_ahead_is_capped_in_bytes() {
+        for (rate, secs) in [(8_000, 2), (768_000, 4)] {
+            let mut p = Player::new(cfg());
+            p.on_control_data(&strm(b's', b'1', b'p', 0), 0).unwrap();
+            p.on_stream_data(&wav(rate, rate as usize * secs), 1);
+            p.on_stream_end(2);
+            let mut queued = 0;
+            for i in 0..5_000 {
+                p.tick(3 + i);
+                if p.pcm.len() == queued && i > 10 {
+                    break;
+                }
+                queued = p.pcm.len();
+            }
+            let ev = events(&p.take_actions());
+            assert!(!ev.contains(&"STMn".to_string()), "rate {rate}: {ev:?}");
+            assert_eq!(p.status().sample_rate, rate);
+            let bytes = p.pcm.len() as u64 * 4;
+            assert!(bytes > 0, "rate {rate}: something decoded");
+            assert!(
+                bytes <= OUTPUT_TARGET_MAX_BYTES + 1024 * 1024,
+                "rate {rate}: {bytes} bytes decoded ahead"
+            );
+        }
     }
 
     /// Pull everything currently playable, reporting it as played immediately.
@@ -3509,6 +3588,70 @@ mod tests {
         assert_eq!(count(&events(&p.take_actions()), "STMs"), 1);
         let started: Vec<_> = p.sent_log.iter().filter(|e| e.0 == "STMs").collect();
         assert_eq!(started, vec![&("STMs", seq1), &("STMs", seq1 + 1)]);
+    }
+
+    /// A skip past the whole of a short track still starts it with `STMs`, and each track's
+    /// share of the skip is counted at that track's own rate (open since the 15 October
+    /// review: a short track skipped whole was never started, and the whole skip was
+    /// converted at the first track's rate).
+    #[test]
+    fn a_skip_starts_every_track_it_enters_each_at_its_own_rate() {
+        let mut p = Player::new(cfg());
+        p.on_control_data(&strm(b's', b'1', b'p', 0), 0).unwrap();
+        p.on_stream_data(&wav(44_100, 44_100), 1);
+        p.on_stream_end(2);
+        tick_n(&mut p, 3, 20);
+        let mut buf = vec![0f32; 22_050 * 2];
+        assert_eq!(p.pull_audio(&mut buf), 22_050);
+        p.played(22_050);
+        let seq1 = p.playing_track().unwrap();
+        // Track 2: 100 ms at 48 kHz. Track 3: 1 s at 32 kHz.
+        for (at, rate, frames) in [(600, 48_000, 4_800), (700, 32_000, 32_000)] {
+            p.on_control_data(&strm(b's', b'1', b'p', 0), at).unwrap();
+            p.on_stream_data(&wav(rate, frames), at + 1);
+            p.on_stream_end(at + 2);
+            tick_n(&mut p, at + 3, 40);
+        }
+        p.take_actions();
+        // The rest of track 1 (500 ms), all of track 2 (100 ms), 150 ms of track 3.
+        assert_eq!(p.skip_audio(750), 750);
+        let started: Vec<u32> = p
+            .sent_log
+            .iter()
+            .filter(|e| e.0 == "STMs")
+            .map(|e| e.1)
+            .collect();
+        assert_eq!(started, vec![seq1, seq1 + 1, seq1 + 2]);
+        assert_eq!(count(&events(&p.take_actions()), "STMs"), 2);
+        assert_eq!(p.playing_track(), Some(seq1 + 2));
+        assert_eq!(p.status().elapsed_ms, 150);
+        assert_eq!(p.output_rate(), Some(32_000));
+        assert_eq!(drain(&mut p), 32_000 - 4_800, "150 ms at 32 kHz skipped");
+        let ev = events(&p.take_actions());
+        assert_eq!(count(&ev, "STMs"), 0, "no track started twice: {ev:?}");
+    }
+
+    /// A flush forgets an underrun that never recovered (open since the 15 October
+    /// review): the flag stayed set, so the next track's first underrun, before any of its
+    /// audio was heard, sent no `STMo`.
+    #[test]
+    fn a_flush_forgets_an_unrecovered_underrun() {
+        let (mut p, now) = stall_player();
+        p.output_underrun();
+        p.withdraw_underrun_report();
+        assert_eq!(events(&p.take_actions()), vec!["STMo"]);
+        p.on_control_data(&strm(b'q', b'0', b'p', 0), now).unwrap();
+        p.on_control_data(&strm(b's', b'1', b'p', 0), now).unwrap();
+        p.on_stream_data(&wav(44_100, 44_100 * 15), now);
+        tick_n(&mut p, now, 20);
+        assert_eq!(p.status().output, OutputState::Playing);
+        p.take_actions();
+        p.output_underrun();
+        assert_eq!(events(&p.take_actions()), vec!["STMo"]);
+        assert!(
+            !p.underrun_withdrawn,
+            "the withdrawn report went with the flush"
+        );
     }
 
     /// Robustness and the per-track invariants: random sequences of LMS commands, stream

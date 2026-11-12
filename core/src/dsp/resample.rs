@@ -40,8 +40,7 @@ impl std::fmt::Debug for Resampler {
 
 impl Resampler {
     pub fn new(from: u32, to: u32, channels: usize) -> Result<Self, String> {
-        let ok = |r: u32| (8_000..=768_000).contains(&r);
-        if !ok(from) || !ok(to) {
+        if !crate::sample_rate_supported(from) || !crate::sample_rate_supported(to) {
             return Err("sample rate out of range".into());
         }
         if channels == 0 || channels > 32 {

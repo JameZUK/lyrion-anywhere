@@ -17,7 +17,8 @@
 //!
 //! Scope: channel mapping family 0, and family 1 with one or two channels (Ogg Opus as
 //! LMS and the download transcoder produce it). Output is always 48 kHz, as RFC 7845
-//! recommends. The header's output gain is applied, the pre-skip is dropped, and the end
+//! recommends. The header's output gain is applied (at most [`MAX_OUTPUT_GAIN_DB`] of
+//! it, and at most one stream per channel is accepted), the pre-skip is dropped, and the end
 //! trim Symphonia derives from the final granule position is honoured, so decoding is
 //! sample-accurate.
 
@@ -43,6 +44,9 @@ use symphonia::core::packet::PacketRef;
 pub const OPUS_RATE: u32 = 48_000;
 /// Longest Opus packet: 120 ms at 48 kHz.
 const MAX_FRAMES: usize = 5760;
+/// The most amplification a header's output gain may apply, in dB. A header can say up to
+/// +128 dB (about 2.5 million times); +24 dB covers any real normalisation.
+pub const MAX_OUTPUT_GAIN_DB: f64 = 24.0;
 
 /// The parsed `OpusHead` identification header (RFC 7845 §5.1).
 #[derive(Debug, Clone, PartialEq)]
@@ -90,6 +94,11 @@ impl OpusHead {
         if streams == 0 || coupled > streams {
             return Err("bad stream counts");
         }
+        // Each stream is a decoder run for every packet: a mono or stereo stream needs at
+        // most one per channel, never the 255 a header can declare.
+        if streams > channels {
+            return Err("more streams than channels");
+        }
         let decoded = 2 * usize::from(coupled) + usize::from(streams - coupled);
         if mapping
             .iter()
@@ -106,6 +115,12 @@ impl OpusHead {
             coupled,
             mapping,
         })
+    }
+
+    /// The linear factor the header's output gain applies, at most
+    /// [`MAX_OUTPUT_GAIN_DB`]; an attenuation is applied as it is.
+    pub fn gain(&self) -> f32 {
+        crate::dsp::db_to_gain(self.output_gain_db.min(MAX_OUTPUT_GAIN_DB)) as f32
     }
 }
 
@@ -152,7 +167,7 @@ impl OpusDecoder {
         Ok(OpusDecoder {
             params: params.clone(),
             opts: *opts,
-            gain: crate::dsp::db_to_gain(head.output_gain_db) as f32,
+            gain: head.gain(),
             skip: usize::from(head.pre_skip),
             pcm: vec![0.0; MAX_FRAMES * usize::from(head.channels)],
             head,
@@ -318,5 +333,57 @@ mod tests {
         for b in bad {
             assert!(OpusHead::parse(&b).is_err(), "{b:?}");
         }
+    }
+
+    /// Security (open since the 15 October review): a mono or stereo family-1 head could
+    /// declare up to 255 streams, and the decoder then built 255 sub-decoders and ran
+    /// every one for each packet. At most one stream per channel.
+    #[test]
+    fn more_streams_than_channels_are_refused() {
+        for (channels, extra) in [
+            (2, &[255u8, 0, 0, 1][..]),
+            (2, &[3, 0, 0, 1]),
+            (2, &[3, 1, 0, 1]),
+            (1, &[2, 0, 0]),
+            (1, &[255, 0, 0]),
+        ] {
+            let h = head(channels, 1, extra);
+            assert_eq!(
+                OpusHead::parse(&h),
+                Err("more streams than channels"),
+                "{extra:?}"
+            );
+        }
+        for (channels, extra, streams) in [
+            (2, &[1u8, 1, 0, 1][..], 1),
+            (2, &[2, 0, 0, 1], 2),
+            (1, &[1, 0, 0], 1),
+        ] {
+            let h = OpusHead::parse(&head(channels, 1, extra)).unwrap();
+            assert_eq!(h.streams, streams);
+        }
+    }
+
+    /// The header's output gain is applied up to +24 dB: +128 dB, the most it can say,
+    /// would multiply the audio about 2.5 million times. Attenuation is applied as it is.
+    #[test]
+    fn the_output_gain_is_capped() {
+        let gain_of = |q8: i16| {
+            let mut h = head(2, 0, &[]);
+            h[16..18].copy_from_slice(&q8.to_le_bytes());
+            OpusHead::parse(&h).unwrap().gain()
+        };
+        let cap = crate::dsp::db_to_gain(MAX_OUTPUT_GAIN_DB) as f32;
+        assert_eq!(gain_of(i16::MAX), cap);
+        assert_eq!(gain_of(25 * 256), cap);
+        assert_eq!(gain_of(0), 1.0);
+        assert!((gain_of(6 * 256) - 1.995).abs() < 0.001);
+        assert!((gain_of(-20 * 256) - 0.1).abs() < 1e-6);
+        assert!(gain_of(i16::MIN) < 1e-6);
+        assert_eq!(
+            OpusHead::parse(&head(2, 0, &[])).unwrap().output_gain_db,
+            -1.0,
+            "the header's own value is kept"
+        );
     }
 }

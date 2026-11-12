@@ -350,10 +350,11 @@ mod tests {
         assert_eq!(Lyrics::parse(&plain).lines.len(), MAX_LINES);
     }
 
+    /// Regression: a tag of `<`s with no `>` took about 11 s (quadratic) at 256 KiB. Timed
+    /// by comparing input sizes (not against a fixed limit, which a slow or busy machine
+    /// fails).
     #[test]
     fn hostile_lines_parse_in_linear_time() {
-        // Regression: a tag of `<`s with no `>` took about 11 s (quadratic) at 256 KiB.
-        let start = std::time::Instant::now();
         for input in [
             "<".repeat(256 * 1024),
             "<1".repeat(128 * 1024),
@@ -362,18 +363,15 @@ mod tests {
             "[00:01]".repeat(30_000),
             "<00:01.00>".repeat(25_000) + "x",
         ] {
-            let l = Lyrics::parse(&input);
-            assert!(
-                l.lines
-                    .iter()
-                    .all(|x| x.text.chars().count() <= MAX_LINE_CHARS)
-            );
+            crate::test_timing::assert_linear(&input[..12], 48 * 1024, 4, |n| {
+                let l = Lyrics::parse(&input[..n]);
+                assert!(
+                    l.lines
+                        .iter()
+                        .all(|x| x.text.chars().count() <= MAX_LINE_CHARS)
+                );
+            });
         }
-        assert!(
-            start.elapsed() < std::time::Duration::from_secs(2),
-            "took {:?}",
-            start.elapsed()
-        );
         // Word times still go, and a long `<…>` is text.
         assert_eq!(
             Lyrics::parse("[00:01]<00:01.50>Hi <00:02.00>there <not a time>").lines[0].text,

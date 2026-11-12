@@ -60,6 +60,9 @@ pub struct Visualiser {
     edges: Vec<(usize, usize)>,
     bass_bins: usize,
     pending: Option<VisualFrame>,
+    /// Tests: analyses run (each an FFT).
+    #[cfg(test)]
+    analyses: usize,
 }
 
 fn clean(x: f32) -> f32 {
@@ -81,7 +84,7 @@ fn db(x: f64) -> f32 {
 impl Visualiser {
     /// For interleaved PCM of `channels` at `sample_rate` Hz (clamped to sane values).
     pub fn new(sample_rate: u32, channels: u16) -> Self {
-        let rate = sample_rate.clamp(8_000, 768_000) as f32;
+        let rate = sample_rate.clamp(crate::MIN_SAMPLE_RATE, crate::MAX_SAMPLE_RATE) as f32;
         let channels = (channels as usize).clamp(1, MAX_CHANNELS);
         let hop = (rate as usize / MAX_FPS as usize).max(1);
         let window = (0..FFT_SIZE)
@@ -120,6 +123,8 @@ impl Visualiser {
             edges,
             bass_bins,
             pending: None,
+            #[cfg(test)]
+            analyses: 0,
         }
     }
 
@@ -174,6 +179,10 @@ impl Visualiser {
     }
 
     fn analyse(&mut self) -> VisualFrame {
+        #[cfg(test)]
+        {
+            self.analyses += 1;
+        }
         // Oldest first: the ring from `pos`.
         for i in 0..FFT_SIZE {
             let x = self.ring[(self.pos + i) % FFT_SIZE];
@@ -414,7 +423,6 @@ mod tests {
             seed ^= seed << 17;
             seed
         };
-        let start = std::time::Instant::now();
         for _ in 0..20 {
             let rate = 8_000 + (rnd() % 760_000) as u32;
             let ch = (rnd() % 9) as u16;
@@ -422,20 +430,20 @@ mod tests {
             let n = (rnd() % 20_000) as usize;
             let buf: Vec<f32> = (0..n).map(|_| f32::from_bits(rnd() as u32)).collect();
             v.push(&buf);
+            // Cheap: one analysis (an FFT) per hop of audio, whatever the input.
+            assert!(
+                v.analyses <= n / v.channels / v.hop,
+                "{rate} Hz, {ch} channels"
+            );
             if let Some(f) = v.take() {
                 assert!(f.bands.iter().chain(&f.scope).all(|x| x.is_finite()));
             }
         }
-        // One second of 48 kHz stereo (30 FFTs) well within a second, even unoptimised.
+        // One second of 48 kHz stereo is 30 analyses. (How fast they run is timed in
+        // optimised builds, by `tests/dsp_performance.rs`: a wall-clock limit here failed on
+        // slow or busy machines.)
         let mut v = Visualiser::new(48_000, 2);
-        let buf = sine(48_000, 440.0, 0.5, 48_000, 2);
-        let t = std::time::Instant::now();
-        v.push(&buf);
-        assert!(
-            t.elapsed() < std::time::Duration::from_millis(900),
-            "{:?}",
-            t.elapsed()
-        );
-        assert!(start.elapsed() < std::time::Duration::from_secs(20));
+        v.push(&sine(48_000, 440.0, 0.5, 48_000, 2));
+        assert_eq!(v.analyses, MAX_FPS as usize);
     }
 }

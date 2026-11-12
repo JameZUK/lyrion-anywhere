@@ -37,9 +37,8 @@ use waveform::WaveformBuilder;
 /// Version of [`TrackAnalysis`]'s meaning and encodings. Bump when either changes.
 pub const ANALYSIS_VERSION: u16 = 1;
 
-/// Supported sample rates and channel counts.
-pub const MIN_RATE: u32 = 8_000;
-pub const MAX_RATE: u32 = 768_000;
+/// Most channels analysed. The sample rates analysed are the core's
+/// ([`crate::sample_rate_supported`]).
 pub const MAX_CHANNELS: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -244,7 +243,7 @@ pub struct Analyser {
 
 impl Analyser {
     pub fn new(rate: u32, channels: usize, config: AnalysisConfig) -> Result<Self, AnalysisError> {
-        if !(MIN_RATE..=MAX_RATE).contains(&rate) {
+        if !crate::sample_rate_supported(rate) {
             return Err(AnalysisError::UnsupportedRate(rate));
         }
         if channels == 0 || channels > MAX_CHANNELS {

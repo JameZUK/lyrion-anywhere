@@ -15,28 +15,53 @@ const DEVICES: &[&str] = &[
     "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
 ];
 
-/// Invisible characters that could disguise a name: zero-width and joiners, bidirectional
-/// overrides and isolates, line and paragraph separators, the byte-order mark.
+/// Characters that draw nothing, any of which could make a name read as something else:
+/// controls (`Cc`), the line and paragraph separators, every format character (`Cf`,
+/// Unicode 16: the soft hyphen, zero-width and bidirectional controls, the Arabic and Syriac
+/// marks, the tag characters, …) and the other characters that draw nothing (the combining
+/// grapheme joiner, the Hangul fillers, the variation selectors). The one definition, for
+/// the names checked here and the text the signal-path panel shows
+/// ([`crate::quality`]).
 pub fn invisible(c: char) -> bool {
-    matches!(c,
-        '\u{200B}'..='\u{200F}'
-        | '\u{2028}'..='\u{202E}'
-        | '\u{2060}'..='\u{206F}'
-        | '\u{FEFF}'
-        | '\u{FFF9}'..='\u{FFFB}')
+    c.is_control()
+        || matches!(
+            c,
+            '\u{00ad}'
+                | '\u{034f}'
+                | '\u{0600}'..='\u{0605}'
+                | '\u{061c}'
+                | '\u{06dd}'
+                | '\u{070f}'
+                | '\u{0890}'..='\u{0891}'
+                | '\u{08e2}'
+                | '\u{115f}'..='\u{1160}'
+                | '\u{180e}'
+                | '\u{200b}'..='\u{200f}'
+                | '\u{2028}'..='\u{202e}'
+                | '\u{2060}'..='\u{206f}'
+                | '\u{3164}'
+                | '\u{fe00}'..='\u{fe0f}'
+                | '\u{feff}'
+                | '\u{ffa0}'
+                | '\u{fff9}'..='\u{fffb}'
+                | '\u{110bd}'
+                | '\u{110cd}'
+                | '\u{13430}'..='\u{1343f}'
+                | '\u{1bca0}'..='\u{1bca3}'
+                | '\u{1d173}'..='\u{1d17a}'
+                | '\u{e0000}'..='\u{e007f}'
+                | '\u{e0100}'..='\u{e01ef}'
+        )
 }
 
 /// Longest player name kept from the server, in characters.
 pub const PLAYER_NAME_MAX: usize = 64;
 
-/// A player name the server sent (a `setd` rename), made safe to show: control and
-/// invisible characters removed, whitespace trimmed, at most [`PLAYER_NAME_MAX`]
+/// A player name the server sent (a `setd` rename), made safe to show: the [`invisible`]
+/// characters removed, whitespace trimmed, at most [`PLAYER_NAME_MAX`]
 /// characters. `None` if nothing is left.
 pub fn player_name(raw: &str) -> Option<String> {
-    let clean: String = raw
-        .chars()
-        .filter(|c| !c.is_control() && !invisible(*c))
-        .collect();
+    let clean: String = raw.chars().filter(|c| !invisible(*c)).collect();
     let name: String = clean.trim().chars().take(PLAYER_NAME_MAX).collect();
     let name = name.trim_end();
     (!name.is_empty()).then(|| name.to_string())
@@ -52,7 +77,7 @@ pub fn playlist_name(raw: &str) -> Result<String, &'static str> {
     if name.chars().count() > PLAYLIST_NAME_MAX {
         return Err("names are at most 100 characters");
     }
-    if name.chars().any(|c| c.is_control() || invisible(c)) {
+    if name.chars().any(invisible) {
         return Err("names can't contain control or invisible characters");
     }
     if name.contains(RESERVED) {
@@ -153,6 +178,41 @@ mod tests {
         );
     }
 
+    /// One definition of the characters that draw nothing, for names as for the
+    /// signal-path panel (review low: this check was narrower than the panel's, so a soft
+    /// hyphen, a variation selector or a tag character got through it).
+    #[test]
+    fn every_character_that_draws_nothing_is_refused_or_dropped() {
+        for c in [
+            '\u{00ad}',
+            '\u{034f}',
+            '\u{061c}',
+            '\u{115f}',
+            '\u{180e}',
+            '\u{3164}',
+            '\u{fe0f}',
+            '\u{ffa0}',
+            '\u{1d173}',
+            '\u{e0001}',
+            '\u{e0041}',
+            '\u{e0100}',
+            '\u{0085}',
+        ] {
+            assert!(invisible(c), "{:04x}", c as u32);
+            let disguised = format!("Kit{c}chen");
+            assert!(playlist_name(&disguised).is_err(), "{:04x}", c as u32);
+            assert_eq!(
+                player_name(&disguised).as_deref(),
+                Some("Kitchen"),
+                "{:04x}",
+                c as u32
+            );
+        }
+        for c in ['a', 'é', '\u{301}', '日', '\u{1f3b5}', '\u{fffd}', '-', ' '] {
+            assert!(!invisible(c), "{:04x}", c as u32);
+        }
+    }
+
     /// Arbitrary text never panics the check, and whatever it accepts keeps every rule.
     #[test]
     fn the_check_never_panics() {
@@ -185,7 +245,7 @@ mod tests {
                 );
                 assert!(!n.contains(RESERVED) && !n.contains(".."), "{n:?}");
                 assert!(!n.starts_with('.') && !n.ends_with('.'), "{n:?}");
-                assert!(!n.chars().any(|c| c.is_control() || invisible(c)), "{n:?}");
+                assert!(!n.chars().any(invisible), "{n:?}");
                 assert_eq!(n, n.trim());
             }
         }

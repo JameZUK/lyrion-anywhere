@@ -566,6 +566,8 @@ pub struct StreamDecoder {
     rate: Option<u32>,
     /// Frames the reader failed to parse in a row.
     demux_errors: u32,
+    /// Packets the decoder failed to decode in a row.
+    bad_packets: u32,
     /// The demuxer's position once the headers were probed ([`StreamDecoder::audio_from`]).
     audio_from: u64,
 }
@@ -600,6 +602,7 @@ impl StreamDecoder {
             synthesised: None,
             rate: None,
             demux_errors: 0,
+            bad_packets: 0,
             audio_from: 0,
         }
     }
@@ -650,7 +653,9 @@ impl StreamDecoder {
     /// third-party demuxers are refused before they are parsed ([`check_wav_headers`]), which
     /// also protects WebAssembly builds (`panic = "abort"`, where a panic can't be caught).
     /// Where panics unwind (native hosts), any other panic inside the demuxer or decoder is
-    /// caught as well and fails the stream cleanly.
+    /// caught as well and fails the stream cleanly. A sample rate outside
+    /// [`crate::MIN_SAMPLE_RATE`] to [`crate::MAX_SAMPLE_RATE`], declared or decoded, fails
+    /// the stream: `sink` only ever sees supported rates.
     pub fn work(&mut self, max_packets: usize, sink: &mut dyn FnMut(u32, &[f32])) -> DecodeStatus {
         #[cfg(panic = "unwind")]
         {
@@ -756,6 +761,13 @@ impl StreamDecoder {
             match decoder.decode(&packet) {
                 Ok(buf) => {
                     let rate = buf.spec().rate();
+                    // The rate of every block, not just the header's: a chained stream
+                    // can change it.
+                    if let Err(e) = check_rate(rate) {
+                        self.state = State::Failed(format!("decode: {e}"));
+                        continue;
+                    }
+                    self.bad_packets = 0;
                     let channels = buf.spec().channels().count().max(1);
                     self.tmp.clear();
                     buf.copy_to_vec_interleaved(&mut self.tmp);
@@ -763,7 +775,14 @@ impl StreamDecoder {
                     sink(rate, &self.stereo);
                 }
                 // A corrupt packet: skip it, as players do, rather than stopping playback.
-                Err(SymError::DecodeError(_)) => {}
+                // A long run of them is a corrupt stream, not damage: fail it, rather than
+                // "finish" a track that never played.
+                Err(SymError::DecodeError(_)) => {
+                    self.bad_packets += 1;
+                    if self.bad_packets >= MAX_BAD_PACKETS {
+                        self.state = State::Failed("decode: too many corrupt packets".into());
+                    }
+                }
                 Err(e) => self.state = State::Failed(format!("decode: {e}")),
             }
         }
@@ -825,29 +844,36 @@ impl StreamDecoder {
             fmt_opts,
             MetadataOptions::default(),
         ) {
-            Ok(mut reader) => match make_decoder(reader.as_ref()) {
-                Ok((decoder, track_id)) => {
-                    let params = reader
-                        .default_track(TrackType::Audio)
-                        .and_then(|t| t.codec_params.clone());
-                    if let Some(CodecParameters::Audio(params)) = params {
-                        self.rate = params.sample_rate;
-                        self.source = Some(source_format(&params, reader.as_mut()));
+            Ok(mut reader) => {
+                if let Err(e) = check_declared_rate(reader.as_ref()) {
+                    let msg = format!("probe: {e}");
+                    self.state = State::Failed(msg.clone());
+                    return Some(DecodeStatus::Failed(msg));
+                }
+                match make_decoder(reader.as_ref()) {
+                    Ok((decoder, track_id)) => {
+                        let params = reader
+                            .default_track(TrackType::Audio)
+                            .and_then(|t| t.codec_params.clone());
+                        if let Some(CodecParameters::Audio(params)) = params {
+                            self.rate = params.sample_rate;
+                            self.source = Some(source_format(&params, reader.as_mut()));
+                        }
+                        self.audio_from = self.input.position();
+                        self.input.release();
+                        self.state = State::Decoding {
+                            reader,
+                            decoder,
+                            track_id,
+                        };
+                        None
                     }
-                    self.audio_from = self.input.position();
-                    self.input.release();
-                    self.state = State::Decoding {
-                        reader,
-                        decoder,
-                        track_id,
-                    };
-                    None
+                    Err(e) => {
+                        self.state = State::Failed(e.clone());
+                        Some(DecodeStatus::Failed(e))
+                    }
                 }
-                Err(e) => {
-                    self.state = State::Failed(e.clone());
-                    Some(DecodeStatus::Failed(e))
-                }
-            },
+            }
             Err(SymError::IoError(e)) if e.kind() == io::ErrorKind::UnexpectedEof && !eof => {
                 // Headers not all here yet (e.g. large embedded artwork): retry with more data,
                 // up to a hard cap so an unparseable stream can't hold the track for ever.
@@ -869,6 +895,28 @@ impl StreamDecoder {
                 Some(DecodeStatus::Failed(msg))
             }
         }
+    }
+}
+
+/// Refuse a sample rate the core doesn't handle ([`crate::sample_rate_supported`]): from a
+/// header or a decoded block, it is untrusted. At 0 the player would wait for ever for
+/// audio to fill its decode-ahead; a huge rate would make that unbounded.
+fn check_rate(rate: u32) -> Result<(), String> {
+    if crate::sample_rate_supported(rate) {
+        Ok(())
+    } else {
+        Err(format!("unsupported sample rate {rate} Hz"))
+    }
+}
+
+/// The default audio track's declared sample rate is supported, if it declares one.
+fn check_declared_rate(reader: &dyn FormatReader) -> Result<(), String> {
+    match reader
+        .default_track(TrackType::Audio)
+        .and_then(|t| t.codec_params.as_ref())
+    {
+        Some(CodecParameters::Audio(p)) => p.sample_rate.map_or(Ok(()), check_rate),
+        _ => Ok(()),
     }
 }
 
@@ -935,6 +983,7 @@ fn decode_seekable_inner(
             MetadataOptions::default(),
         )
         .map_err(|e| format!("probe: {e}"))?;
+    check_declared_rate(reader.as_ref()).map_err(|e| format!("probe: {e}"))?;
     let (mut decoder, mut track_id) = make_decoder(reader.as_ref())?;
     let format = match reader
         .default_track(TrackType::Audio)
@@ -965,6 +1014,7 @@ fn decode_seekable_inner(
             Ok(buf) => {
                 bad = 0;
                 let rate = buf.spec().rate();
+                check_rate(rate).map_err(|e| format!("decode: {e}"))?;
                 let channels = buf.spec().channels().count().max(1);
                 tmp.clear();
                 buf.copy_to_vec_interleaved(&mut tmp);
@@ -1096,7 +1146,8 @@ fn check_file_headers(source: &mut Box<dyn MediaSource>) -> Result<(), String> {
 ///
 /// File bytes are untrusted: the WAV headers known to trip Symphonia's arithmetic are
 /// refused before probing, and where panics unwind any other panic in the demuxer or decoder
-/// fails the file instead of the host.
+/// fails the file instead of the host. A sample rate outside [`crate::MIN_SAMPLE_RATE`] to
+/// [`crate::MAX_SAMPLE_RATE`] fails the open (when declared) or the decode.
 pub struct FileDecoder {
     reader: Box<dyn FormatReader>,
     decoder: Box<dyn AudioDecoder>,
@@ -1144,6 +1195,7 @@ impl FileDecoder {
                 MetadataOptions::default(),
             )
             .map_err(|e| format!("probe: {e}"))?;
+        check_declared_rate(reader.as_ref()).map_err(|e| format!("probe: {e}"))?;
         let (decoder, track_id) = make_decoder(reader.as_ref())?;
         let track = reader.default_track(TrackType::Audio);
         let frames = track.and_then(|t| t.num_frames);
@@ -1151,7 +1203,7 @@ impl FileDecoder {
         let (source, rate) = match params {
             Some(CodecParameters::Audio(params)) => (
                 Some(source_format(&params, reader.as_mut())),
-                params.sample_rate.filter(|r| (1..=1_536_000).contains(r)),
+                params.sample_rate,
             ),
             _ => (None, None),
         };
@@ -1243,13 +1295,13 @@ impl FileDecoder {
                 Ok(buf) => {
                     self.bad = 0;
                     let rate = buf.spec().rate();
+                    if let Err(e) = check_rate(rate) {
+                        return self.fail(format!("decode: {e}"));
+                    }
                     let channels = buf.spec().channels().count().max(1);
                     self.tmp.clear();
                     buf.copy_to_vec_interleaved(&mut self.tmp);
                     to_stereo(&self.tmp, channels, &mut self.stereo);
-                    if rate == 0 {
-                        return self.fail("decode: no sample rate".into());
-                    }
                     self.rate = Some(rate);
                     let frames = (self.stereo.len() / 2) as u64;
                     let drop = self.skip.min(frames);
@@ -1360,6 +1412,11 @@ fn catch<T>(f: impl FnOnce() -> T) -> Option<T> {
 const WAV_MAX_CHANNELS: u16 = 26;
 /// Speaker positions defined for a WAVE_FORMAT_EXTENSIBLE channel mask (bits 0..=17).
 const WAV_MASK_BITS: u32 = 18;
+/// Most chunk headers [`check_wav_headers`] reads, over every marker in the buffer. A real
+/// file has a handful before its `data` chunk. Each marker's chunks may run on to the end
+/// of the buffer, so without a limit a buffer of repeating markers costs time quadratic in
+/// its length (M1): one that needs more than this is refused.
+const WAV_MAX_CHUNKS: usize = 4096;
 
 /// Refuse RIFF/WAVE headers that would make Symphonia's WAV reader panic.
 ///
@@ -1370,10 +1427,14 @@ const WAV_MASK_BITS: u32 = 18;
 /// in `bytes` (what the prober can see) is checked, walking the chunks the way the reader
 /// does until the `data` chunk. A header that is cut short is left to the reader, which
 /// fails cleanly on it (or waits for more data, when this is checked again).
+///
+/// Linear in the length of `bytes`: past [`WAV_MAX_CHUNKS`] chunk headers in all, the
+/// stream is refused.
 pub fn check_wav_headers(bytes: &[u8]) -> Result<(), &'static str> {
     let u16_at = |i: usize| u16::from_le_bytes([bytes[i], bytes[i + 1]]);
     let u32_at =
         |i: usize| u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+    let mut chunks = 0;
     let mut from = 0;
     while let Some(off) = bytes
         .get(from..)
@@ -1406,6 +1467,10 @@ pub fn check_wav_headers(bytes: &[u8]) -> Result<(), &'static str> {
             };
             if hdr.checked_add(8).is_none_or(|end| end > bytes.len()) {
                 break; // not here yet
+            }
+            chunks += 1;
+            if chunks > WAV_MAX_CHUNKS {
+                return Err("wav: too many chunks");
             }
             let tag = &bytes[hdr..hdr + 4];
             let chunk_len = u32_at(hdr + 4);
@@ -1468,6 +1533,7 @@ pub fn format_extension(format: u8) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{MAX_SAMPLE_RATE, MIN_SAMPLE_RATE};
 
     /// A minimal 16-bit PCM WAV file.
     fn wav(rate: u32, channels: u16, frames: usize) -> Vec<u8> {
@@ -1480,7 +1546,7 @@ mod tests {
         v.extend_from_slice(&1u16.to_le_bytes());
         v.extend_from_slice(&channels.to_le_bytes());
         v.extend_from_slice(&rate.to_le_bytes());
-        v.extend_from_slice(&(rate * channels as u32 * 2).to_le_bytes());
+        v.extend_from_slice(&rate.wrapping_mul(channels as u32 * 2).to_le_bytes());
         v.extend_from_slice(&(channels * 2).to_le_bytes());
         v.extend_from_slice(&16u16.to_le_bytes());
         v.extend_from_slice(b"data");
@@ -1783,6 +1849,108 @@ mod tests {
             assert_eq!(&h[8..12], [0, 16, 255, 255], "variable: the whole range");
             let h = synth_flac_header(44_100, 2, 16, Some(1152));
             assert_eq!(&h[8..12], [4, 128, 4, 128], "fixed: the frames' block size");
+        }
+    }
+
+    /// `len` bytes of back-to-back 20-byte units, each a `RIFF…WAVE` marker of unknown
+    /// length followed by a 12-byte `JUNK` chunk whose end is the next unit's chunk: every
+    /// unit is a marker whose chunk chain runs to the end of the buffer (M1).
+    fn wav_chunk_chains(len: usize) -> Vec<u8> {
+        let mut unit = b"RIFF\xff\xff\xff\xffWAVEJUNK".to_vec();
+        unit.extend_from_slice(&12u32.to_le_bytes());
+        unit.iter().copied().cycle().take(len).collect()
+    }
+
+    /// Security (M1): the header check walked every marker's chunks to the end of the
+    /// buffer, so a stream of repeating markers cost time quadratic in its length (seconds
+    /// for a megabyte, much longer for the 32 MiB a probe may hold). It is refused, and the
+    /// check stays linear in the input.
+    #[test]
+    fn repeating_wav_markers_are_refused_in_linear_time() {
+        let bomb = wav_chunk_chains(1024 * 1024);
+        assert_eq!(check_wav_headers(&bomb), Err("wav: too many chunks"));
+        crate::test_timing::assert_linear("check_wav_headers", 128 * 1024, 4, |n| {
+            let _ = check_wav_headers(&bomb[..n]);
+        });
+        // Through the stream decoder (the player's probe) and the file decoder.
+        crate::test_timing::assert_linear("StreamDecoder probe", 128 * 1024, 4, |n| {
+            let input = InputBuffer::new();
+            input.push(&bomb[..n]);
+            input.set_eof();
+            let mut dec = StreamDecoder::new(input, b'p');
+            let st = dec.work(8, &mut |_, _| {});
+            assert!(
+                matches!(&st, DecodeStatus::Failed(e) if e.contains("too many chunks")),
+                "{st:?}"
+            );
+        });
+        crate::test_timing::assert_linear("FileDecoder::open", 128 * 1024, 4, |n| {
+            let err = open_bytes(bomb[..n].to_vec(), Some("wav")).err();
+            assert_eq!(err.as_deref(), Some("probe: wav: too many chunks"));
+        });
+    }
+
+    /// A real file with many chunks before its audio is not refused.
+    #[test]
+    fn a_wav_with_a_hundred_chunks_before_its_audio_still_plays() {
+        let plain = wav(8_000, 1, 8_000);
+        let mut file = plain[..12].to_vec();
+        for i in 0..100u8 {
+            file.extend_from_slice(b"JUNK");
+            file.extend_from_slice(&3u32.to_le_bytes());
+            file.extend_from_slice(&[i, i, i, 0]); // three bytes and the pad byte
+        }
+        file.extend_from_slice(&plain[12..]);
+        let riff_len = (file.len() - 8) as u32;
+        file[4..8].copy_from_slice(&riff_len.to_le_bytes());
+        assert_eq!(check_wav_headers(&file), Ok(()));
+        let input = InputBuffer::new();
+        input.push(&file);
+        input.set_eof();
+        let (rate, samples, st) = decode_all(&mut StreamDecoder::new(input, b'p'));
+        assert_eq!((rate, samples, st), (8_000, 16_000, DecodeStatus::Finished));
+    }
+
+    /// Security (M2): a declared rate outside 8 kHz to 768 kHz is refused by every
+    /// decoder; the edges themselves decode.
+    #[test]
+    fn sample_rates_outside_the_supported_range_are_refused() {
+        for rate in [0, 1, 7_999, 768_001, 1_000_000_000, u32::MAX] {
+            let file = wav(rate, 2, 4_000);
+            let input = InputBuffer::new();
+            input.push(&file);
+            input.set_eof();
+            let (_, samples, st) = decode_all(&mut StreamDecoder::new(input, b'p'));
+            assert!(
+                matches!(&st, DecodeStatus::Failed(e) if e.contains("sample rate")),
+                "stream, rate {rate}: {st:?}"
+            );
+            assert_eq!(samples, 0, "stream, rate {rate}");
+            let err = open_bytes(file.clone(), Some("wav"))
+                .err()
+                .unwrap_or_default();
+            assert!(err.contains("sample rate"), "file, rate {rate}: {err}");
+            let mut fed = 0;
+            let res = decode_seekable(Box::new(std::io::Cursor::new(file)), None, &mut |_, s| {
+                fed += s.len();
+                true
+            });
+            assert!(
+                res.as_ref().is_err_and(|e| e.contains("sample rate")),
+                "seekable, rate {rate}: {res:?}"
+            );
+            assert_eq!(fed, 0, "seekable, rate {rate}");
+        }
+        for rate in [MIN_SAMPLE_RATE, MAX_SAMPLE_RATE] {
+            let file = wav(rate, 2, 4_000);
+            let input = InputBuffer::new();
+            input.push(&file);
+            input.set_eof();
+            let st = decode_all(&mut StreamDecoder::new(input, b'p'));
+            assert_eq!(st, (rate, 8_000, DecodeStatus::Finished));
+            let mut dec = open_bytes(file, Some("wav")).unwrap();
+            assert_eq!(dec.sample_rate(), Some(rate));
+            assert_eq!(file_all(&mut dec).1, DecodeStatus::Finished);
         }
     }
 

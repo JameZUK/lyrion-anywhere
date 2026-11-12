@@ -12,7 +12,8 @@
 
 use anywhere_core::analysis::{AnalysisConfig, analyse_encoded};
 use anywhere_core::decode::{
-    DecodeStatus, InputBuffer, STREAM_DECODER_PANICKED, StreamDecoder, format_extension,
+    DecodeStatus, InputBuffer, MAX_BAD_PACKETS, STREAM_DECODER_PANICKED, StreamDecoder,
+    format_extension,
 };
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/sine-997hz-stereo.opus");
@@ -182,6 +183,26 @@ fn ogg_crc_matches_the_fixture() {
     }
 }
 
+/// Security (open since the 15 October review): the header's output gain was applied as
+/// it came, so a stream saying +128 dB (the most a header can) played about 2.5 million
+/// times too loud. The gain is capped at +24 dB.
+#[test]
+fn a_hostile_output_gain_is_capped() {
+    let (page, _) = ogg_pages(FIXTURE)[0].clone();
+    let mut b = FIXTURE.to_vec();
+    let head = page.start + 27 + usize::from(FIXTURE[page.start + 26]);
+    assert_eq!(&b[head..head + 8], b"OpusHead");
+    b[head + 16..head + 18].copy_from_slice(&i16::MAX.to_le_bytes());
+    b[page.start + 22..page.start + 26].fill(0);
+    let crc = ogg_crc(&b[page.clone()]);
+    b[page.start + 22..page.start + 26].copy_from_slice(&crc.to_le_bytes());
+    let (st, _, pcm) = decode(&b, b'u');
+    assert_eq!(st, DecodeStatus::Finished);
+    // The fixture peaks at 0.1; +24 dB is about 15.8 times.
+    let peak = pcm.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    assert!((1.4..1.8).contains(&peak), "peak {peak}");
+}
+
 /// The packets of a page that holds only whole packets.
 fn page_packets(page: &[u8]) -> Vec<Vec<u8>> {
     assert_eq!(page[5] & 1, 0, "a continued packet");
@@ -221,6 +242,81 @@ fn rebuild_page(page: &[u8], packets: &[Vec<u8>]) -> Vec<u8> {
     let crc = ogg_crc(&out);
     out[22..26].copy_from_slice(&crc.to_le_bytes());
     out
+}
+
+/// One Ogg page of stream 1 (`flags`: 2 the first page, 4 the last) holding `packets`.
+fn ogg_page(flags: u8, granule: u64, seq: u32, packets: &[Vec<u8>]) -> Vec<u8> {
+    let mut header = b"OggS\0".to_vec();
+    header.push(flags);
+    header.extend_from_slice(&granule.to_le_bytes());
+    header.extend_from_slice(&1u32.to_le_bytes());
+    header.extend_from_slice(&seq.to_le_bytes());
+    header.extend_from_slice(&[0; 4]);
+    rebuild_page(&header, packets)
+}
+
+/// A stereo Ogg Opus stream (no pre-skip, no gain) of `packets`, one 20 ms packet a page.
+fn opus_stream_of(packets: &[Vec<u8>]) -> Vec<u8> {
+    let mut head = b"OpusHead\x01\x02".to_vec();
+    head.extend_from_slice(&0u16.to_le_bytes());
+    head.extend_from_slice(&48_000u32.to_le_bytes());
+    head.extend_from_slice(&0i16.to_le_bytes());
+    head.push(0);
+    let mut tags = b"OpusTags".to_vec();
+    tags.extend_from_slice(&4u32.to_le_bytes());
+    tags.extend_from_slice(b"test");
+    tags.extend_from_slice(&0u32.to_le_bytes());
+    let mut b = ogg_page(2, 0, 0, &[head]);
+    b.extend(ogg_page(0, 0, 1, &[tags]));
+    for (i, p) in packets.iter().enumerate() {
+        let flags = if i + 1 == packets.len() { 4 } else { 0 };
+        let granule = 960 * (i as u64 + 1);
+        b.extend(ogg_page(
+            flags,
+            granule,
+            i as u32 + 2,
+            std::slice::from_ref(p),
+        ));
+    }
+    b
+}
+
+/// The fixture's audio packets (after OpusHead and OpusTags).
+fn fixture_packets() -> Vec<Vec<u8>> {
+    ogg_pages(FIXTURE)[2..]
+        .iter()
+        .flat_map(|(page, _)| page_packets(&FIXTURE[page.clone()]))
+        .collect()
+}
+
+/// Stability (open since the 15 October review): the stream decoder skipped undecodable
+/// packets with no limit, so a stream of nothing else "finished" with no audio, which
+/// tells LMS the track played (`STMd`). Like the file decoders, it now fails after
+/// [`MAX_BAD_PACKETS`] in a row; fewer in a row are skipped, as players do.
+#[test]
+fn a_run_of_undecodable_packets_fails_the_stream() {
+    // Code 3 with a frame count of 0: refused by the Opus decoder, not by the demuxer.
+    let bad = vec![0xffu8, 0x00, 0x00];
+    let (st, _, pcm) = decode(&opus_stream_of(&vec![bad.clone(); 200]), b'u');
+    assert!(
+        matches!(&st, DecodeStatus::Failed(e) if e.contains("corrupt packets")),
+        "{st:?}"
+    );
+    assert!(pcm.is_empty());
+    let limit = MAX_BAD_PACKETS as usize;
+    let (st, _, _) = decode(&opus_stream_of(&vec![bad.clone(); limit - 1]), b'u');
+    assert_eq!(st, DecodeStatus::Finished, "fewer than the limit");
+    // Runs just short of the limit, with good packets between them, play through.
+    let good = fixture_packets();
+    assert!(good.len() > 20);
+    let mut mixed = good[..5].to_vec();
+    mixed.extend(std::iter::repeat_n(bad.clone(), limit - 1));
+    mixed.extend_from_slice(&good[5..10]);
+    mixed.extend(std::iter::repeat_n(bad, limit - 1));
+    mixed.extend_from_slice(&good[10..]);
+    let (st, rate, pcm) = decode(&opus_stream_of(&mixed), b'u');
+    assert_eq!((st, rate), (DecodeStatus::Finished, 48_000));
+    assert!(pcm.len() >= (good.len() - 2) * 960 * 2, "{}", pcm.len());
 }
 
 /// Regression (H2): short Hybrid packets whose redundancy byte count exceeds the frame
@@ -288,21 +384,22 @@ fn a_transient_with_many_short_blocks_decodes() {
 
 /// Opus decodes far faster than real time. The vendored decoder's inverse MDCT used a direct
 /// O(n²) DFT and ran at about 2× real time; its FFT plan runs at well over 100×. The floor
-/// (20×) is asserted only in optimised builds and leaves room for slow CI machines.
+/// (20×) is asserted only in optimised builds and leaves room for slow CI machines. The
+/// fastest of several decodes counts: the other tests in this file run at the same time,
+/// and other work only ever slows a decode down.
 #[test]
 fn opus_decodes_far_faster_than_real_time() {
     let noise: &[u8] = include_bytes!("fixtures/noise-96k.opus");
-    let start = std::time::Instant::now();
+    let mut fastest = f64::INFINITY;
     let mut secs = 0.0;
-    while start.elapsed().as_secs_f64() < 0.5 || secs < 5.0 {
+    for _ in 0..8 {
+        let start = std::time::Instant::now();
         let (st, rate, pcm) = decode(noise, b'u');
+        fastest = fastest.min(start.elapsed().as_secs_f64());
         assert_eq!(st, DecodeStatus::Finished);
-        secs += pcm.len() as f64 / 2.0 / f64::from(rate);
-        if secs > 120.0 {
-            break;
-        }
+        secs = pcm.len() as f64 / 2.0 / f64::from(rate);
     }
-    let speed = secs / start.elapsed().as_secs_f64();
+    let speed = secs / fastest;
     println!("Opus (noise, 96 kb/s): {speed:.0}x real time");
     if !cfg!(debug_assertions) {
         assert!(speed >= 20.0, "Opus decodes at only {speed:.1}x real time");
