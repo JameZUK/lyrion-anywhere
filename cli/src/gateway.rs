@@ -3,7 +3,7 @@
 //! This is the reference client for the gateway protocol (`gateway/src/lib.rs`).
 
 use std::io::{ErrorKind, Read};
-use std::net::TcpStream;
+use std::net::{IpAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, Once};
@@ -16,7 +16,7 @@ use rustls_pki_types::pem::PemObject;
 use tungstenite::client::IntoClientRequest;
 use tungstenite::{Connector, Message};
 
-use crate::{Event, StreamHandle};
+use crate::{Event, StreamHandle, shown};
 
 /// Messages towards the gateway.
 enum Out {
@@ -43,8 +43,20 @@ pub struct GatewayConn {
 
 struct Endpoint {
     https: bool,
+    /// A name or an address; an IPv6 address without its brackets.
     host: String,
     port: u16,
+}
+
+impl Endpoint {
+    /// `host:port`, with an IPv6 address in brackets.
+    fn authority(&self) -> String {
+        if self.host.contains(':') {
+            format!("[{}]:{}", self.host, self.port)
+        } else {
+            format!("{}:{}", self.host, self.port)
+        }
+    }
 }
 
 fn parse_base(base: &str) -> Result<Endpoint, String> {
@@ -59,14 +71,65 @@ fn parse_base(base: &str) -> Result<Endpoint, String> {
     if authority.contains('/') || authority.is_empty() {
         return Err("--gateway must be a base URL without a path".into());
     }
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((h, p)) if !h.ends_with(']') || h.starts_with('[') => (
-            h.to_string(),
-            p.parse().map_err(|_| "bad port in --gateway")?,
-        ),
-        _ => (authority.to_string(), if https { 443 } else { 80 }),
+    if authority.contains('@') {
+        return Err("--gateway must not carry a user name or password".into());
+    }
+    let bad_port = |_| "bad port in --gateway".to_string();
+    let default_port = if https { 443 } else { 80 };
+    let (host, port) = if let Some(v6) = authority.strip_prefix('[') {
+        let (h, after) = v6.split_once(']').ok_or("bad IPv6 address in --gateway")?;
+        let port = match after {
+            "" => default_port,
+            p => p
+                .strip_prefix(':')
+                .ok_or("bad port in --gateway")?
+                .parse()
+                .map_err(bad_port)?,
+        };
+        (h.to_string(), port)
+    } else {
+        match authority.split_once(':') {
+            Some((_, p)) if p.contains(':') => {
+                return Err("put an IPv6 address in brackets in --gateway".into());
+            }
+            Some((h, p)) => (h.to_string(), p.parse().map_err(bad_port)?),
+            None => (authority.to_string(), default_port),
+        }
     };
+    if host.is_empty() {
+        return Err("--gateway has no host".into());
+    }
+    // In plain HTTP the password and the tokens cross in the clear: only to this machine,
+    // named by its address (a name could resolve anywhere).
+    if !https && !host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback()) {
+        return Err(
+            "--gateway with http:// is only for this machine (127.0.0.1 or [::1]); \
+             anywhere else use https://"
+                .into(),
+        );
+    }
     Ok(Endpoint { https, host, port })
+}
+
+/// The HTTP agent for sign-in, renewal and audio. It never follows a redirect: one could
+/// send the password, or a token, somewhere else (or in the clear).
+fn http_agent(roots: &[CertificateDer<'static>]) -> ureq::Agent {
+    let ureq_certs: Vec<ureq::tls::Certificate<'static>> = roots
+        .iter()
+        .map(|c| ureq::tls::Certificate::from_der(c.as_ref()).to_owned())
+        .collect();
+    ureq::Agent::config_builder()
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .provider(ureq::tls::TlsProvider::Rustls)
+                .root_certs(ureq::tls::RootCerts::new_with_certs(&ureq_certs))
+                .build(),
+        )
+        .timeout_connect(Some(Duration::from_secs(5)))
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .build()
+        .into()
 }
 
 /// Trust roots: the system store, plus an optional extra CA (e.g. a local test CA).
@@ -118,10 +181,18 @@ fn auth_post(
     if status != 200 {
         return Err(format!(
             "{status}: {}",
-            v["error"].as_str().unwrap_or("refused")
+            shown(v["error"].as_str().unwrap_or("refused"))
         ));
     }
     Ok(v)
+}
+
+/// A session id as the gateway makes them (hex), short and with nothing a URL treats
+/// specially.
+fn valid_session(s: &str) -> bool {
+    (1..=128).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 pub fn connect(
@@ -137,21 +208,7 @@ pub fn connect(
     let roots = root_certs(ca_file)?;
 
     // HTTPS agent for auth and audio.
-    let ureq_certs: Vec<ureq::tls::Certificate<'static>> = roots
-        .iter()
-        .map(|c| ureq::tls::Certificate::from_der(c.as_ref()).to_owned())
-        .collect();
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .tls_config(
-            ureq::tls::TlsConfig::builder()
-                .provider(ureq::tls::TlsProvider::Rustls)
-                .root_certs(ureq::tls::RootCerts::new_with_certs(&ureq_certs))
-                .build(),
-        )
-        .timeout_connect(Some(Duration::from_secs(5)))
-        .http_status_as_error(false)
-        .build()
-        .into();
+    let agent = http_agent(&roots);
 
     // Sign in; the refresh token is kept in memory only.
     let login = auth_post(
@@ -194,7 +251,7 @@ pub fn connect(
                         }
                     }
                     Err(e) => {
-                        eprintln!("token refresh failed: {e}");
+                        eprintln!("token refresh failed: {}", shown(&e));
                         return;
                     }
                 }
@@ -211,19 +268,18 @@ pub fn connect(
         .with_root_certificates(store)
         .with_no_client_auth();
     let ws_url = format!(
-        "{}://{}:{}/v1/player",
+        "{}://{}/v1/player",
         if ep.https { "wss" } else { "ws" },
-        ep.host,
-        ep.port
+        ep.authority()
     );
     let tcp = TcpStream::connect((ep.host.as_str(), ep.port))
-        .map_err(|e| format!("connect {}: {e}", ep.host))?;
+        .map_err(|e| format!("connect {}: {e}", ep.authority()))?;
     tcp.set_nodelay(true).ok();
     let tcp_ctl = tcp.try_clone().map_err(|e| e.to_string())?;
     let req = ws_url.into_client_request().map_err(|e| e.to_string())?;
     let connector = ep.https.then(|| Connector::Rustls(Arc::new(tls)));
     let (mut ws, _) = tungstenite::client_tls_with_config(req, tcp, None, connector)
-        .map_err(|e| format!("websocket handshake: {e}"))?;
+        .map_err(|e| format!("websocket handshake: {}", shown(&e.to_string())))?;
 
     // Protocol 2: the version in the sign-in form. The stream messages that follow are text
     // and are ignored below (this player probes what it fetches).
@@ -232,17 +288,22 @@ pub fn connect(
         .map_err(|e| e.to_string())?;
     let greeting = match ws
         .read()
-        .map_err(|e| format!("gateway refused the connection: {e}"))?
+        .map_err(|e| format!("gateway refused the connection: {}", shown(&e.to_string())))?
     {
         Message::Text(t) => serde_json::from_str::<serde_json::Value>(t.as_str())
             .map_err(|_| "bad greeting from gateway")?,
         Message::Close(f) => {
             return Err(format!(
                 "gateway closed the connection: {}",
-                f.map(|f| f.reason.to_string()).unwrap_or_default()
+                f.map(|f| shown(&f.reason)).unwrap_or_default()
             ));
         }
-        other => return Err(format!("unexpected first message: {other:?}")),
+        other => {
+            return Err(format!(
+                "unexpected first message: {}",
+                shown(&format!("{other:?}"))
+            ));
+        }
     };
 
     // Poll reads with a short timeout so one thread can both read and write.
@@ -274,7 +335,8 @@ pub fn connect(
                 }
                 Ok(Message::Close(f)) => {
                     if let Some(f) = f {
-                        eprintln!("gateway closed: {} ({})", f.reason, u16::from(f.code));
+                        let code = u16::from(f.code);
+                        eprintln!("gateway closed: {} ({code})", shown(&f.reason));
                     }
                     let _ = events.send(Event::ControlClosed);
                     return;
@@ -283,7 +345,7 @@ pub fn connect(
                 Err(tungstenite::Error::Io(e))
                     if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
                 Err(e) => {
-                    eprintln!("gateway connection error: {e}");
+                    eprintln!("gateway connection error: {}", shown(&e.to_string()));
                     let _ = events.send(Event::ControlClosed);
                     return;
                 }
@@ -291,18 +353,21 @@ pub fn connect(
         }
     });
 
+    // It goes into stream URLs: a plain id or nothing.
     let session = greeting["session"]
         .as_str()
-        .ok_or("greeting has no session")?
+        .filter(|s| valid_session(s))
+        .ok_or("greeting has no valid session")?
         .to_string();
     let mac = greeting["mac"]
         .as_str()
         .and_then(anywhere_core::proto::parse_mac)
         .ok_or("greeting has no valid player MAC")?;
+    // Shown and used as the player's name: kept printable and bounded.
     let name = greeting["name"]
         .as_str()
-        .unwrap_or("Anywhere CLI")
-        .to_string();
+        .and_then(anywhere_core::names::player_name)
+        .unwrap_or_else(|| "Anywhere CLI".into());
     Ok(GatewayConn {
         session,
         mac,
@@ -394,18 +459,181 @@ mod tests {
 
     #[test]
     fn base_url_parsing() {
-        let e = parse_base("https://music.example.com").unwrap();
-        assert!(e.https && e.host == "music.example.com" && e.port == 443);
-        let e = parse_base("http://127.0.0.1:9443/").unwrap();
-        assert!(!e.https && e.host == "127.0.0.1" && e.port == 9443);
+        for (url, https, host, port) in [
+            ("https://music.example.com", true, "music.example.com", 443),
+            (
+                "https://music.example.com:8443/",
+                true,
+                "music.example.com",
+                8443,
+            ),
+            ("https://[2001:db8::1]:8443", true, "2001:db8::1", 8443),
+            ("https://10.0.0.10", true, "10.0.0.10", 443),
+            ("http://127.0.0.1:9443/", false, "127.0.0.1", 9443),
+            ("http://127.1.2.3", false, "127.1.2.3", 80),
+            ("http://[::1]:9443", false, "::1", 9443),
+            ("http://[::1]", false, "::1", 80),
+        ] {
+            let e = parse_base(url).unwrap();
+            assert_eq!(
+                (e.https, e.host.as_str(), e.port),
+                (https, host, port),
+                "{url}"
+            );
+        }
+        assert_eq!(
+            parse_base("http://[::1]:9443").unwrap().authority(),
+            "[::1]:9443"
+        );
         for bad in [
             "music.example.com",
             "ftp://x",
             "https://x/v1",
             "https://",
             "https://x:notaport",
+            "https://user:secret@music.example.com",
+            "https://::1",
+            "https://[::1",
+            "https://[::1]9443",
+            "https://:443",
         ] {
             assert!(parse_base(bad).is_err(), "{bad} accepted");
         }
+    }
+
+    /// Security (review low): plain `http://` was accepted for any host, so the password
+    /// and the tokens could cross a network in the clear. Only a loopback address now.
+    #[test]
+    fn plain_http_is_only_for_this_machine() {
+        for bad in [
+            "http://music.example.com",
+            "http://10.0.0.10:9443",
+            "http://lms.example.lan",
+            "http://localhost:9443",
+            "http://0.0.0.0:9443",
+            "http://[::ffff:127.0.0.1]",
+            "http://[2001:db8::1]",
+        ] {
+            let err = parse_base(bad).err().unwrap_or_default();
+            assert!(err.contains("only for this machine"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn only_a_plain_session_id_goes_into_stream_urls() {
+        assert!(valid_session("0123456789abcdef0123456789abcdef"));
+        for bad in [
+            "",
+            "../admin",
+            "a/b",
+            "a?b",
+            "a#b",
+            "a b",
+            "a\r\nb",
+            "é",
+            &"a".repeat(129),
+        ] {
+            assert!(!valid_session(bad), "{bad:?}");
+        }
+    }
+
+    /// One HTTP request from `l`, answered with `response`.
+    fn answer_once(l: std::net::TcpListener, response: String) -> thread::JoinHandle<()> {
+        use std::io::Write;
+        thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            let mut req = Vec::new();
+            let mut buf = [0u8; 4096];
+            // The headers, then the body they announce.
+            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = s.read(&mut buf).unwrap();
+                assert!(n > 0, "request cut short");
+                req.extend_from_slice(&buf[..n]);
+            }
+            let text = String::from_utf8_lossy(&req).to_lowercase();
+            let head_len = text.find("\r\n\r\n").unwrap() + 4;
+            let body_len: usize = text
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:"))
+                .map_or(0, |v| v.trim().parse().unwrap());
+            while req.len() < head_len + body_len {
+                let n = s.read(&mut buf).unwrap();
+                assert!(n > 0, "body cut short");
+                req.extend_from_slice(&buf[..n]);
+            }
+            s.write_all(response.as_bytes()).unwrap();
+        })
+    }
+
+    /// Security: a redirect is never followed, so a sign-in can't be sent on (with its
+    /// password) to another host, or from HTTPS to plain HTTP.
+    #[test]
+    fn a_redirect_is_never_followed() {
+        use std::net::TcpListener;
+        // The redirect's target answers a sign-in as if it were the gateway, and counts.
+        let elsewhere = TcpListener::bind("127.0.0.1:0").unwrap();
+        let target = elsewhere.local_addr().unwrap();
+        let contacted = Arc::new(Mutex::new(0));
+        {
+            let contacted = contacted.clone();
+            thread::spawn(move || {
+                for s in elsewhere.incoming() {
+                    *contacted.lock().unwrap() += 1;
+                    drop(s);
+                }
+            });
+        }
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        for status in [
+            "307 Temporary Redirect",
+            "308 Permanent Redirect",
+            "302 Found",
+        ] {
+            let server = server.try_clone().unwrap();
+            let response = format!(
+                "HTTP/1.1 {status}\r\nLocation: http://{target}/v1/auth/login\r\n\
+                 Content-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let t = answer_once(server, response);
+            let res = auth_post(
+                &http_agent(&[]),
+                &format!("http://{addr}/v1/auth/login"),
+                serde_json::json!({ "username": "test", "password": "not-a-real-secret" }),
+            );
+            t.join().unwrap();
+            assert!(
+                res.as_ref().is_err_and(|e| e.starts_with(&status[..3])),
+                "{status}: {res:?}"
+            );
+        }
+        assert_eq!(*contacted.lock().unwrap(), 0, "a redirect was followed");
+    }
+
+    /// Text from the gateway is printed only once made safe ([`shown`]).
+    #[test]
+    fn a_refusal_from_the_gateway_is_printed_safely() {
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        let body = "{\"error\":\"no\\u001b]0;owned\\u0007\\u001b[2J\"}";
+        let response = format!(
+            "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let t = answer_once(server, response);
+        let err = auth_post(
+            &http_agent(&[]),
+            &format!("http://{addr}/v1/auth/refresh"),
+            serde_json::json!({ "refresh_token": "x" }),
+        )
+        .unwrap_err();
+        t.join().unwrap();
+        assert!(err.starts_with("401"), "{err}");
+        assert!(
+            err.ends_with(": no\\u{1b}]0;owned\\u{7}\\u{1b}[2J"),
+            "{err}"
+        );
+        assert!(!err.chars().any(char::is_control), "{err:?}");
     }
 }
