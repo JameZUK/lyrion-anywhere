@@ -18,4 +18,6 @@ pub mod player;
 pub mod privnet;
 pub mod proto;
 pub mod quality;
+#[cfg(test)]
+mod test_timing;
 pub mod visual;

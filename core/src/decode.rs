@@ -1360,6 +1360,11 @@ fn catch<T>(f: impl FnOnce() -> T) -> Option<T> {
 const WAV_MAX_CHANNELS: u16 = 26;
 /// Speaker positions defined for a WAVE_FORMAT_EXTENSIBLE channel mask (bits 0..=17).
 const WAV_MASK_BITS: u32 = 18;
+/// Most chunk headers [`check_wav_headers`] reads, over every marker in the buffer. A real
+/// file has a handful before its `data` chunk. Each marker's chunks may run on to the end
+/// of the buffer, so without a limit a buffer of repeating markers costs time quadratic in
+/// its length (M1): one that needs more than this is refused.
+const WAV_MAX_CHUNKS: usize = 4096;
 
 /// Refuse RIFF/WAVE headers that would make Symphonia's WAV reader panic.
 ///
@@ -1370,10 +1375,14 @@ const WAV_MASK_BITS: u32 = 18;
 /// in `bytes` (what the prober can see) is checked, walking the chunks the way the reader
 /// does until the `data` chunk. A header that is cut short is left to the reader, which
 /// fails cleanly on it (or waits for more data, when this is checked again).
+///
+/// Linear in the length of `bytes`: past [`WAV_MAX_CHUNKS`] chunk headers in all, the
+/// stream is refused.
 pub fn check_wav_headers(bytes: &[u8]) -> Result<(), &'static str> {
     let u16_at = |i: usize| u16::from_le_bytes([bytes[i], bytes[i + 1]]);
     let u32_at =
         |i: usize| u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+    let mut chunks = 0;
     let mut from = 0;
     while let Some(off) = bytes
         .get(from..)
@@ -1406,6 +1415,10 @@ pub fn check_wav_headers(bytes: &[u8]) -> Result<(), &'static str> {
             };
             if hdr.checked_add(8).is_none_or(|end| end > bytes.len()) {
                 break; // not here yet
+            }
+            chunks += 1;
+            if chunks > WAV_MAX_CHUNKS {
+                return Err("wav: too many chunks");
             }
             let tag = &bytes[hdr..hdr + 4];
             let chunk_len = u32_at(hdr + 4);
@@ -1784,6 +1797,65 @@ mod tests {
             let h = synth_flac_header(44_100, 2, 16, Some(1152));
             assert_eq!(&h[8..12], [4, 128, 4, 128], "fixed: the frames' block size");
         }
+    }
+
+    /// `len` bytes of back-to-back 20-byte units, each a `RIFF…WAVE` marker of unknown
+    /// length followed by a 12-byte `JUNK` chunk whose end is the next unit's chunk: every
+    /// unit is a marker whose chunk chain runs to the end of the buffer (M1).
+    fn wav_chunk_chains(len: usize) -> Vec<u8> {
+        let mut unit = b"RIFF\xff\xff\xff\xffWAVEJUNK".to_vec();
+        unit.extend_from_slice(&12u32.to_le_bytes());
+        unit.iter().copied().cycle().take(len).collect()
+    }
+
+    /// Security (M1): the header check walked every marker's chunks to the end of the
+    /// buffer, so a stream of repeating markers cost time quadratic in its length (seconds
+    /// for a megabyte, much longer for the 32 MiB a probe may hold). It is refused, and the
+    /// check stays linear in the input.
+    #[test]
+    fn repeating_wav_markers_are_refused_in_linear_time() {
+        let bomb = wav_chunk_chains(1024 * 1024);
+        assert_eq!(check_wav_headers(&bomb), Err("wav: too many chunks"));
+        crate::test_timing::assert_linear("check_wav_headers", 128 * 1024, 4, |n| {
+            let _ = check_wav_headers(&bomb[..n]);
+        });
+        // Through the stream decoder (the player's probe) and the file decoder.
+        crate::test_timing::assert_linear("StreamDecoder probe", 128 * 1024, 4, |n| {
+            let input = InputBuffer::new();
+            input.push(&bomb[..n]);
+            input.set_eof();
+            let mut dec = StreamDecoder::new(input, b'p');
+            let st = dec.work(8, &mut |_, _| {});
+            assert!(
+                matches!(&st, DecodeStatus::Failed(e) if e.contains("too many chunks")),
+                "{st:?}"
+            );
+        });
+        crate::test_timing::assert_linear("FileDecoder::open", 128 * 1024, 4, |n| {
+            let err = open_bytes(bomb[..n].to_vec(), Some("wav")).err();
+            assert_eq!(err.as_deref(), Some("probe: wav: too many chunks"));
+        });
+    }
+
+    /// A real file with many chunks before its audio is not refused.
+    #[test]
+    fn a_wav_with_a_hundred_chunks_before_its_audio_still_plays() {
+        let plain = wav(8_000, 1, 8_000);
+        let mut file = plain[..12].to_vec();
+        for i in 0..100u8 {
+            file.extend_from_slice(b"JUNK");
+            file.extend_from_slice(&3u32.to_le_bytes());
+            file.extend_from_slice(&[i, i, i, 0]); // three bytes and the pad byte
+        }
+        file.extend_from_slice(&plain[12..]);
+        let riff_len = (file.len() - 8) as u32;
+        file[4..8].copy_from_slice(&riff_len.to_le_bytes());
+        assert_eq!(check_wav_headers(&file), Ok(()));
+        let input = InputBuffer::new();
+        input.push(&file);
+        input.set_eof();
+        let (rate, samples, st) = decode_all(&mut StreamDecoder::new(input, b'p'));
+        assert_eq!((rate, samples, st), (8_000, 16_000, DecodeStatus::Finished));
     }
 
     #[test]
