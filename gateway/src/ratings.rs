@@ -37,7 +37,8 @@ pub const MAX_BATCH: usize = 500;
 pub const MAX_PER_USER: usize = 100_000;
 /// How much more the user's own rating counts than LMS's shared one.
 pub const MINE_WEIGHT: u32 = 3;
-const MAX_BODY: usize = 128 * 1024;
+/// Largest batch body `POST /v1/me/ratings` reads.
+pub(crate) const MAX_BODY: usize = 128 * 1024;
 /// Time limit for one write of LMS's shared rating (Ratings Light answers at once, or
 /// not at all).
 pub const SHARED_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
