@@ -61,10 +61,7 @@ pub const PLAYER_NAME_MAX: usize = 64;
 /// characters removed, whitespace trimmed, at most [`PLAYER_NAME_MAX`]
 /// characters. `None` if nothing is left.
 pub fn player_name(raw: &str) -> Option<String> {
-    let clean: String = raw
-        .chars()
-        .filter(|c| !invisible(*c))
-        .collect();
+    let clean: String = raw.chars().filter(|c| !invisible(*c)).collect();
     let name: String = clean.trim().chars().take(PLAYER_NAME_MAX).collect();
     let name = name.trim_end();
     (!name.is_empty()).then(|| name.to_string())
@@ -187,8 +184,19 @@ mod tests {
     #[test]
     fn every_character_that_draws_nothing_is_refused_or_dropped() {
         for c in [
-            '\u{00ad}', '\u{034f}', '\u{061c}', '\u{115f}', '\u{180e}', '\u{3164}', '\u{fe0f}',
-            '\u{ffa0}', '\u{1d173}', '\u{e0001}', '\u{e0041}', '\u{e0100}', '\u{0085}',
+            '\u{00ad}',
+            '\u{034f}',
+            '\u{061c}',
+            '\u{115f}',
+            '\u{180e}',
+            '\u{3164}',
+            '\u{fe0f}',
+            '\u{ffa0}',
+            '\u{1d173}',
+            '\u{e0001}',
+            '\u{e0041}',
+            '\u{e0100}',
+            '\u{0085}',
         ] {
             assert!(invisible(c), "{:04x}", c as u32);
             let disguised = format!("Kit{c}chen");

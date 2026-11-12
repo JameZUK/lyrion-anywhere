@@ -348,7 +348,11 @@ mod tests {
             (1, &[255, 0, 0]),
         ] {
             let h = head(channels, 1, extra);
-            assert_eq!(OpusHead::parse(&h), Err("more streams than channels"), "{extra:?}");
+            assert_eq!(
+                OpusHead::parse(&h),
+                Err("more streams than channels"),
+                "{extra:?}"
+            );
         }
         for (channels, extra, streams) in [
             (2, &[1u8, 1, 0, 1][..], 1),

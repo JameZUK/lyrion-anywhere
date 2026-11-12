@@ -271,7 +271,12 @@ fn opus_stream_of(packets: &[Vec<u8>]) -> Vec<u8> {
     for (i, p) in packets.iter().enumerate() {
         let flags = if i + 1 == packets.len() { 4 } else { 0 };
         let granule = 960 * (i as u64 + 1);
-        b.extend(ogg_page(flags, granule, i as u32 + 2, std::slice::from_ref(p)));
+        b.extend(ogg_page(
+            flags,
+            granule,
+            i as u32 + 2,
+            std::slice::from_ref(p),
+        ));
     }
     b
 }

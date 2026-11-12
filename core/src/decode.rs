@@ -1926,7 +1926,9 @@ mod tests {
                 "stream, rate {rate}: {st:?}"
             );
             assert_eq!(samples, 0, "stream, rate {rate}");
-            let err = open_bytes(file.clone(), Some("wav")).err().unwrap_or_default();
+            let err = open_bytes(file.clone(), Some("wav"))
+                .err()
+                .unwrap_or_default();
             assert!(err.contains("sample rate"), "file, rate {rate}: {err}");
             let mut fed = 0;
             let res = decode_seekable(Box::new(std::io::Cursor::new(file)), None, &mut |_, s| {

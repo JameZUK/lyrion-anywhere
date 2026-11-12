@@ -212,10 +212,7 @@ mod tests {
             assert_eq!(Depth::new(bits), Err(UnsupportedDepth(bits)));
             assert_eq!(Depth::try_from(bits), Err(UnsupportedDepth(bits)));
         }
-        assert_eq!(
-            UnsupportedDepth(33).to_string(),
-            "unsupported bit depth 33"
-        );
+        assert_eq!(UnsupportedDepth(33).to_string(), "unsupported bit depth 33");
         for bits in MIN_BITS..=MAX_BITS {
             assert_eq!(Depth::new(bits).map(Depth::bits), Ok(bits));
         }

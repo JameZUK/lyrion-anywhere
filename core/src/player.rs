@@ -3648,7 +3648,10 @@ mod tests {
         p.take_actions();
         p.output_underrun();
         assert_eq!(events(&p.take_actions()), vec!["STMo"]);
-        assert!(!p.underrun_withdrawn, "the withdrawn report went with the flush");
+        assert!(
+            !p.underrun_withdrawn,
+            "the withdrawn report went with the flush"
+        );
     }
 
     /// Robustness and the per-track invariants: random sequences of LMS commands, stream

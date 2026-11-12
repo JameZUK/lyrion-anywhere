@@ -431,7 +431,10 @@ mod tests {
             let buf: Vec<f32> = (0..n).map(|_| f32::from_bits(rnd() as u32)).collect();
             v.push(&buf);
             // Cheap: one analysis (an FFT) per hop of audio, whatever the input.
-            assert!(v.analyses <= n / v.channels / v.hop, "{rate} Hz, {ch} channels");
+            assert!(
+                v.analyses <= n / v.channels / v.hop,
+                "{rate} Hz, {ch} channels"
+            );
             if let Some(f) = v.take() {
                 assert!(f.bands.iter().chain(&f.scope).all(|x| x.is_finite()));
             }
