@@ -44,6 +44,7 @@ vi.mock('#lib/api/events', () => {
 		stop() {
 			events.stopped++;
 		}
+		nudge() {}
 	}
 	return { EventsClient };
 });

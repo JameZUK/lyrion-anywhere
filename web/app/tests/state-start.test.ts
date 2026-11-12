@@ -42,6 +42,7 @@ vi.mock('#lib/api/events', () => {
 	class EventsClient {
 		start() {}
 		stop() {}
+		nudge() {}
 	}
 	return { EventsClient };
 });

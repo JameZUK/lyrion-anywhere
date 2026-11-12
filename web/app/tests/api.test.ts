@@ -3,7 +3,7 @@ import { PROFILE_KEY, RETRY_MS, SIGNED_OUT_KEY, SessionManager, refused, type Au
 import { Api, artUrl } from '#lib/api/rpc';
 import { API_TIMEOUT_MS, ApiError, callJson, CLIENT_HEADER, RequestTimeout } from '#lib/api/http';
 import { isNetworkError } from '#lib/state/reachability';
-import { EventsClient, eventsBackoff, parseEventMessage } from '#lib/api/events';
+import { EventsClient, NUDGE_FLOOR_MS, eventsBackoff, parseEventMessage } from '#lib/api/events';
 import { clientKind, defaultDeviceName, groupKey, LOCK_HOLD_MS, LOCK_WAIT_MS, login, PAGE_ID, refresh, REFRESH_LOCK, REFRESH_TIMEOUT_MS, RefreshTimeout, rememberedDevice, renameDevice, totpSetup, validDeviceName, withRefreshLock, type LockManagerLike } from '#lib/api/auth';
 import type { Session } from '#lib/api/auth';
 
@@ -832,6 +832,87 @@ describe('events', () => {
 		expect(states.at(-1)).toBe('live');
 		expect(resyncs).toBe(1);
 		c.stop();
+	});
+
+	// Review (Web low): after an outage the controls stayed disabled for up to ~36 s once the
+	// server was back, waiting for the socket's backoff. A nudge (the browser back online, the
+	// page shown again, a request that got through) reconnects at once, with a floor.
+	test('a nudge while retrying reconnects at once, never more often than the floor', async () => {
+		vi.useFakeTimers();
+		FakeWs.all = [];
+		const s = new SessionManager(fakeAuth(['t1']));
+		await s.restore();
+		const states: string[] = [];
+		const c = new EventsClient(s, { onEvent: () => {}, onResync: () => {}, onState: (x) => states.push(x) }, (u) => new FakeWs(u) as unknown as WebSocket);
+		c.start();
+		// Several failed connections: the backoff has grown long.
+		for (let i = 0; i < 6; i++) {
+			await FakeWs.all.at(-1)!.onclose!({ code: 1006, reason: '' });
+			await vi.advanceTimersByTimeAsync(eventsBackoff(i, () => 1) + 1);
+		}
+		const before = FakeWs.all.length;
+		await FakeWs.all.at(-1)!.onclose!({ code: 1006, reason: '' });
+		expect(states.at(-1)).toBe('retrying');
+		// The last attempt was moments ago: the nudge waits for the floor, not the backoff.
+		c.nudge();
+		c.nudge();
+		c.nudge();
+		await vi.advanceTimersByTimeAsync(NUDGE_FLOOR_MS);
+		expect(FakeWs.all.length).toBe(before + 1);
+		FakeWs.all.at(-1)!.onopen!();
+		FakeWs.all.at(-1)!.onmessage!({ data: '{"subscribed":true}' });
+		expect(states.at(-1)).toBe('live');
+		c.stop();
+	});
+
+	test('a nudge long after the last attempt connects straight away', async () => {
+		vi.useFakeTimers();
+		FakeWs.all = [];
+		const s = new SessionManager(fakeAuth(['t1']));
+		await s.restore();
+		const c = new EventsClient(s, { onEvent: () => {}, onResync: () => {} }, (u) => new FakeWs(u) as unknown as WebSocket);
+		c.start();
+		for (let i = 0; i < 5; i++) {
+			await FakeWs.all.at(-1)!.onclose!({ code: 1006, reason: '' });
+			await vi.advanceTimersByTimeAsync(eventsBackoff(i, () => 1) + 1);
+		}
+		await FakeWs.all.at(-1)!.onclose!({ code: 1006, reason: '' });
+		const n = FakeWs.all.length;
+		await vi.advanceTimersByTimeAsync(NUDGE_FLOOR_MS * 3);
+		expect(FakeWs.all.length).toBe(n); // still waiting out its backoff
+		c.nudge();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(FakeWs.all.length).toBe(n + 1);
+		c.stop();
+	});
+
+	test('a nudge does nothing while live, connecting, renewing, stopped or signed out', async () => {
+		vi.useFakeTimers();
+		FakeWs.all = [];
+		const s = new SessionManager(fakeAuth(['t1']));
+		await s.restore();
+		const c = new EventsClient(s, { onEvent: () => {}, onResync: () => {} }, (u) => new FakeWs(u) as unknown as WebSocket);
+		c.nudge(); // not started
+		await vi.advanceTimersByTimeAsync(NUDGE_FLOOR_MS * 2);
+		expect(FakeWs.all).toHaveLength(0);
+		c.start();
+		c.nudge(); // connecting
+		FakeWs.all[0]!.onopen!();
+		FakeWs.all[0]!.onmessage!({ data: '{"subscribed":true}' });
+		c.nudge(); // live
+		await vi.advanceTimersByTimeAsync(NUDGE_FLOOR_MS * 2);
+		expect(FakeWs.all).toHaveLength(1);
+		c.stop();
+		c.nudge();
+		await vi.advanceTimersByTimeAsync(NUDGE_FLOOR_MS * 2);
+		expect(FakeWs.all).toHaveLength(1);
+		c.start();
+		expect(FakeWs.all).toHaveLength(2);
+		await s.signOut();
+		await FakeWs.all[1]!.onclose!({ code: 1006, reason: '' });
+		c.nudge();
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(FakeWs.all).toHaveLength(2);
 	});
 
 	test('an unauthorised close after the session was signed out stops', async () => {

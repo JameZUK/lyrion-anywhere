@@ -164,12 +164,17 @@ class AppState {
 		});
 		api.onHealth = (e) => {
 			this.#reached(true);
+			// The gateway answered: if the events socket is waiting to try again, it tries now.
+			this.#events.nudge();
 			if (e) this.#markBusy(e.retryAfter === undefined ? null : Math.min(e.retryAfter, 300));
 			else this.#markOk();
 		};
 		api.onUnreachable = () => this.#reached(false);
 		if (typeof window !== 'undefined') {
-			addEventListener('online', () => this.#reassess());
+			addEventListener('online', () => {
+				this.#reassess();
+				this.#events.nudge(); // back online: the events socket need not wait out its backoff
+			});
 			addEventListener('offline', () => this.#reassess());
 		}
 		session.subscribe((s, st) => {
@@ -422,7 +427,9 @@ class AppState {
 	}
 
 	#onVisible = () => {
-		if (document.visibilityState === 'visible') this.soon();
+		if (document.visibilityState !== 'visible') return;
+		this.soon();
+		this.#events.nudge(); // shown again: the events socket tries now if it is waiting
 	};
 
 	async loadPlayers() {
