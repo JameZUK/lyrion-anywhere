@@ -50,7 +50,9 @@ gc() {
 	target=$1; shift
 	rc=0
 	out=$(PATH="$WORK/bin:$PATH" CARGO_TARGET_DIR="$target" TMPDIR="$WORK/tmp" tools/disk-gc.sh --dry-run "$@" 2>&1) || rc=$?
-	[ "$rc" = 0 ] && return 0
+	# 4 is "done, but the disk is nearly full": a fact about this machine, not a failure
+	# of the script, so the test passes on a full build host too.
+	[ "$rc" = 0 ] || [ "$rc" = 4 ] && return 0
 	echo "$out"
 	fail "disk-gc.sh --dry-run $* exited $rc"
 }

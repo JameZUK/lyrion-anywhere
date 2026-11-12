@@ -15,7 +15,15 @@ object PlaylistNames {
     const val MAX = 100
 
     private val reserved = Regex("""[/\\:*?"<>|]""")
-    private val hidden = Regex("[\\u0000-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u206f\\ufeff\\ufff9-\\ufffb]")
+    /**
+     * Characters that draw nothing and could disguise a name (the core's `names::invisible`,
+     * which the gateway enforces). The emoji selector U+FE0F is allowed straight after a
+     * symbol (not a letter, digit, space or another such character): "❤️" is typed that way.
+     */
+    private const val INVISIBLE = "\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u034f\\u0600-\\u0605\\u061c\\u06dd\\u070f\\u0890\\u0891\\u08e2" +
+        "\\u115f\\u1160\\u180e\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u206f\\u3164\\ufe00-\\ufe0f\\ufeff\\uffa0\\ufff9-\\ufffb" +
+        "\\x{110bd}\\x{110cd}\\x{13430}-\\x{1343f}\\x{1bca0}-\\x{1bca3}\\x{1d173}-\\x{1d17a}\\x{e0000}-\\x{e007f}\\x{e0100}-\\x{e01ef}"
+    private val hidden = Regex("(?<![^\\p{L}\\p{N}\\s$INVISIBLE])\\ufe0f|[$INVISIBLE&&[^\\ufe0f]]")
     private val device = Regex("^(con|prn|aux|nul|com[1-9]|lpt[1-9])$", RegexOption.IGNORE_CASE)
 
     /** The name as it will be sent: composed (NFC) and trimmed. */

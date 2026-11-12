@@ -398,19 +398,21 @@ impl Consumer {
     /// [`Consumer::read`] into 16-bit integers (exact for 16-bit sources; anything else is
     /// rounded to nearest, without dither).
     pub fn read_i16(&mut self, out: &mut [i16]) -> usize {
-        self.read_map(out.len(), |i, s| out[i] = pcm::f32_to_int(s, 16) as i16)
+        self.read_map(out.len(), |i, s| {
+            out[i] = pcm::f32_to_int(s, pcm::Depth::D16) as i16
+        })
     }
 
     /// [`Consumer::read`] into right-aligned `bits`-deep integers (24 or 32; exact for
     /// sources of up to `min(bits, 24)` bits).
-    pub fn read_i32(&mut self, out: &mut [i32], bits: u32) -> usize {
+    pub fn read_i32(&mut self, out: &mut [i32], bits: pcm::Depth) -> usize {
         self.read_map(out.len(), |i, s| out[i] = pcm::f32_to_int(s, bits))
     }
 
     /// [`Consumer::read`] into packed little-endian 24-bit samples (3 bytes each).
     pub fn read_i24_packed(&mut self, out: &mut [u8]) -> usize {
         self.read_map(out.len() / 3, |i, s| {
-            let b = pcm::f32_to_int(s, 24).to_le_bytes();
+            let b = pcm::f32_to_int(s, pcm::Depth::D24).to_le_bytes();
             out[i * 3..i * 3 + 3].copy_from_slice(&b[..3]);
         })
     }
@@ -763,7 +765,7 @@ mod tests {
         let ints24: Vec<i32> = vec![-8_388_608, 8_388_607, 0, 1, -1, 4_000_001, -77, 3];
         let as_f32 = |v: &[i32], bits: u32| {
             let mut f = vec![0f32; v.len()];
-            pcm::int_to_f32(v, bits, &mut f);
+            pcm::int_to_f32(v, pcm::Depth::new(bits).unwrap(), &mut f).unwrap();
             f
         };
         let (r, mut p, mut c) = ring(256);
@@ -791,14 +793,14 @@ mod tests {
 
         p.write(&as_f32(&ints24, 24));
         let mut o32 = [0i32; 8];
-        assert_eq!(c.read_i32(&mut o32, 32), 8);
+        assert_eq!(c.read_i32(&mut o32, pcm::Depth::D32), 8);
         let want: Vec<i32> = ints24.iter().map(|v| v << 8).collect();
         assert_eq!(&o32[..], &want[..]);
 
         // 16-bit audio into a 24-bit container: padded, exact.
         p.write(&as_f32(&ints16, 16));
         let mut o24 = [0i32; 8];
-        assert_eq!(c.read_i32(&mut o24, 24), 8);
+        assert_eq!(c.read_i32(&mut o24, pcm::Depth::D24), 8);
         let want: Vec<i32> = ints16.iter().map(|v| v << 8).collect();
         assert_eq!(&o24[..], &want[..]);
 
@@ -806,7 +808,7 @@ mod tests {
         p.write(&as_f32(&ints16, 16));
         r.set_hold(true);
         let mut held = [5i32; 4];
-        assert_eq!(c.read_i32(&mut held, 24), 0);
+        assert_eq!(c.read_i32(&mut held, pcm::Depth::D24), 0);
         assert_eq!(held, [0; 4]);
         r.set_hold(false);
         // Ducked: scaled and rounded.

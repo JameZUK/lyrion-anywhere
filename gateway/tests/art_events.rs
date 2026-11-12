@@ -337,7 +337,7 @@ async fn an_oversize_frame_on_the_events_socket_is_refused_at_its_header() {
     let h = harness_with(|c| c.auth_timeout = Duration::from_secs(30)).await;
     let mut s = TcpStream::connect(h.addr).await.unwrap();
     s.write_all(
-        b"GET /v1/events HTTP/1.1\r\nhost: test\r\nupgrade: websocket\r\nconnection: upgrade\r\n\
+        b"GET /v1/events HTTP/1.1\r\nhost: 127.0.0.1\r\nupgrade: websocket\r\nconnection: upgrade\r\n\
           sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n",
     )
     .await

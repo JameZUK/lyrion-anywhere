@@ -1079,8 +1079,10 @@ pub(crate) fn read_int(pull: Option<Arc<Mutex<PullSlot>>>, max_frames: u32) -> P
             }
             n
         }
-        PcmEncoding::I32 => c.read_i32(&mut samples, 32),
-        PcmEncoding::I24Packed | PcmEncoding::Float => c.read_i32(&mut samples, 24),
+        PcmEncoding::I32 => c.read_i32(&mut samples, anywhere_core::dsp::pcm::Depth::D32),
+        PcmEncoding::I24Packed | PcmEncoding::Float => {
+            c.read_i32(&mut samples, anywhere_core::dsp::pcm::Depth::D24)
+        }
     };
     PcmIntBlock {
         sample_rate: rate,

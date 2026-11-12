@@ -425,7 +425,10 @@ async fn grant(
     Json(g): Json<Grant>,
 ) -> Response {
     match st.gw.db(move |a| a.grant_player(&name, &g.player)).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Ok(()) => {
+            st.gw.rescope_event_sockets();
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(e) => err(e),
     }
 }
@@ -435,7 +438,10 @@ async fn ungrant(
     Path((name, mac)): Path<(String, String)>,
 ) -> Response {
     match st.gw.db(move |a| a.ungrant_player(&name, &mac)).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Ok(()) => {
+            st.gw.rescope_event_sockets();
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(e) => err(e),
     }
 }

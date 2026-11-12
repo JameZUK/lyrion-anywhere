@@ -542,6 +542,7 @@ impl Gateway {
     /// The menu actions LMS offered them are forgotten too: nothing learned by a revoked
     /// device may pass to whatever later holds its id.
     pub async fn end_sessions_for(self: &Arc<Self>, device_ids: &[i64]) {
+        self.recheck_event_sockets(device_ids);
         self.menu_actions
             .lock()
             .unwrap()
@@ -732,11 +733,7 @@ pub fn router(state: AppState) -> Router {
     app = match &state.cfg.static_dir {
         // The web app's files; the revalidated ones (everything outside the content-hashed
         // directory) get an ETag made of their content, see `static_files`.
-        Some(dir) => app.fallback_service(
-            tower::ServiceBuilder::new()
-                .layer(middleware::from_fn(static_files::content_etags))
-                .service(tower_http::services::ServeDir::new(dir)),
-        ),
+        Some(dir) => app.fallback_service(static_files::service(dir.clone())),
         None => app.fallback(|| async { StatusCode::NOT_FOUND }),
     };
     // Request bodies must arrive within the time limit (innermost: after the TLS check).

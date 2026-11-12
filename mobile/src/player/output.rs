@@ -235,7 +235,7 @@ mod aaudio {
                                 let out = unsafe {
                                     std::slice::from_raw_parts_mut(data.cast::<i32>(), len)
                                 };
-                                consumer.read_i32(out, 32);
+                                consumer.read_i32(out, anywhere_core::dsp::pcm::Depth::D32);
                             }
                         }
                     }

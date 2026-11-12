@@ -30,6 +30,13 @@ class PlaylistNamesTest {
             "esc\u001b[2J" to PlaylistNameProblem.HIDDEN_CHARACTERS,
             "bidi\u202etxt" to PlaylistNameProblem.HIDDEN_CHARACTERS,
             "zero\u200bwidth" to PlaylistNameProblem.HIDDEN_CHARACTERS,
+            "soft\u00adhyphen" to PlaylistNameProblem.HIDDEN_CHARACTERS,
+            "tag\uDB40\uDC41" to PlaylistNameProblem.HIDDEN_CHARACTERS,
+            "A\ufe0f" to PlaylistNameProblem.HIDDEN_CHARACTERS,
+            "\ufe0fA" to PlaylistNameProblem.HIDDEN_CHARACTERS,
+            "A \ufe0fB" to PlaylistNameProblem.HIDDEN_CHARACTERS,
+            "heart\u2764\ufe0e" to PlaylistNameProblem.HIDDEN_CHARACTERS,
+            "\u2764\ufe0f\ufe0f" to PlaylistNameProblem.HIDDEN_CHARACTERS,
             "../etc/passwd" to PlaylistNameProblem.RESERVED_CHARACTERS,
             "a/b" to PlaylistNameProblem.RESERVED_CHARACTERS,
             "a\\b" to PlaylistNameProblem.RESERVED_CHARACTERS,
@@ -66,6 +73,12 @@ class PlaylistNamesTest {
                 assertFalse(clean, Regex("""[/\\:*?"<>|]|\.\.|^\.|\.$""").containsMatchIn(clean))
             }
         }
+    }
+
+    @Test
+    fun emojiTypedWithAPresentationSelectorAreFine() {
+        assertEquals(null, PlaylistNames.problem("Love \u2764\ufe0f"))
+        assertEquals(null, PlaylistNames.problem("\u2600\ufe0f Summer"))
     }
 
     @Test

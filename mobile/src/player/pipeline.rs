@@ -604,7 +604,8 @@ impl Pipeline {
             }
         }
         self.source_bits = source_bits;
-        let quantise = self.quantise_bits();
+        // A depth the conversions don't support is not quantised to (none is offered today).
+        let quantise = self.quantise_bits().and_then(|b| pcm::Depth::new(b).ok());
         if self.chain.is_none() && self.resampler.is_none() && quantise.is_none() {
             // The bit-perfect path: a plain copy.
             self.pending.extend_from_slice(block);
@@ -633,7 +634,10 @@ impl Pipeline {
                     } else {
                         self.out_dither.quantise(out, bits, &mut self.ints);
                     }
-                    pcm::int_to_f32(&self.ints, bits, &mut self.pending);
+                    // Deeper than an f32 holds exactly: the samples as they are.
+                    if pcm::int_to_f32(&self.ints, bits, &mut self.pending).is_err() {
+                        pcm::f64_to_f32(out, &mut self.pending);
+                    }
                 }
                 None => pcm::f64_to_f32(out, &mut self.pending),
             }
@@ -1129,12 +1133,20 @@ mod tests {
                 .iter()
                 .any(|s| s.name == "Dither to 24-bit (TPDF)")
         );
-        assert!(p.pending.iter().all(|v| pcm::f32_on_grid(*v, 24)));
+        assert!(
+            p.pending
+                .iter()
+                .all(|v| pcm::f32_on_grid(*v, pcm::Depth::D24))
+        );
         p.write_pending(&mut prod);
         // A 24-bit source into a 16-bit DAC: reduced with dither.
         p.set_output_bits(Some(16));
         p.push_with(&input, 2, None, None, Some(24));
-        assert!(p.pending.iter().all(|v| pcm::f32_on_grid(*v, 16)));
+        assert!(
+            p.pending
+                .iter()
+                .all(|v| pcm::f32_on_grid(*v, pcm::Depth::D16))
+        );
         assert!(
             p.stages()
                 .iter()
@@ -1196,7 +1208,7 @@ mod tests {
                     })
                     .collect();
                 let mut f = vec![0f32; ints.len()];
-                pcm::int_to_f32(&ints, src_bits, &mut f);
+                pcm::int_to_f32(&ints, pcm::Depth::new(src_bits).unwrap(), &mut f).unwrap();
                 let ring = Ring::new(1 << 20);
                 ring.set_hold(false);
                 let mut prod = ring.producer().unwrap();
@@ -1216,7 +1228,7 @@ mod tests {
                     got = o.into_iter().map(i32::from).collect();
                     n
                 } else {
-                    cons.read_i32(&mut got, out_bits)
+                    cons.read_i32(&mut got, pcm::Depth::new(out_bits).unwrap())
                 };
                 assert_eq!(n, ints.len());
                 let shift = out_bits - src_bits;

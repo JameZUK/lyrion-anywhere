@@ -64,6 +64,11 @@ test('bad names are refused with a reason', () => {
 		'bidi\u202etxt',
 		'zero\u200bwidth',
 		'bom\ufeff',
+		'soft\u00adhyphen',
+		'tag\u{e0041}',
+		'A\ufe0f',
+		'\ufe0fA',
+		'heart\u2764\ufe0e',
 		'CON',
 		'nul.txt',
 		'x'.repeat(PLAYLIST_NAME_MAX + 1),
@@ -274,4 +279,13 @@ describe('Save as playlist', () => {
 		expect(document.querySelector('[data-save-queue-dialog]')).not.toBeNull();
 		r.unmount();
 	});
+});
+
+test('emoji typed with a presentation selector are fine in playlist names', () => {
+	for (const n of ['Love \u2764\ufe0f', '\u2600\ufe0f Summer']) {
+		expect(playlistNameProblem(n), JSON.stringify(n)).toBe('');
+	}
+	// The selector twice, or after a space, draws nothing.
+	expect(playlistNameProblem('\u2764\ufe0f\ufe0f')).not.toBe('');
+	expect(playlistNameProblem('A \ufe0fB')).not.toBe('');
 });

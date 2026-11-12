@@ -122,7 +122,7 @@ Everything that crosses the boundary goes through the gateway's public listener.
 | Threat | Mitigation |
 |---|---|
 | Internet scanners hitting LMS's own bugs (path traversal, `readdirectory`, XSS) | LMS ports never exposed; only allow-listed commands and fixed path patterns are forwarded |
-| Password guessing | Per-address hard lockout (IPv6 per /64); a per-user soft lockout that refuses the addresses that failed and holds all others to 2 attempts a minute, so nobody can lock a user out; attempts counted before checking; at most 4 password checks at once; optional TOTP; generic errors |
+| Password guessing | Per-address hard lockout (IPv6 per /64); a per-user soft lockout that refuses the addresses that failed and holds all others to 2 attempts a minute, while a user's own devices (proved by a refresh token, even an expired one) and password changes have an allowance of their own, so nobody can lock a user out; attempts counted before checking; at most 4 password checks at once; optional TOTP; generic errors |
 | Stolen device or token | 15-minute access tokens held in memory; refresh tokens rotated on every use with reuse detection; per-device revocation that closes sockets at once |
 | Impersonating another player | HELO must carry the device's assigned MAC; the stream path must match the session's own MAC; `serv` redirects dropped |
 | Reading arbitrary files | Tracks resolved only by library id; `file:` URLs, paths and local URLs refused in every command and free-text field; responses scrubbed by key and by value |

@@ -744,7 +744,7 @@ async fn a_stream_whose_client_stopped_reading_is_cancelled_all_the_same() {
     client
         .write_all(
             format!(
-                "GET /v1/stream/{sid}/1 HTTP/1.1\r\nhost: test\r\nauthorization: Bearer {tok}\r\n\r\n"
+                "GET /v1/stream/{sid}/1 HTTP/1.1\r\nhost: 127.0.0.1\r\nauthorization: Bearer {tok}\r\n\r\n"
             )
             .as_bytes(),
         )

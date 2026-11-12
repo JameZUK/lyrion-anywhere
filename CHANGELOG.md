@@ -2,6 +2,37 @@
 
 Dated entries, newest first.
 
+## 2026-11-12: full review for security, stability and reliability, and its fixes (unreleased)
+
+The whole tree was reviewed (gateway, core, plugin, web, mobile, Android, CI): one high, 21 medium and about 45 low findings. No way round sign-in, the command allow-list, or the checks on what the gateway fetches was found. Every fix has a test that failed before it. The protocol stays at 2; the two changes clients can see (below) need no new version, since the web app ships with the gateway and the Android app has no screens for the endpoints concerned.
+
+**Android**
+- **Signing in again failed until the app was restarted** (the high): after signing out, after the server ended the sign-in, or after following a pairing link, the app went on using a session object it had closed. The repository now owns the session; Retry acts only when the server is out of reach. The offline library could likewise be closed while a call still used it.
+- A sign-in that merely **expired no longer deletes the downloads**; only a device the server revokes loses them. Signing out is confirmed only by the gateway's own answer, so a restart of the server no longer leaves the device signed in there. Sign-in renewals run where they cannot be cut short.
+- Car mode opens when the car's Bluetooth connects; another app can no longer crash the app by starting its media service; a damaged settings file, a refused foreground start or an odd camera frame no longer stop it; covers are kept per server; resumed downloads check they continue the same file.
+
+**Gateway**
+- **Crafted input can no longer tie up the server:** the response filter and the WAV header check ran in quadratic time; a stream declaring a sample rate of 0 or an absurd one hung the track or filled memory; the web app's files were read and hashed on every request, signed in or not.
+- **Accounts:** a stranger can no longer keep a user locked out by spending the shared lockout budget (a user's own devices and password changes have their own allowance); an admin password reset or disabling a user cancels unused pairing codes and any sign-in still being checked against the old password; refused pairing requests can no longer flood the audit log.
+- **Seen by clients:** a wrong password or code on two-step setup, two-step off and "Add another device" answers 403, as a password change does (it was 401, which clients took for an expired token and sent again); a refused refresh says `"reason": "expired"` when the sign-in simply ran out.
+- Live re-encode slots are freed when a stream is abandoned or not fetched, at most half to one user; `/v1/rpc` is capped per user; revoking a device or a player permission reaches open event sockets at once; database and file work is off the async workers; HSTS on HTTPS; plain HTTP from the gateway's own machine only for `localhost` or an IP address; small body limits per path; cloudflared is checked against its pin before every start. Database schema 16.
+
+**Plugin**
+- *Enabled*, the admin port, transcoding and analysis can only be changed on the settings page, so a web page a LAN user opens can no longer turn remote access back on; a field the page refuses keeps its saved value (on LMS it was cleared); the page answers only at the server's IP address, `localhost`, its own name or a name listed under *Other names for this page* (against DNS rebinding), and says how to open it otherwise.
+- `anywhere restart` no longer shows the page's token to CLI listeners; an ARMv6 server gets a plain message; an IPv6 Public URL is accepted.
+
+**Web**
+- Only the gateway's own refusal ends a sign-in (a proxy's or firewall's page did); if the browser comes back signed in as someone else the app starts afresh as them, and signing out reaches every tab; a mistyped password is sent once.
+- "Play on this device" reports a failed start instead of staying on "Starting…"; reconnects back off when a server greets and drops; requests time out after 15 s; a failed change of sample rate is retried; the Resume and Radio shortcuts and "Search on…" links ask for a tap when opened from outside.
+
+**Core and CLI**
+- A stream of undecodable packets fails rather than "finishing"; a sync skip past a short track starts it; Opus headers are bounded (streams, gain) and legal large packets decode; one definition of the characters that draw nothing, for playlist and player names (an emoji's presentation selector after its symbol stays allowed). The CLI talks plain HTTP only to this machine and no longer echoes the password.
+
+**Releases and CI**
+- Android release builds are unsigned and signed afterwards in a job of their own that runs no build code; only publishing jobs can write; provenance checks pin the workflow, the tag and GitHub's runners. This path is not yet proven by a real release.
+
+**Not verified here:** behaviour that needs a real browser, phone or car (cross-tab sign-out, the worker's start failure, Bluetooth car mode, the media-service start from another app), and the new release-signing jobs.
+
 ## 2026-11-02: streams showed no artwork (issue #37); plugin 0.7.7, Android 1.17.3
 
 The reporter of [#30](https://github.com/JameZUK/lyrion-anywhere/issues/30) opened [#37](https://github.com/JameZUK/lyrion-anywhere/issues/37): playing BBC Radio 2 from the BBC Sounds plugin, the Android app showed no artwork. The same held for every stream whose artwork is an external image (the station or programme image LMS hands out for a stream from BBC Sounds, a radio directory or most plugins) and for plugin menu icons at external URLs, on both clients.

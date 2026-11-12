@@ -64,7 +64,7 @@ The gateway gives the tunnel a listener of its own, on loopback port 9444, and o
 
 ### Option A: the LMS plugin (recommended)
 
-The plugin bundles the gateway for Linux on x86_64, aarch64 (64-bit Raspberry Pi and similar) and armhf (32-bit Raspberry Pi OS), plus the web app. It starts the gateway with LMS, restarts it if it stops, and gives you a settings page for everything.
+The plugin bundles the gateway for Linux on x86_64, aarch64 (64-bit Raspberry Pi and similar) and armhf (32-bit Raspberry Pi OS on an ARMv7 or later processor; not the ARMv6 of the Raspberry Pi 1 and the first Pi Zero, where the status says so), plus the web app. It starts the gateway with LMS, restarts it if it stops, and gives you a settings page for everything.
 
 **From a release** (recommended):
 

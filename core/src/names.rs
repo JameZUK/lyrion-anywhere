@@ -67,6 +67,27 @@ pub fn player_name(raw: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
+/// The emoji presentation selector: it draws nothing itself, but "❤️" and many other
+/// emoji are a symbol followed by it, so a playlist name may carry it there.
+const EMOJI_SELECTOR: char = '\u{fe0f}';
+
+/// Whether a playlist name holds an [`invisible`] character. The one exception is the
+/// emoji presentation selector straight after a character that is neither a letter nor a
+/// digit (a symbol, which it turns into its emoji form): after a letter or digit, or at
+/// the start, it could only disguise the name.
+fn has_hidden(name: &str) -> bool {
+    let mut prev: Option<char> = None;
+    for c in name.chars() {
+        let emoji_form = c == EMOJI_SELECTOR
+            && prev.is_some_and(|p| !p.is_alphanumeric() && !p.is_whitespace() && !invisible(p));
+        if invisible(c) && !emoji_form {
+            return true;
+        }
+        prev = Some(c);
+    }
+    false
+}
+
 /// The name a playlist may be saved under (trimmed), or why not. Any script is fine;
 /// clients send names composed (NFC).
 pub fn playlist_name(raw: &str) -> Result<String, &'static str> {
@@ -77,7 +98,7 @@ pub fn playlist_name(raw: &str) -> Result<String, &'static str> {
     if name.chars().count() > PLAYLIST_NAME_MAX {
         return Err("names are at most 100 characters");
     }
-    if name.chars().any(invisible) {
+    if has_hidden(name) {
         return Err("names can't contain control or invisible characters");
     }
     if name.contains(RESERVED) {
@@ -102,6 +123,33 @@ pub fn playlist_name(raw: &str) -> Result<String, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn emoji_with_a_presentation_selector_are_fine_in_playlist_names() {
+        // U+2764 U+FE0F: the red heart, as keyboards type it.
+        assert_eq!(
+            playlist_name("Love \u{2764}\u{fe0f}").as_deref(),
+            Ok("Love \u{2764}\u{fe0f}")
+        );
+        assert_eq!(
+            playlist_name("\u{2600}\u{fe0f} Summer").as_deref(),
+            Ok("\u{2600}\u{fe0f} Summer")
+        );
+        // After a letter, a digit, a space, another selector or at the start it draws
+        // nothing and could only disguise a name.
+        for bad in [
+            "A\u{fe0f}",
+            "1\u{fe0f}",
+            "\u{fe0f}A",
+            "A \u{fe0f}B",
+            "\u{2764}\u{fe0f}\u{fe0f}",
+        ] {
+            assert!(playlist_name(bad).is_err(), "{bad:?}");
+        }
+        // The other variation selectors stay refused everywhere.
+        assert!(playlist_name("\u{2764}\u{fe0e}").is_err());
+        assert!(playlist_name("\u{2764}\u{fe00}").is_err());
+    }
 
     #[test]
     fn names_are_checked() {
