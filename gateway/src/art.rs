@@ -259,23 +259,104 @@ async fn resolves_local(url: &str, answers: &HostAnswers) -> bool {
 /// Fixed answers for host names, consulted before DNS (see `Config::host_answers`).
 pub(crate) type HostAnswers = std::collections::HashMap<String, Vec<std::net::IpAddr>>;
 
+/// How long a host name's verdict (local or not) is kept: a page of covers from one host
+/// makes one lookup, not one each.
+const VERDICT_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+/// Verdicts kept at most.
+const MAX_VERDICTS: usize = 1024;
+/// Host name lookups running at once, for the whole process: each holds a thread of the
+/// blocking pool for up to [`RESOLVE_TIMEOUT`].
+const LOOKUPS: usize = 4;
+
+/// Host name lookups: a few at a time, their verdicts kept a short while (review low: the
+/// image proxy looked a name up for every request, before taking an artwork slot, with no
+/// limit at all).
+pub(crate) struct Lookups {
+    slots: tokio::sync::Semaphore,
+    verdicts: std::sync::Mutex<std::collections::HashMap<String, (bool, std::time::Instant)>>,
+}
+
+impl Lookups {
+    fn new(slots: usize) -> Lookups {
+        Lookups {
+            slots: tokio::sync::Semaphore::new(slots),
+            verdicts: Default::default(),
+        }
+    }
+
+    /// The process's own: lookups use the host's resolver, whichever gateway asks.
+    fn global() -> &'static Lookups {
+        static GLOBAL: std::sync::OnceLock<Lookups> = std::sync::OnceLock::new();
+        GLOBAL.get_or_init(|| Lookups::new(LOOKUPS))
+    }
+
+    fn kept(&self, name: &str) -> Option<bool> {
+        let v = self.verdicts.lock().unwrap();
+        v.get(name)
+            .filter(|(_, at)| at.elapsed() < VERDICT_TTL)
+            .map(|(local, _)| *local)
+    }
+
+    fn keep(&self, name: String, local: bool) {
+        let mut v = self.verdicts.lock().unwrap();
+        if v.len() >= MAX_VERDICTS && !v.contains_key(&name) {
+            v.retain(|_, (_, at)| at.elapsed() < VERDICT_TTL);
+            if v.len() >= MAX_VERDICTS
+                && let Some(oldest) = v
+                    .iter()
+                    .min_by_key(|(_, (_, at))| *at)
+                    .map(|(k, _)| k.clone())
+            {
+                v.remove(&oldest);
+            }
+        }
+        v.insert(name, (local, std::time::Instant::now()));
+    }
+
+    /// See [`host_resolves_local`]. A lookup that can't get a slot within
+    /// [`RESOLVE_TIMEOUT`] counts as local: what can't be checked is refused.
+    async fn resolves_local(&self, host: &str, answers: &HostAnswers) -> bool {
+        if host.parse::<std::net::IpAddr>().is_ok() || host.contains(':') {
+            return false; // an address literal, judged as written by `local_url`
+        }
+        let name = host.trim_end_matches('.').to_ascii_lowercase();
+        if let Some(fixed) = answers.get(&name) {
+            return fixed.iter().any(|ip| crate::rpc_policy::ip_is_local(*ip));
+        }
+        if let Some(local) = self.kept(&name) {
+            return local;
+        }
+        let Ok(Ok(_slot)) = tokio::time::timeout(RESOLVE_TIMEOUT, self.slots.acquire()).await
+        else {
+            tracing::warn!("too many host name lookups at once; refusing what can't be checked");
+            return true;
+        };
+        // Looked up meanwhile by whoever held the slot.
+        if let Some(local) = self.kept(&name) {
+            return local;
+        }
+        match tokio::time::timeout(RESOLVE_TIMEOUT, tokio::net::lookup_host((host, 80))).await {
+            Ok(Ok(addrs)) => {
+                let local = addrs
+                    .into_iter()
+                    .any(|a| crate::rpc_policy::ip_is_local(a.ip()));
+                self.keep(name, local);
+                local
+            }
+            // Not resolvable here, or not in time: left to the checks on the name itself,
+            // and not kept (the next request looks again).
+            _ => false,
+        }
+    }
+}
+
 /// Does this host name (as written in a URL, without brackets or port) resolve to any local
 /// address? Address literals are not looked up (they are judged as written by the name
 /// checks), and a name that doesn't resolve within [`RESOLVE_TIMEOUT`] counts as not local.
+/// Verdicts are kept for [`VERDICT_TTL`], and at most [`LOOKUPS`] lookups run at once (see
+/// [`Lookups`]).
 pub(crate) async fn host_resolves_local(host: &str, answers: &HostAnswers) -> bool {
-    if host.parse::<std::net::IpAddr>().is_ok() || host.contains(':') {
-        return false; // an address literal, judged as written by `local_url`
-    }
-    let name = host.trim_end_matches('.').to_ascii_lowercase();
-    if let Some(fixed) = answers.get(&name) {
-        return fixed.iter().any(|ip| crate::rpc_policy::ip_is_local(*ip));
-    }
-    match tokio::time::timeout(RESOLVE_TIMEOUT, tokio::net::lookup_host((host, 80))).await {
-        Ok(Ok(addrs)) => addrs
-            .into_iter()
-            .any(|a| crate::rpc_policy::ip_is_local(a.ip())),
-        _ => false,
-    }
+    Lookups::global().resolves_local(host, answers).await
 }
 
 /// Most distinct host names looked up for one command's free text; a command naming more is
@@ -409,6 +490,9 @@ pub async fn art(
     let Some(principal) = principal else {
         return status(StatusCode::UNAUTHORIZED);
     };
+    // An image-proxy URL whose host name is still to be looked up: done once the request
+    // holds an artwork slot (review low), so a user's lookups are bounded by their slots.
+    let mut to_resolve = None;
     let lms_path = match target(&path) {
         Some(Target::Path(p)) => p,
         Some(Target::Current { name, .. }) => {
@@ -437,10 +521,7 @@ pub async fn art(
                 tracing::warn!(user = %principal.username, "refused image proxy for an unknown URL");
                 return status(StatusCode::NOT_FOUND);
             }
-            if resolves_local(&url, &gw.cfg.host_answers).await {
-                tracing::warn!(user = %principal.username, "refused image proxy for a URL that resolves locally");
-                return status(StatusCode::NOT_FOUND);
-            }
+            to_resolve = Some(url);
             format!("/imageproxy/{encoded}/{name}")
         }
         None => return status(StatusCode::NOT_FOUND),
@@ -465,6 +546,12 @@ pub async fn art(
             .insert(header::RETRY_AFTER, HeaderValue::from_static("2"));
         return r;
     };
+    if let Some(url) = to_resolve
+        && resolves_local(&url, &gw.cfg.host_answers).await
+    {
+        tracing::warn!(user = %principal.username, "refused image proxy for a URL that resolves locally");
+        return status(StatusCode::NOT_FOUND);
+    }
 
     let resp = match gw
         .http
@@ -836,6 +923,45 @@ mod tests {
         assert!(resolves_local("https://CDN.example.com./a.png", &fixed).await);
         assert!(resolves_local("https://v6.example.com/a.png", &fixed).await);
         assert!(!resolves_local("https://pub.example.com/a.png", &fixed).await);
+    }
+
+    /// Review low: a host's verdict is kept a while, so a page of covers from one host makes
+    /// one lookup; only a few lookups run at once, and one that can't get a slot in time is
+    /// refused (what can't be checked isn't fetched). `localhost` resolves without network
+    /// access, from the hosts file.
+    #[tokio::test]
+    async fn lookups_are_kept_a_while_and_limited() {
+        let lk = Lookups::new(1);
+        let none = HostAnswers::default();
+        assert!(lk.resolves_local("localhost", &none).await);
+        assert_eq!(lk.kept("localhost"), Some(true));
+        // Literals and fixed answers are neither looked up nor kept.
+        assert!(!lk.resolves_local("8.8.8.8", &none).await);
+        let mut fixed = HostAnswers::default();
+        fixed.insert(
+            "pub.example.com".into(),
+            vec!["203.0.113.10".parse().unwrap()],
+        );
+        assert!(!lk.resolves_local("pub.example.com", &fixed).await);
+        assert_eq!(lk.verdicts.lock().unwrap().len(), 1);
+        // Every slot taken: a name not known yet can't be checked in time, so it counts as
+        // local; a kept verdict needs no slot.
+        let held = lk.slots.acquire().await.unwrap();
+        let t = std::time::Instant::now();
+        assert!(lk.resolves_local("not-looked-up.invalid", &none).await);
+        assert!(t.elapsed() >= RESOLVE_TIMEOUT);
+        let t = std::time::Instant::now();
+        assert!(lk.resolves_local("LOCALHOST.", &none).await);
+        assert!(t.elapsed() < RESOLVE_TIMEOUT);
+        drop(held);
+        // Names that don't resolve are not kept: the next request looks again.
+        assert!(!lk.resolves_local("not-looked-up.invalid", &none).await);
+        assert_eq!(lk.kept("not-looked-up.invalid"), None);
+        // The table is bounded.
+        for i in 0..MAX_VERDICTS + 10 {
+            lk.keep(format!("h{i}.example.com"), false);
+        }
+        assert_eq!(lk.verdicts.lock().unwrap().len(), MAX_VERDICTS);
     }
 
     #[test]

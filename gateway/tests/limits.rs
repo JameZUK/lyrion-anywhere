@@ -370,6 +370,58 @@ async fn a_queued_artwork_request_is_served_when_a_slot_frees() {
     assert_eq!(queued.await.unwrap(), S::OK);
 }
 
+/// Regression (review low): the image proxy looked an image's host name up before taking an
+/// artwork slot, so a user's lookups had no bound at all. The lookup now waits for the slot:
+/// with the user's slots all taken, a proxied image gets 429 as any other artwork does, and
+/// once a slot is free the lookup is made (here it finds a local address, so 404).
+#[tokio::test]
+async fn the_image_proxy_looks_names_up_only_with_an_artwork_slot() {
+    let script: Script = Arc::new(|p: &str, _| {
+        if p == "/jsonrpc.js" {
+            json_reply(json!({"count": 1, "loop_loop": [
+                {"id": "f.1", "name": "Station", "image": "https://cdn.example.com/a.jpg"}
+            ]}))
+        } else if p.starts_with("/music/") {
+            Reply::Stall(head("200 OK", "image/jpeg", None))
+        } else {
+            Reply::Full(head("200 OK", "image/jpeg", Some(4)), b"IMGD".into())
+        }
+    });
+    let (h, _lms) = with_lms(script, |c| {
+        c.art_per_user = 1;
+        c.art_queue_wait = Duration::from_millis(300);
+        c.host_answers
+            .insert("cdn.example.com".into(), vec!["127.0.0.1".parse().unwrap()]);
+    })
+    .await;
+    let r = reqwest::Client::new()
+        .post(h.url("/v1/rpc"))
+        .bearer_auth(&h.tok_a)
+        .json(&json!({ "cmd": ["favorites", "items", 0, 10] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), S::OK);
+    let proxied = "imageproxy/https%3A%2F%2Fcdn.example.com%2Fa.jpg/image_100x100_o";
+    let held = art(&h, &h.tok_a, "music/1/cover.jpg").await;
+    assert_eq!(held.status(), S::OK);
+    let r = art(&h, &h.tok_a, proxied).await;
+    assert_eq!(r.status(), S::TOO_MANY_REQUESTS, "no slot, so no lookup");
+    drop(held);
+    let mut status = S::TOO_MANY_REQUESTS;
+    for _ in 0..50 {
+        status = art(&h, &h.tok_a, proxied).await.status();
+        if status != S::TOO_MANY_REQUESTS {
+            break;
+        }
+    }
+    assert_eq!(
+        status,
+        S::NOT_FOUND,
+        "looked up with a slot: a local address"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // M4: event sockets
 // ---------------------------------------------------------------------------
