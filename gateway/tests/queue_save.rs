@@ -269,6 +269,66 @@ async fn raw_playlist_save_is_still_refused() {
     assert!(saves(&h).is_empty());
 }
 
+/// Regression (review low): a save held the one save lock across up to four LMS requests of
+/// 30 s each, and every other save waited behind it for as long. Another save now waits a
+/// few seconds at most, then gets 503 busy (with Retry-After), and never reaches LMS.
+#[tokio::test]
+async fn a_save_stuck_on_a_slow_lms_holds_others_up_only_briefly() {
+    // LMS slow on one request but not judged blocked: only the save lock is in the way.
+    let h = harness_with(|c| c.lms_stall_after = Duration::from_secs(60)).await;
+    h.accounts
+        .create_user("carol", ADMIN_PW, Role::Admin)
+        .unwrap();
+    let admin = h
+        .accounts
+        .login("carol", ADMIN_PW, None, "Laptop", None, "test")
+        .unwrap()
+        .access;
+    h.lms.set_saved_playlists(FakeSaved {
+        playlists: vec![],
+        queue_len: 3,
+    });
+    h.lms.hang_rpc.lock().unwrap().insert("status".into());
+    let player = format_mac(&h.mac_a);
+    let stuck = {
+        let (url, tok) = (
+            h.url(&format!("/v1/players/{player}/queue/save")),
+            admin.clone(),
+        );
+        tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(url)
+                .bearer_auth(tok)
+                .json(&json!({"name": "First"}))
+                .send()
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let asked = h.lms.rpc_calls().len();
+    let t = std::time::Instant::now();
+    let r = reqwest::Client::new()
+        .post(h.url(&format!("/v1/players/{player}/queue/save")))
+        .bearer_auth(&admin)
+        .json(&json!({"name": "Second"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), S::SERVICE_UNAVAILABLE);
+    assert_eq!(r.headers()["retry-after"], "2");
+    assert!(
+        t.elapsed() < Duration::from_secs(8),
+        "waited {:?}",
+        t.elapsed()
+    );
+    assert_eq!(
+        h.lms.rpc_calls().len(),
+        asked,
+        "the second never reached LMS"
+    );
+    stuck.abort();
+}
+
 #[tokio::test]
 async fn me_offers_saving_the_queue() {
     let h = harness().await;

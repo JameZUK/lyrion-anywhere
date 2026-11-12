@@ -312,6 +312,11 @@ fn player_for(
 // The refusal is the handler's own answer, built once on the error path.
 #[allow(clippy::result_large_err)]
 async fn lms(gw: &AppState, player: &str, cmd: Vec<String>) -> Result<Value, Response> {
+    // LMS is blocked: say so at once, as `/v1/rpc` does, rather than add to its queue
+    // (review low). Every check of the request has been made by now.
+    if gw.lms_health().is_busy() {
+        return Err(crate::rpc::busy());
+    }
     gw.lms_command(player, &cmd).await.map_err(|e| {
         tracing::warn!(error = %e, "alarm command failed");
         error(StatusCode::SERVICE_UNAVAILABLE, "the server didn't answer")

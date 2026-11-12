@@ -273,6 +273,126 @@ async fn artwork_is_refused_at_once_while_lms_is_busy() {
     assert_eq!(art(Some(h.tok_a.clone()), cover).await.status(), S::OK);
 }
 
+/// Regression (review low): queue edits, queue saves and alarms never looked at the busy
+/// state, so while LMS was blocked each request waited on it (a save up to four times 30 s,
+/// holding the one save lock meanwhile). They answer 503 busy at once, with Retry-After,
+/// without asking LMS, and only once every other check has passed.
+#[tokio::test]
+async fn queue_edits_saves_and_alarms_are_refused_at_once_while_lms_is_busy() {
+    let h = busy_harness().await;
+    h.accounts.create_user("root", PW, Role::Admin).unwrap();
+    let admin = h
+        .accounts
+        .login("root", PW, None, "admin-device", None, "test")
+        .unwrap();
+    // (An admin may control every player, alice's included.)
+    let mine = format_mac(&h.mac_a);
+    let theirs = format_mac(&h.mac_b);
+    h.freeze(true);
+    let _stuck = {
+        let (url, tok) = (h.url("/v1/rpc"), h.tok_a.clone());
+        tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(url)
+                .bearer_auth(tok)
+                .json(&json!({ "player": "", "cmd": ["albums", 0, 5] }))
+                .send()
+                .await
+        })
+    };
+    wait_for(|| h.gw.lms_health().is_busy()).await;
+    let asked = h.lms.rpc_calls().len();
+    let call = |method: reqwest::Method, path: String, token: String, body: Option<Value>| {
+        let url = h.url(&path);
+        async move {
+            let mut r = reqwest::Client::new()
+                .request(method, url)
+                .bearer_auth(token);
+            if let Some(b) = body {
+                r = r.json(&b);
+            }
+            r.send().await.unwrap()
+        }
+    };
+    use reqwest::Method as M;
+    let t = Instant::now();
+    for (method, path, token, body) in [
+        (
+            M::POST,
+            format!("/v1/players/{mine}/queue/edit"),
+            h.tok_a.clone(),
+            Some(json!({"op": "remove", "index": 1, "track": 3})),
+        ),
+        (
+            M::POST,
+            format!("/v1/players/{mine}/queue/save"),
+            admin.access.clone(),
+            Some(json!({"name": "Road trip"})),
+        ),
+        (
+            M::GET,
+            format!("/v1/players/{mine}/alarms"),
+            h.tok_a.clone(),
+            None,
+        ),
+        (
+            M::PUT,
+            format!("/v1/players/{mine}/alarms/enabled"),
+            h.tok_a.clone(),
+            Some(json!({"enabled": false})),
+        ),
+        (
+            M::DELETE,
+            format!("/v1/players/{mine}/alarms/abcdef01"),
+            h.tok_a.clone(),
+            None,
+        ),
+    ] {
+        let r = call(method, path.clone(), token, body).await;
+        assert_eq!(r.status(), S::SERVICE_UNAVAILABLE, "{path}");
+        assert_eq!(r.headers()["retry-after"], "2", "{path}");
+        let v: Value = r.json().await.unwrap();
+        assert_eq!(v, json!({ "error": "music server is busy", "busy": true }));
+    }
+    assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+    assert_eq!(h.lms.rpc_calls().len(), asked, "LMS was never asked");
+    // Refusals that don't depend on LMS are given as ever.
+    let r = call(
+        M::POST,
+        format!("/v1/players/{theirs}/queue/edit"),
+        h.tok_a.clone(),
+        Some(json!({"op": "remove", "index": 1, "track": 3})),
+    )
+    .await;
+    assert_eq!(r.status(), S::FORBIDDEN);
+    let r = call(
+        M::POST,
+        format!("/v1/players/{mine}/queue/edit"),
+        h.tok_a.clone(),
+        Some(json!({"op": "clear"})),
+    )
+    .await;
+    assert_eq!(r.status(), S::BAD_REQUEST);
+    let r = call(
+        M::POST,
+        format!("/v1/players/{mine}/queue/save"),
+        h.tok_a.clone(),
+        Some(json!({"name": "Road trip"})),
+    )
+    .await;
+    assert_eq!(r.status(), S::FORBIDDEN, "listeners may not save");
+    h.freeze(false);
+    wait_for(|| !h.gw.lms_health().is_busy()).await;
+    let r = call(
+        M::GET,
+        format!("/v1/players/{mine}/alarms"),
+        h.tok_a.clone(),
+        None,
+    )
+    .await;
+    assert_eq!(r.status(), S::OK);
+}
+
 #[tokio::test]
 async fn me_advertises_lms_busy_reporting() {
     let h = harness().await;

@@ -193,6 +193,16 @@ fn error(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "error": message }))).into_response()
 }
 
+/// 429 with a pause to take before trying again.
+fn too_many(message: &str, retry_after: u64) -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(header::RETRY_AFTER, retry_after.to_string())],
+        Json(json!({ "error": message })),
+    )
+        .into_response()
+}
+
 /// 503 while LMS is blocked (see [`crate::lms_health`]): the client retries shortly.
 pub(crate) fn busy() -> Response {
     (
@@ -221,6 +231,17 @@ pub async fn rpc(
     };
     if body.len() > MAX_BODY {
         return error(StatusCode::PAYLOAD_TOO_LARGE, "request too large");
+    }
+    // Every signed-in request counts, refused ones too (they cost a check and a log line).
+    if !gw
+        .lms_health()
+        .rpc
+        .per_minute
+        .take(principal.user_id, std::time::Instant::now())
+    {
+        // Not logged at warning level: a client over its limit would fill the log.
+        tracing::debug!(user = %principal.username, "too many requests a minute");
+        return too_many("too many requests; try again shortly", 10);
     }
     let Ok(req) = serde_json::from_slice::<RpcRequest>(&body) else {
         return error(StatusCode::BAD_REQUEST, "malformed request");
@@ -287,6 +308,17 @@ pub async fn rpc(
     if gw.lms_health().is_busy() {
         return busy();
     }
+    // The user's share of requests waiting for LMS, held until the answer is ready.
+    let Some(_slot) = gw
+        .lms_health()
+        .rpc
+        .in_flight
+        .acquire(principal.user_id, crate::lms_health::RPC_QUEUE_WAIT)
+        .await
+    else {
+        warn!(user = %principal.username, cmd = %summary(&req.cmd), "too many requests at once");
+        return too_many("too many requests at once; try again shortly", 2);
+    };
 
     match gw.lms_rpc(&checked).await {
         Ok(mut result) => {

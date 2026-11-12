@@ -500,6 +500,92 @@ async fn a_player_list_reached_through_a_menu_shows_only_permitted_players() {
     assert_eq!(body["result"]["player count"], 1);
 }
 
+/// Regression (review low): `/v1/rpc` had no per-user cap, so one user (or one stolen
+/// token) could pile any number of requests into LMS. A few of a user's requests may wait
+/// for LMS at once; one more waits briefly for a slot, then gets 429 with Retry-After,
+/// without reaching LMS. Other users are not affected.
+#[tokio::test]
+async fn a_users_requests_waiting_for_lms_are_capped() {
+    use anywhere_gateway::lms_health::{RPC_IN_FLIGHT_PER_USER, RPC_QUEUE_WAIT};
+    let h = harness_with(|c| c.lms_stall_after = Duration::from_secs(60)).await;
+    h.lms.hang_rpc.lock().unwrap().insert("albums".into());
+    let stuck: Vec<_> = (0..RPC_IN_FLIGHT_PER_USER)
+        .map(|_| {
+            let (url, tok) = (h.url("/v1/rpc"), h.tok_a.clone());
+            tokio::spawn(async move {
+                reqwest::Client::new()
+                    .post(url)
+                    .bearer_auth(tok)
+                    .json(&json!({ "player": "", "cmd": ["albums", 0, 5] }))
+                    .send()
+                    .await
+            })
+        })
+        .collect();
+    for _ in 0..300 {
+        if h.lms.rpc_calls().len() >= RPC_IN_FLIGHT_PER_USER {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(h.lms.rpc_calls().len(), RPC_IN_FLIGHT_PER_USER);
+    let t = std::time::Instant::now();
+    let r = h.rpc(&h.tok_a, "", json!(["artists", 0, 5])).await;
+    assert_eq!(r.status(), S::TOO_MANY_REQUESTS);
+    assert_eq!(r.headers()["retry-after"], "2");
+    assert!(t.elapsed() >= RPC_QUEUE_WAIT - Duration::from_millis(100));
+    assert!(r.json::<Value>().await.unwrap()["error"].is_string());
+    assert_eq!(
+        h.lms.rpc_calls().len(),
+        RPC_IN_FLIGHT_PER_USER,
+        "the refused request never reached LMS"
+    );
+    // Bob's requests are his own.
+    assert_eq!(
+        h.rpc(&h.tok_b, "", json!(["artists", 0, 5])).await.status(),
+        S::OK
+    );
+    for s in stuck {
+        s.abort();
+    }
+}
+
+/// Regression (review low): nor was there a rate limit. A user may make a generous number of
+/// requests a minute (refused ones count too); beyond that, 429 with Retry-After. Other
+/// users are not affected.
+#[tokio::test]
+async fn a_users_requests_a_minute_are_capped() {
+    use anywhere_gateway::lms_health::RPC_PER_MINUTE;
+    let h = harness().await;
+    for _ in 0..RPC_PER_MINUTE / 2 {
+        assert_eq!(
+            h.rpc(&h.tok_a, "", json!(["rescan"])).await.status(),
+            S::FORBIDDEN
+        );
+    }
+    for _ in 0..RPC_PER_MINUTE / 2 {
+        assert_eq!(
+            h.rpc(&h.tok_a, "", json!(["albums", 0, 5])).await.status(),
+            S::OK
+        );
+    }
+    let r = h.rpc(&h.tok_a, "", json!(["albums", 0, 5])).await;
+    assert_eq!(r.status(), S::TOO_MANY_REQUESTS);
+    assert_eq!(r.headers()["retry-after"], "10");
+    assert_eq!(
+        h.rpc(&h.tok_b, "", json!(["albums", 0, 5])).await.status(),
+        S::OK
+    );
+    // Still signed out is still 401, whatever the count.
+    let anon = reqwest::Client::new()
+        .post(h.url("/v1/rpc"))
+        .json(&json!({ "player": "", "cmd": ["albums", 0, 5] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anon.status(), S::UNAUTHORIZED);
+}
+
 #[tokio::test]
 async fn server_commands_offered_in_menus_still_never_run() {
     let h = harness().await;
