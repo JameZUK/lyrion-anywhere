@@ -3,8 +3,10 @@
 //! `GET /v1/download/track/{id}[/info]`, into app-private storage.
 //!
 //! - **Resumable:** bytes are appended to a partial file as they arrive; an interrupted
-//!   download resumes with `Range: bytes=<have>-`. A 416, or a `Content-Range` that doesn't
-//!   start where asked, starts the file again.
+//!   download resumes with `Range: bytes=<have>-`, and `If-Range` when the server gave a
+//!   validator. Beside the partial file is a record of what the server said of the whole
+//!   file (its size and validator): a 416, a `Content-Range` that doesn't start where asked,
+//!   another whole size or validator, or a partial file with no record starts it again.
 //! - **Integrity:** the stable key from `/info` names the file; the size from `/info`
 //!   (originals) and `Content-Length`/`Content-Range` must agree, the body may not run past
 //!   them, and a short body is resumed rather than kept.
@@ -30,7 +32,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use http_body_util::BodyExt;
-use hyper::header::{CONTENT_LENGTH, CONTENT_RANGE, RANGE, RETRY_AFTER};
+use hyper::header::{CONTENT_LENGTH, CONTENT_RANGE, IF_RANGE, RANGE, RETRY_AFTER};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
@@ -43,7 +45,7 @@ use super::index::{
     self, DownloadFormat, DownloadOrigin, OfflineTrack, clean, clean_codec, valid_ext, valid_key,
 };
 use super::plays::now_secs;
-use super::store::{OfflineLibrary, read_limited, write_atomic};
+use super::store::{OfflineLibrary, read_limited, rename_durably, write_atomic};
 
 /// Downloads running at once (the gateway allows three per user).
 pub const CONCURRENCY: usize = 2;
@@ -359,6 +361,95 @@ pub(crate) fn content_range(v: &str) -> Option<(u64, u64, Option<u64>)> {
     Some((a, b, total))
 }
 
+/// What the server said of the whole file when a download started, kept beside its
+/// partial file (`partial/<key>.<fmt>.rec`), so that a resume only joins bytes of the same
+/// file (review 2026-11-12: a transcode the gateway evicted and made again between two
+/// attempts was stitched onto the first one's bytes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PartialRecord {
+    /// The whole file's size (from `Content-Length` or `Content-Range`), if given.
+    pub total: Option<u64>,
+    /// The server's validator for the file: a strong `ETag`, else `Last-Modified`. Sent
+    /// back as `If-Range` when resuming.
+    pub validator: Option<String>,
+}
+
+/// The record format written by this version; any other starts the download again.
+const RECORD_VERSION: u64 = 1;
+/// Largest record read, and longest validator kept.
+const MAX_RECORD_BYTES: u64 = 4096;
+const MAX_VALIDATOR: usize = 256;
+
+/// A validator that can go back in a header as it came: printable ASCII, bounded.
+fn valid_validator(v: &str) -> bool {
+    !v.is_empty() && v.len() <= MAX_VALIDATOR && v.bytes().all(|b| (0x20..0x7f).contains(&b))
+}
+
+impl PartialRecord {
+    /// From a response's headers: a strong ETag (a weak one can't be used with
+    /// `If-Range`), else `Last-Modified`.
+    fn validator_of(headers: &hyper::HeaderMap) -> Option<String> {
+        let get = |name| {
+            headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::trim)
+                .filter(|v| valid_validator(v))
+                .map(str::to_string)
+        };
+        get(hyper::header::ETAG)
+            .filter(|e| !e.starts_with("W/"))
+            .or_else(|| get(hyper::header::LAST_MODIFIED))
+    }
+
+    fn to_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(
+            &json!({ "v": RECORD_VERSION, "total": self.total, "validator": self.validator }),
+        )
+        .expect("JSON")
+    }
+
+    /// Read a record, strictly: anything malformed, oversized or from another version is
+    /// `None` (and the partial file is then started again, never resumed blind).
+    pub(crate) fn parse(bytes: &[u8]) -> Option<PartialRecord> {
+        if bytes.len() as u64 > MAX_RECORD_BYTES {
+            return None;
+        }
+        let v: Value = serde_json::from_slice(bytes).ok()?;
+        let o = v.as_object()?;
+        if o.get("v")?.as_u64()? != RECORD_VERSION {
+            return None;
+        }
+        let total = match o.get("total")? {
+            Value::Null => None,
+            t => Some(t.as_u64().filter(|n| *n > 0 && *n < 1 << 40)?),
+        };
+        let validator = match o.get("validator")? {
+            Value::Null => None,
+            s => Some(s.as_str().filter(|s| valid_validator(s))?.to_string()),
+        };
+        Some(PartialRecord { total, validator })
+    }
+
+    /// Whether a 206 answer to a resume continues the file this record describes: the
+    /// same validator if either side has one, and the same whole size (enough on its own
+    /// only when neither has a validator).
+    fn continued_by(&self, total: Option<u64>, validator: Option<&str>) -> bool {
+        let same_validator = match (self.validator.as_deref(), validator) {
+            (Some(a), Some(b)) => a == b,
+            (None, None) => true,
+            // One side has a validator and the other none: can't be sure it's one file.
+            _ => false,
+        };
+        let same_total = match (self.total, total) {
+            (Some(a), Some(b)) => a == b,
+            // A size missing on either side: only a validator can vouch for the file.
+            _ => self.validator.is_some(),
+        };
+        same_validator && same_total
+    }
+}
+
 /// `Retry-After` in seconds, capped; `None` if missing or not a number of seconds.
 fn retry_after(resp: &Response) -> Option<Duration> {
     let s = resp.headers().get(RETRY_AFTER)?.to_str().ok()?.trim();
@@ -511,17 +602,21 @@ impl Job {
         }
     }
 
-    /// A GET with the access token, renewing it once on 401.
+    /// A GET with the access token, renewing it once on 401. `range`: resume from this
+    /// byte, only if the file still has this validator (`If-Range`), when there is one.
     async fn get(
         &self,
         url: url::Url,
-        range: Option<u64>,
+        range: Option<(u64, Option<&str>)>,
         headers: Duration,
     ) -> Result<Response, Failure> {
         let build = |token: &str| {
             let mut r = self.http.get(url.clone()).bearer_auth(token);
-            if let Some(from) = range {
+            if let Some((from, validator)) = range {
                 r = r.header_value(RANGE, &format!("bytes={from}-"));
+                if let Some(v) = validator {
+                    r = r.header_value(IF_RANGE, v);
+                }
             }
             r
         };
@@ -633,19 +728,35 @@ impl Job {
             DownloadFormat::Opus,
         ] {
             if f != format {
-                let _ = fs::remove_file(self.library.partial_path(&info.key, f));
+                self.library.remove_partial(&info.key, f);
             }
         }
         let part = self.library.partial_path(&info.key, format);
-        let have = fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
+        let record_path = self.library.partial_record_path(&info.key, format);
         let known = if format == DownloadFormat::Original {
             info.size
         } else {
             None
         };
+        let mut have = fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
+        // Bytes are only resumed with the record of what they are part of, and only while it
+        // fits what the server says now. Without one (left by an older version, or a crash
+        // before it was written) nothing can tell a changed file apart: start again.
+        let record = (have > 0)
+            .then(|| read_limited(&record_path, MAX_RECORD_BYTES))
+            .flatten()
+            .and_then(|b| PartialRecord::parse(&b))
+            .filter(|r| {
+                r.total.is_none_or(|t| have <= t)
+                    && !matches!((known, r.total), (Some(k), Some(t)) if k != t)
+            });
+        if have > 0 && record.is_none() {
+            self.library.remove_partial(&info.key, format);
+            have = 0;
+        }
         if let Some(size) = known {
             if have > size {
-                let _ = fs::remove_file(&part);
+                self.library.remove_partial(&info.key, format);
                 return Err(Failure::Restart("Starting again.".into()));
             }
             self.ensure_room(size - have)?;
@@ -666,13 +777,17 @@ impl Job {
         } else {
             TRANSCODE_HEADERS
         };
-        let resp = self.get(url, (have > 0).then_some(have), headers).await?;
+        let resume = record
+            .as_ref()
+            .filter(|_| have > 0)
+            .map(|r| (have, r.validator.as_deref()));
+        let resp = self.get(url, resume, headers).await?;
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
             let f = refusal(resp).await;
             if matches!(f, Failure::Restart(_)) {
                 // A 416: what we have can't be resumed.
-                let _ = fs::remove_file(&part);
+                self.library.remove_partial(&info.key, format);
             }
             return Err(f);
         }
@@ -681,24 +796,30 @@ impl Job {
             .get(CONTENT_LENGTH)
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.trim().parse::<u64>().ok());
+        let validator = PartialRecord::validator_of(resp.headers());
         let (offset, total) = if have > 0 && status == 206 {
             let range = resp
                 .headers()
                 .get(CONTENT_RANGE)
                 .and_then(|v| v.to_str().ok())
                 .and_then(content_range);
-            match range {
-                Some((start, _, total)) if start == have => {
-                    (have, total.or(length.map(|l| have + l)))
+            match (range, &record) {
+                // The rest of the same file: where we stopped, the same whole size and
+                // validator as when it started.
+                (Some((start, _, total)), Some(r))
+                    if start == have && r.continued_by(total, validator.as_deref()) =>
+                {
+                    (have, total.or(r.total).or(length.map(|l| have + l)))
                 }
                 _ => {
-                    let _ = fs::remove_file(&part);
+                    self.library.remove_partial(&info.key, format);
                     return Err(Failure::Restart("Starting again.".into()));
                 }
             }
         } else if status == 200 {
-            // The whole file (nothing to resume, or the server ignored the range). Without
-            // a length, an original's size from `/info` is what may arrive.
+            // The whole file (nothing to resume, the server ignored the range, or the file
+            // changed since: `If-Range` didn't match). Without a length, an original's size
+            // from `/info` is what may arrive.
             (0, length.or(known))
         } else {
             return Err(Failure::Permanent(
@@ -709,11 +830,16 @@ impl Job {
         if let (Some(size), Some(total)) = (known, total)
             && size != total
         {
-            let _ = fs::remove_file(&part);
+            self.library.remove_partial(&info.key, format);
             return Err(retry("The download's size didn't match. Retrying…"));
         }
         if let Some(t) = total {
             self.ensure_room(t.saturating_sub(offset))?;
+        }
+        if offset == 0 {
+            // A new start: record what the file is before any of its bytes are kept.
+            let r = PartialRecord { total, validator };
+            write_atomic(&record_path, &r.to_bytes(), false).map_err(|e| io_failure(&e))?;
         }
 
         let mut file = fs::OpenOptions::new()
@@ -747,7 +873,7 @@ impl Job {
             };
             if total.is_some_and(|t| received + data.len() as u64 > t) {
                 drop(file);
-                let _ = fs::remove_file(&part);
+                self.library.remove_partial(&info.key, format);
                 return Err(retry("The server sent more than it said. Retrying…"));
             }
             file.write_all(&data).map_err(|e| io_failure(&e))?;
@@ -773,11 +899,12 @@ impl Job {
             return Err(retry(MSG_LOST)); // resumes from `received`
         }
         if received == 0 || known.is_some_and(|k| k != received) {
-            let _ = fs::remove_file(&part);
+            self.library.remove_partial(&info.key, format);
             return Err(retry("The download's size didn't match. Retrying…"));
         }
         let dest = self.library.final_path(&info.key, &ext);
-        fs::rename(&part, &dest).map_err(|e| io_failure(&e))?;
+        rename_durably(&part, &dest).map_err(|e| io_failure(&e))?;
+        let _ = fs::remove_file(&record_path);
         let track = OfflineTrack {
             key: info.key.clone(),
             track_id: info.id,
@@ -966,8 +1093,10 @@ struct Actor {
     network: NetworkKind,
     forbidden: bool,
     tx: mpsc::UnboundedSender<Msg>,
-    snapshot: Arc<Mutex<DownloadsSnapshot>>,
+    snapshot: Arc<Mutex<Arc<DownloadsSnapshot>>>,
     last_publish: Option<Instant>,
+    /// A change the app has not heard of yet (see [`Actor::publish`]).
+    unpublished: bool,
 }
 
 impl Actor {
@@ -1211,7 +1340,7 @@ impl Actor {
                     DownloadFormat::Mp3,
                     DownloadFormat::Opus,
                 ] {
-                    let _ = fs::remove_file(lib.partial_path(&it.key, f));
+                    lib.remove_partial(&it.key, f);
                 }
             }
         }
@@ -1248,14 +1377,31 @@ impl Actor {
         );
     }
 
-    fn publish(&mut self, force: bool) {
-        if !force
-            && self
-                .last_publish
-                .is_some_and(|t| t.elapsed() < PROGRESS_EVERY)
+    /// Something changed: the app hears now, unless it heard less than [`PROGRESS_EVERY`]
+    /// ago; then it hears once that time is up (`run` waits for it). A burst of changes
+    /// (a batch finishing, each download described, waiting and done) is one snapshot of
+    /// the whole list, not one each (review 2026-11-12: up to 10,000 items several times
+    /// per download).
+    fn publish(&mut self) {
+        self.unpublished = true;
+        if self
+            .last_publish
+            .is_none_or(|t| t.elapsed() >= PROGRESS_EVERY)
         {
-            return;
+            self.publish_now();
         }
+    }
+
+    /// When a change not yet published is due.
+    fn publish_due(&self) -> Option<tokio::time::Instant> {
+        self.unpublished
+            .then(|| self.last_publish.map(|t| t + PROGRESS_EVERY))
+            .flatten()
+            .map(tokio::time::Instant::from_std)
+    }
+
+    fn publish_now(&mut self) {
+        self.unpublished = false;
         self.last_publish = Some(Instant::now());
         let items: Vec<DownloadItem> = self.items.iter().map(Item::view).collect();
         let busy = items
@@ -1276,15 +1422,30 @@ impl Actor {
             cap_bytes: self.policy.cap_bytes,
             busy,
         };
-        *self.snapshot.lock().unwrap() = snap.clone();
-        self.observer.on_downloads(snap);
+        let shared = Arc::new(snap);
+        // The lock is held only to swap the pointer: the old list goes after it.
+        let old = std::mem::replace(&mut *self.snapshot.lock().unwrap(), shared.clone());
+        drop(old);
+        self.observer.on_downloads((*shared).clone());
     }
 
     async fn run(mut self, mut rx: mpsc::UnboundedReceiver<Msg>) {
         self.pump();
-        self.publish(true);
-        while let Some(msg) = rx.recv().await {
-            let mut force = true;
+        self.publish_now();
+        loop {
+            let msg = match self.publish_due() {
+                Some(at) => tokio::select! {
+                    m = rx.recv() => m,
+                    () = tokio::time::sleep_until(at) => {
+                        self.publish_now();
+                        continue;
+                    }
+                },
+                None => rx.recv().await,
+            };
+            let Some(msg) = msg else {
+                return;
+            };
             match msg {
                 Msg::Enqueue(reqs, choice, reply) => {
                     let n = self.enqueue(reqs, choice);
@@ -1335,16 +1496,10 @@ impl Actor {
                     }
                     return;
                 }
-                Msg::Worker { id, epoch, ev } => {
-                    force = matches!(
-                        ev,
-                        WorkerEv::Finished(_) | WorkerEv::Waiting(_) | WorkerEv::Described { .. }
-                    );
-                    self.on_worker(id, epoch, ev);
-                }
+                Msg::Worker { id, epoch, ev } => self.on_worker(id, epoch, ev),
             }
             self.pump();
-            self.publish(force);
+            self.publish();
         }
     }
 }
@@ -1396,16 +1551,27 @@ fn load_queue(lib: &OfflineLibrary) -> Vec<(DownloadRequest, FormatChoice, bool)
         .collect()
 }
 
-/// Delete partial files with names this version doesn't make (`<64 hex>.<format>`).
+/// Delete partial files with names this version doesn't make (`<64 hex>.<format>`, and
+/// `<64 hex>.<format>.rec` beside one), and records whose partial file has gone.
 fn tidy_partials(lib: &OfflineLibrary, queue_empty: bool) {
     let Ok(rd) = fs::read_dir(lib.partial_dir()) else {
         return;
     };
-    for e in rd.flatten() {
+    let entries: Vec<_> = rd.flatten().collect();
+    let names: HashSet<String> = entries
+        .iter()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    for e in entries {
         let name = e.file_name().to_string_lossy().into_owned();
-        let ok = name
-            .split_once('.')
-            .is_some_and(|(k, f)| index::valid_key(k) && DownloadFormat::parse(f).is_some());
+        let partial = |n: &str| {
+            n.split_once('.')
+                .is_some_and(|(k, f)| index::valid_key(k) && DownloadFormat::parse(f).is_some())
+        };
+        let ok = partial(&name)
+            || name
+                .strip_suffix(&format!(".{}", super::store::PARTIAL_RECORD))
+                .is_some_and(|p| partial(p) && names.contains(p));
         if !ok || queue_empty {
             let _ = fs::remove_file(e.path());
         }
@@ -1418,7 +1584,7 @@ fn tidy_partials(lib: &OfflineLibrary, queue_empty: bool) {
 #[derive(uniffi::Object)]
 pub struct Downloader {
     tx: mpsc::UnboundedSender<Msg>,
-    snapshot: Arc<Mutex<DownloadsSnapshot>>,
+    snapshot: Arc<Mutex<Arc<DownloadsSnapshot>>>,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
@@ -1439,7 +1605,7 @@ impl Downloader {
         library.check_owner(&session)?;
         let http = Http::private()?;
         let (tx, rx) = mpsc::unbounded_channel();
-        let snapshot = Arc::new(Mutex::new(DownloadsSnapshot {
+        let snapshot = Arc::new(Mutex::new(Arc::new(DownloadsSnapshot {
             items: Vec::new(),
             forbidden: false,
             waiting_for_network: false,
@@ -1447,7 +1613,7 @@ impl Downloader {
             used_bytes: library.used_bytes(),
             cap_bytes: policy.cap_bytes,
             busy: 0,
-        }));
+        })));
         let saved = load_queue(&library);
         tidy_partials(&library, saved.is_empty());
         let mut actor = Actor {
@@ -1463,6 +1629,7 @@ impl Downloader {
             tx: tx.clone(),
             snapshot: snapshot.clone(),
             last_publish: None,
+            unpublished: false,
         };
         for (req, choice, paused) in saved {
             let before = actor.items.len();
@@ -1528,7 +1695,9 @@ impl Downloader {
     }
 
     pub fn snapshot(&self) -> DownloadsSnapshot {
-        self.snapshot.lock().unwrap().clone()
+        // Copied outside the lock: the actor only ever waits for a pointer swap.
+        let shared = self.snapshot.lock().unwrap().clone();
+        (*shared).clone()
     }
 
     /// Stop everything (what was stored is kept, and resumes next time).
@@ -1735,13 +1904,161 @@ mod tests {
     fn stray_partials_are_removed() {
         let root = crate::offline::store::tests::temp_root();
         let lib = OfflineLibrary::open(root, "https://s".into(), "u".into()).unwrap();
-        let good = lib.partial_path(&"cd".repeat(32), DownloadFormat::Opus);
+        let key = "cd".repeat(32);
+        let good = lib.partial_path(&key, DownloadFormat::Opus);
+        let record = lib.partial_record_path(&key, DownloadFormat::Opus);
+        let orphan = lib.partial_record_path(&"ef".repeat(32), DownloadFormat::Mp3);
         let bad = lib.partial_dir().join("evil.sh");
-        fs::write(&good, b"x").unwrap();
-        fs::write(&bad, b"x").unwrap();
+        let bad_record = lib.partial_dir().join("evil.opus.rec");
+        for f in [&good, &record, &orphan, &bad, &bad_record] {
+            fs::write(f, b"x").unwrap();
+        }
         tidy_partials(&lib, false);
-        assert!(good.exists() && !bad.exists());
+        assert!(
+            good.exists() && record.exists(),
+            "a partial and its record stay"
+        );
+        assert!(!orphan.exists(), "a record without its partial goes");
+        assert!(!bad.exists() && !bad_record.exists());
         tidy_partials(&lib, true);
-        assert!(!good.exists());
+        assert!(!good.exists() && !record.exists());
+    }
+
+    fn record(total: Option<u64>, validator: Option<&str>) -> PartialRecord {
+        PartialRecord {
+            total,
+            validator: validator.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn partial_records_round_trip_and_are_read_strictly() {
+        for r in [
+            record(Some(1000), Some("\"v1\"")),
+            record(None, Some("Wed, 21 Oct 2026 07:28:00 GMT")),
+            record(Some(1), None),
+            record(None, None),
+        ] {
+            assert_eq!(PartialRecord::parse(&r.to_bytes()), Some(r.clone()));
+        }
+        for bad in [
+            &b""[..],
+            b"null",
+            b"[]",
+            br#"{"v":2,"total":5,"validator":null}"#,
+            br#"{"total":5,"validator":null}"#,
+            br#"{"v":1,"validator":null}"#,
+            br#"{"v":1,"total":5}"#,
+            br#"{"v":1,"total":0,"validator":null}"#,
+            br#"{"v":1,"total":-5,"validator":null}"#,
+            br#"{"v":1,"total":"5","validator":null}"#,
+            br#"{"v":1,"total":1099511627776,"validator":null}"#,
+            br#"{"v":1,"total":5,"validator":""}"#,
+            br#"{"v":1,"total":5,"validator":7}"#,
+            b"{\"v\":1,\"total\":5,\"validator\":\"a\\r\\nX-Evil: 1\"}",
+            "{\"v\":1,\"total\":5,\"validator\":\"\u{e9}\"}".as_bytes(),
+        ] {
+            assert_eq!(
+                PartialRecord::parse(bad),
+                None,
+                "{}",
+                String::from_utf8_lossy(bad)
+            );
+        }
+        let long = format!(
+            r#"{{"v":1,"total":5,"validator":"{}"}}"#,
+            "x".repeat(MAX_VALIDATOR + 1)
+        );
+        assert_eq!(PartialRecord::parse(long.as_bytes()), None);
+        let huge = format!(
+            r#"{{"v":1,"total":5,"validator":null,"pad":"{}"}}"#,
+            "x".repeat(5000)
+        );
+        assert_eq!(PartialRecord::parse(huge.as_bytes()), None);
+    }
+
+    /// Fuzz: arbitrary bytes and mutations of a real record never panic, and whatever reads
+    /// is header-safe.
+    #[test]
+    fn arbitrary_records_never_panic() {
+        let base = record(Some(123_456), Some("\"etag-1\"")).to_bytes();
+        let alphabet = b"{}[]\",:0123456789vtoalidr\\ \n\xff\r";
+        let mut seed = 0x5eed_0fca_11ed_beefu64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for round in 0..5000 {
+            let bytes: Vec<u8> = if round % 2 == 0 {
+                (0..next() % 96)
+                    .map(|_| alphabet[(next() as usize) % alphabet.len()])
+                    .collect()
+            } else {
+                let mut b = base.clone();
+                for _ in 0..(1 + next() % 4) {
+                    let i = (next() as usize) % b.len();
+                    b[i] = alphabet[(next() as usize) % alphabet.len()];
+                }
+                b
+            };
+            if let Some(r) = PartialRecord::parse(&bytes) {
+                assert!(r.validator.as_deref().is_none_or(valid_validator));
+                assert!(r.total.is_none_or(|t| t > 0));
+            }
+        }
+    }
+
+    #[test]
+    fn a_resume_continues_only_the_same_file() {
+        let etag = Some("\"v1\"");
+        // A validator on both sides decides; a size given on both must agree too.
+        assert!(record(Some(100), etag).continued_by(Some(100), etag));
+        assert!(record(Some(100), etag).continued_by(None, etag));
+        assert!(!record(Some(100), etag).continued_by(Some(100), Some("\"v2\"")));
+        assert!(!record(Some(100), etag).continued_by(Some(101), etag));
+        // A validator on one side only: not sure, so not joined.
+        assert!(!record(Some(100), etag).continued_by(Some(100), None));
+        assert!(!record(Some(100), None).continued_by(Some(100), etag));
+        // No validator anywhere (the gateway today): the whole size must be known and agree.
+        assert!(record(Some(100), None).continued_by(Some(100), None));
+        assert!(!record(Some(100), None).continued_by(Some(99), None));
+        assert!(!record(Some(100), None).continued_by(None, None));
+        assert!(!record(None, None).continued_by(Some(100), None));
+    }
+
+    #[test]
+    fn only_a_strong_validator_is_kept() {
+        let mut h = hyper::HeaderMap::new();
+        assert_eq!(PartialRecord::validator_of(&h), None);
+        h.insert(
+            hyper::header::LAST_MODIFIED,
+            "Wed, 21 Oct 2026 07:28:00 GMT".parse().unwrap(),
+        );
+        assert_eq!(
+            PartialRecord::validator_of(&h).as_deref(),
+            Some("Wed, 21 Oct 2026 07:28:00 GMT")
+        );
+        h.insert(hyper::header::ETAG, "W/\"weak\"".parse().unwrap());
+        assert_eq!(
+            PartialRecord::validator_of(&h).as_deref(),
+            Some("Wed, 21 Oct 2026 07:28:00 GMT"),
+            "a weak ETag can't go in If-Range"
+        );
+        h.insert(hyper::header::ETAG, "\"strong\"".parse().unwrap());
+        assert_eq!(
+            PartialRecord::validator_of(&h).as_deref(),
+            Some("\"strong\"")
+        );
+        h.insert(
+            hyper::header::ETAG,
+            hyper::header::HeaderValue::from_bytes(&[b'"', 0xe9, b'"']).unwrap(),
+        );
+        assert_eq!(
+            PartialRecord::validator_of(&h).as_deref(),
+            Some("Wed, 21 Oct 2026 07:28:00 GMT"),
+            "not printable ASCII: never kept"
+        );
     }
 }

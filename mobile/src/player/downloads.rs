@@ -289,8 +289,8 @@ struct Head {
 
 #[derive(Default)]
 struct State {
-    /// The index file's size and time when last read.
-    stamp: Option<(u64, Option<SystemTime>)>,
+    /// The index file's and its journal's size and time when last read.
+    stamp: Option<[(u64, Option<SystemTime>); 2]>,
     /// Original FLAC downloads, from the index.
     tracks: Vec<OfflineTrack>,
     /// Every download, from the index (for playing with no server).
@@ -346,12 +346,23 @@ impl Downloads {
             *st = State::default();
             return;
         };
-        let stamp = (meta.len(), meta.modified().ok());
+        // Downloads finished since the index was last written whole are in its journal.
+        let journal = store::journal_file(&self.dir);
+        let journal_meta = fs::symlink_metadata(&journal).ok().filter(|m| m.is_file());
+        let stamp = [
+            (meta.len(), meta.modified().ok()),
+            journal_meta.map_or((0, None), |m| (m.len(), m.modified().ok())),
+        ];
         if st.stamp == Some(stamp) {
             return;
         }
         st.all = match read_plain(&path, index::MAX_INDEX_BYTES).map(|b| index::parse(&b)) {
-            Some(Parsed::Tracks(t, _)) => t,
+            Some(Parsed::Tracks(mut t, _, seq)) => {
+                if let Some(b) = read_plain(&journal, index::MAX_INDEX_BYTES) {
+                    index::apply_journal(&b, Some(seq), &mut t);
+                }
+                t
+            }
             _ => Vec::new(),
         };
         st.tracks = st
@@ -877,6 +888,32 @@ pub(crate) mod tests {
         let mut whole = stream[..ms + 10].to_vec();
         whole.extend(rest(found));
         assert_eq!(whole, stream);
+    }
+
+    /// Downloads finished since the index was last written whole are in its journal: the
+    /// player sees them as they finish, and a journal that doesn't continue the index is
+    /// never read.
+    #[test]
+    fn downloads_in_the_index_journal_are_seen() {
+        let l = Lib::new();
+        let d = l.downloads();
+        assert!(!d.may_have_flac());
+        let file = flac(44_100, &noise(3000, 9), &[], None);
+        l.put(1, &file, DownloadFormat::Original, "flac");
+        let dir = PathBuf::from(&l.root).join(crate::offline::scope_name(SERVER, "alice"));
+        assert!(store::journal_file(&dir).exists(), "in the journal only");
+        assert!(d.may_have_flac(), "seen from the journal");
+        assert_eq!(d.by_track().len(), 1);
+        // A journal written over another index.
+        let Some(Parsed::Tracks(_, _, seq)) =
+            read_plain(&store::index_file(&dir), index::MAX_INDEX_BYTES).map(|b| index::parse(&b))
+        else {
+            panic!("the index reads");
+        };
+        let mut j = index::journal_header(seq + 7);
+        j.extend(index::journal_line(&l.lib.tracks()[0]));
+        fs::write(store::journal_file(&dir), j).unwrap();
+        assert!(!l.downloads().may_have_flac());
     }
 
     #[test]

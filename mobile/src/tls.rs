@@ -170,10 +170,17 @@ pub(crate) fn webpki_verifier(
         .map(|v| v as Arc<dyn ServerCertVerifier>)
 }
 
+/// How many verifiers this process has built (tests: one is shared by every connection).
+#[cfg(test)]
+pub(crate) static VERIFIERS_BUILT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// The verifier the apps use: the platform's, with the Android fallback above.
 pub(crate) fn verifier(
     provider: Arc<CryptoProvider>,
 ) -> Result<Arc<dyn ServerCertVerifier>, Error> {
+    #[cfg(test)]
+    VERIFIERS_BUILT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let platform: Arc<dyn ServerCertVerifier> =
         Arc::new(rustls_platform_verifier::Verifier::new(provider.clone())?);
     #[cfg(target_os = "android")]

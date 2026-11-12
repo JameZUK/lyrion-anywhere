@@ -3,7 +3,10 @@
 //!
 //! - The first message is the access token; the gateway answers `{"subscribed":true}`.
 //! - Reconnects with backoff (about 1, 2, 4 … 30 s, ±20 %) after network failures and
-//!   dead sockets (nothing heard, not even a keep-alive ping, for 90 s).
+//!   dead sockets (nothing heard, not even a keep-alive ping, for 90 s). The backoff starts
+//!   again from the beginning only once a socket has stayed up for [`STABLE_AFTER`] after
+//!   subscribing: a gateway that subscribes and then drops every connection at once is
+//!   retried ever more slowly, not every second for ever.
 //! - A 1008 "unauthorised" close (an expired token) renews the token and reconnects. Any
 //!   other 1008 (revoked, replaced by a newer connection) is final, like in the web app,
 //!   so two connections of one device never evict each other in a loop.
@@ -30,6 +33,8 @@ const MAX_MESSAGE: usize = 64 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// The gateway pings every 30 s; silence for this long means the socket is dead.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+/// A subscribed socket that lives this long resets the backoff (as the player socket's).
+const STABLE_AFTER: Duration = Duration::from_secs(5);
 
 /// A change on the server.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
@@ -152,18 +157,41 @@ enum Outcome {
     Stop(String),
 }
 
-/// How the reconnect loop stands: failed attempts since the last subscription (for the
-/// backoff), and renewals since then (only the first is retried at once).
-#[derive(Default)]
+/// How the reconnect loop stands: failed attempts since the last socket that lasted (for
+/// the backoff), and renewals since then (only the first is retried at once).
+#[derive(Debug, Default, PartialEq, Eq)]
 struct Retries {
     attempt: u32,
     renewed: u32,
+}
+
+impl Retries {
+    /// A socket ended. `subscribed_for`: how long it was subscribed (`None`: never). Only
+    /// one that lasted [`STABLE_AFTER`] starts the backoff again.
+    fn socket_ended(&mut self, subscribed_for: Option<Duration>) {
+        if subscribed_for.is_some_and(|d| d >= STABLE_AFTER) {
+            *self = Retries::default();
+        }
+    }
 }
 
 async fn connect_once(
     core: &Arc<Core>,
     listener: &dyn EventListener,
     retries: &mut Retries,
+) -> Outcome {
+    let mut subscribed_at = None;
+    let outcome = socket(core, listener, &mut subscribed_at).await;
+    retries.socket_ended(subscribed_at.map(|t: std::time::Instant| t.elapsed()));
+    outcome
+}
+
+/// One socket, from connecting to its end. `subscribed_at`: set when the gateway accepts
+/// the subscription.
+async fn socket(
+    core: &Arc<Core>,
+    listener: &dyn EventListener,
+    subscribed_at: &mut Option<std::time::Instant>,
 ) -> Outcome {
     let token = match core.access_token().await {
         Ok(t) => t,
@@ -175,8 +203,8 @@ async fn connect_once(
         return Outcome::Stop("bad server address".into());
     };
     let connector = if server.is_secure() {
-        match transport::tls_config(&[b"http/1.1"]) {
-            Ok(cfg) => Connector::Rustls(Arc::new(cfg)),
+        match transport::ws_tls_config() {
+            Ok(cfg) => Connector::Rustls(cfg),
             Err(_) => return Outcome::Stop("TLS is not available".into()),
         }
     } else {
@@ -202,7 +230,7 @@ async fn connect_once(
         match msg {
             Message::Text(t) => match parse_message(t.as_str()) {
                 Some(Parsed::Subscribed) => {
-                    *retries = Retries::default();
+                    subscribed_at.get_or_insert_with(std::time::Instant::now);
                     listener.on_state(EventsState::Live);
                     // Anything may have changed while we were away.
                     listener.on_event(ServerEvent::Resync);
@@ -241,7 +269,7 @@ async fn run(core: Arc<Core>, listener: Arc<dyn EventListener>) {
                 return;
             }
             // One immediate retry with a fresh token; a server that keeps refusing gets
-            // the normal backoff. Only a subscription (in `connect_once`) resets this.
+            // the normal backoff. Only a socket that lasted (in `connect_once`) resets this.
             Outcome::Renewed => {
                 retries.renewed = retries.renewed.saturating_add(1);
                 retries.renewed > 1
@@ -404,6 +432,26 @@ mod tests {
         }
         let huge = format!(r#"{{"lms":"ok","pad":"{}"}}"#, "x".repeat(MAX_MESSAGE));
         assert_eq!(parse_message(&huge), None);
+    }
+
+    /// Review 2026-11-12: the backoff was reset by every subscription, so a gateway that
+    /// subscribes and then closes at once was reconnected to about every second for ever.
+    #[test]
+    fn only_a_socket_that_lasted_resets_the_backoff() {
+        let tried = || Retries {
+            attempt: 4,
+            renewed: 1,
+        };
+        for short in [None, Some(Duration::ZERO), Some(STABLE_AFTER / 2)] {
+            let mut r = tried();
+            r.socket_ended(short);
+            assert_eq!(r, tried(), "{short:?}");
+        }
+        for lasted in [STABLE_AFTER, STABLE_AFTER * 10] {
+            let mut r = tried();
+            r.socket_ended(Some(lasted));
+            assert_eq!(r, Retries::default());
+        }
     }
 
     #[test]

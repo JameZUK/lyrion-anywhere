@@ -2911,8 +2911,8 @@ async fn socket_task(
         return;
     };
     let connector = if server.is_secure() {
-        match transport::tls_config(&[b"http/1.1"]) {
-            Ok(cfg) => Connector::Rustls(Arc::new(cfg)),
+        match transport::ws_tls_config() {
+            Ok(cfg) => Connector::Rustls(cfg),
             Err(_) => {
                 let _ = tx.send(closed(Some(1008), "TLS is not available"));
                 return;

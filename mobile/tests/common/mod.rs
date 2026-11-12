@@ -849,6 +849,184 @@ impl SecureStore for MemStore {
     }
 }
 
+/// A scripted gateway for sign-in cases the real one can't be made to show at will: a
+/// refresh that is held, or refused as expired, revoked or by a proxy; a sign-out refused
+/// in those ways; and artwork that takes a while (counting how many are in flight at
+/// once). Tokens are `access-<n>` and `refresh-<n>`, `n` counting every one issued.
+pub struct FakeAuth {
+    pub addr: SocketAddr,
+    pub state: Arc<FakeAuthState>,
+}
+
+#[derive(Default)]
+pub struct FakeAuthState {
+    /// Refreshes asked for, and tokens issued (sign-ins and refreshes).
+    pub refreshes: AtomicUsize,
+    pub issued: AtomicUsize,
+    /// When set, a refresh waits for this before answering.
+    pub hold_refresh: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    /// When set, a refresh is refused with this status and body.
+    pub refuse_refresh: Mutex<Option<(u16, String)>>,
+    /// Answers for the next sign-outs, one each, before `logout_answer`.
+    pub logout_once: Mutex<std::collections::VecDeque<(u16, String)>>,
+    /// When set, a sign-out is answered with this status and body (else 204).
+    pub logout_answer: Mutex<Option<(u16, String)>>,
+    /// Sign-outs asked for, with the bearer token each carried.
+    pub logouts: Mutex<Vec<String>>,
+    /// The body of every password sign-in.
+    pub logins: Mutex<Vec<Value>>,
+    /// Artwork requests in flight now, and the most at once.
+    pub art_now: AtomicUsize,
+    pub art_peak: AtomicUsize,
+}
+
+/// The JSON body of the gateway's own refusal of a refresh. `reason`: what it says on top
+/// (`"expired"` for a sign-in that ran out).
+pub fn gateway_refusal(reason: Option<&str>) -> String {
+    let mut v = json!({ "error": "invalid credentials" });
+    if let Some(r) = reason {
+        v["reason"] = json!(r);
+    }
+    v.to_string()
+}
+
+impl FakeAuth {
+    pub async fn start() -> FakeAuth {
+        let state = Arc::new(FakeAuthState::default());
+        let st = state.clone();
+        let app = Router::new().fallback(any(move |req: Request| {
+            let st = st.clone();
+            async move { fake_auth(st, req).await }
+        }));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        FakeAuth { addr, state }
+    }
+
+    pub fn server(&self) -> Arc<Server> {
+        Server::new(format!("http://{}", self.addr)).unwrap()
+    }
+
+    /// A session holding a saved sign-in (`refresh-start`), nothing asked of the gateway yet.
+    pub fn saved_session(&self) -> (Arc<Session>, Arc<MemStore>) {
+        let store = MemStore::with(StoredCredentials {
+            refresh_token: "refresh-start".into(),
+            device_id: 1,
+        });
+        let s = Session::new(self.server(), store.clone(), "Test phone".into()).unwrap();
+        (s, store)
+    }
+
+    pub fn refuse_refresh(&self, status: u16, body: &str) {
+        *self.state.refuse_refresh.lock().unwrap() = Some((status, body.to_string()));
+    }
+
+    pub fn answer_logout(&self, status: u16, body: &str) {
+        *self.state.logout_answer.lock().unwrap() = Some((status, body.to_string()));
+    }
+
+    /// Answer the next sign-out only so; later ones as before.
+    pub fn answer_logout_once(&self, status: u16, body: &str) {
+        self.state
+            .logout_once
+            .lock()
+            .unwrap()
+            .push_back((status, body.to_string()));
+    }
+}
+
+fn fake_reply(status: u16, body: String) -> axum::response::Response {
+    let status = axum::http::StatusCode::from_u16(status).unwrap();
+    let kind = if body.starts_with('{') {
+        "application/json"
+    } else {
+        "text/html"
+    };
+    (status, [("content-type", kind)], body).into_response()
+}
+
+async fn fake_auth(st: Arc<FakeAuthState>, req: Request) -> axum::response::Response {
+    let issue = |st: &FakeAuthState| {
+        let n = st.issued.fetch_add(1, Ordering::SeqCst) + 1;
+        fake_reply(
+            200,
+            json!({
+                "access_token": format!("access-{n}"), "refresh_token": format!("refresh-{n}"),
+                "expires_in": 900,
+                "user": {"username": "alice", "role": "listener"},
+                "device": {"id": 1, "name": "Test phone", "mac": "02:4c:41:00:00:01"},
+            })
+            .to_string(),
+        )
+    };
+    let bearer = req
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("")
+        .to_string();
+    let path = req.uri().path().to_string();
+    match path.as_str() {
+        "/v1/auth/login" => {
+            let body = axum::body::to_bytes(req.into_body(), 64 * 1024)
+                .await
+                .unwrap_or_default();
+            let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+            let right = v["password"] == PW;
+            st.logins.lock().unwrap().push(v);
+            if right {
+                issue(&st)
+            } else {
+                fake_reply(401, gateway_refusal(None))
+            }
+        }
+        "/v1/auth/refresh" => {
+            st.refreshes.fetch_add(1, Ordering::SeqCst);
+            let hold = st.hold_refresh.lock().unwrap().clone();
+            if let Some(h) = hold {
+                h.notified().await;
+            }
+            let refuse = st.refuse_refresh.lock().unwrap().clone();
+            match refuse {
+                Some((status, body)) => fake_reply(status, body),
+                None => issue(&st),
+            }
+        }
+        "/v1/auth/logout" => {
+            st.logouts.lock().unwrap().push(bearer);
+            let once = st.logout_once.lock().unwrap().pop_front();
+            let answer = once.or_else(|| st.logout_answer.lock().unwrap().clone());
+            match answer {
+                Some((status, body)) => fake_reply(status, body),
+                None => axum::http::StatusCode::NO_CONTENT.into_response(),
+            }
+        }
+        "/v1/me" => fake_reply(
+            200,
+            json!({
+                "user": {"username": "alice", "role": "listener"},
+                "device": {"id": 1, "name": "Test phone", "mac": "02:4c:41:00:00:01"},
+                "features": {}, "protocol": 2,
+            })
+            .to_string(),
+        ),
+        p if p.starts_with("/v1/art/") => {
+            let now = st.art_now.fetch_add(1, Ordering::SeqCst) + 1;
+            st.art_peak.fetch_max(now, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            st.art_now.fetch_sub(1, Ordering::SeqCst);
+            (
+                [("content-type", "image/jpeg")],
+                b"\xff\xd8\xff\xe0cover".to_vec(),
+            )
+                .into_response()
+        }
+        _ => fake_reply(404, json!({ "error": "not found" }).to_string()),
+    }
+}
+
 /// Records sign-outs.
 #[derive(Default)]
 pub struct Observer {

@@ -105,8 +105,64 @@ mod causes_tests {
     }
 }
 
-/// The platform-verified TLS configuration shared by HTTP and WebSocket connections.
-pub(crate) fn tls_config(alpn: &[&[u8]]) -> Result<ClientConfig, ApiError> {
+/// The runtime the shared client's connections and the token rotations run on: one per
+/// process, made on first use and never dropped (review 2026-11-12, M17).
+///
+/// The player engine and the downloader run on private runtimes of their own, which are
+/// dropped when they stop or the network changes. A rotation spawned there was cancelled
+/// with it, after the gateway had rotated, so the old token stayed stored and the next
+/// refresh looked like theft (the device revoked, its downloads wiped); and connections
+/// they opened in the shared pool died with them, or stalled whenever their thread was busy.
+pub(crate) fn background() -> &'static tokio::runtime::Handle {
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("anywhere-net")
+            .enable_all()
+            .build()
+            .expect("the network runtime")
+    })
+    .handle()
+}
+
+/// A task on another runtime that is aborted when whoever awaits it goes away, so a
+/// request the caller gave up on stops as it did when it ran in the caller's own task.
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+impl<T> std::future::Future for AbortOnDrop<T> {
+    type Output = Result<T, tokio::task::JoinError>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::pin::Pin::new(&mut self.0).poll(cx)
+    }
+}
+
+/// The TLS configuration without ALPN, built once per process: the platform verifier and
+/// (on Android) the system CA store it falls back on are made once, not on every connect.
+fn base_tls() -> Result<ClientConfig, ApiError> {
+    static BASE: std::sync::Mutex<Option<ClientConfig>> = std::sync::Mutex::new(None);
+    let mut base = BASE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(c) = base.as_ref() {
+        return Ok(c.clone());
+    }
+    // A failure is not kept: the platform may not be ready yet (Android initialises the
+    // verifier from the app), and the next connect tries again.
+    let cfg = build_tls()?;
+    *base = Some(cfg.clone());
+    Ok(cfg)
+}
+
+fn build_tls() -> Result<ClientConfig, ApiError> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let unavailable = |e: rustls::Error| {
         ApiError::network(format!(
@@ -117,40 +173,64 @@ pub(crate) fn tls_config(alpn: &[&[u8]]) -> Result<ClientConfig, ApiError> {
     // The platform's verifier, with a second opinion for Android's unreliable "revoked"
     // verdict (see `crate::tls`).
     let verifier = crate::tls::verifier(provider.clone()).map_err(unavailable)?;
-    let mut cfg = ClientConfig::builder_with_provider(provider)
+    Ok(ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(unavailable)?
         .dangerous()
         .with_custom_certificate_verifier(verifier)
-        .with_no_client_auth();
+        .with_no_client_auth())
+}
+
+/// The platform-verified TLS configuration shared by HTTP and WebSocket connections.
+pub(crate) fn tls_config(alpn: &[&[u8]]) -> Result<ClientConfig, ApiError> {
+    let mut cfg = base_tls()?;
     cfg.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
     Ok(cfg)
 }
 
+/// The TLS configuration for WebSocket connections (HTTP/1.1), made once per process
+/// (review 2026-11-12: every connect used to rebuild the verifier and re-read the CA store).
+pub(crate) fn ws_tls_config() -> Result<Arc<ClientConfig>, ApiError> {
+    static WS: OnceLock<Arc<ClientConfig>> = OnceLock::new();
+    if let Some(c) = WS.get() {
+        return Ok(c.clone());
+    }
+    let cfg = Arc::new(tls_config(&[b"http/1.1"])?);
+    Ok(WS.get_or_init(|| cfg).clone())
+}
+
 type Inner = Client<HttpsConnector<HttpConnector>, Full<Bytes>>;
 
-/// The HTTP client (one per process; it owns a connection pool).
+/// An HTTP client and its connection pool.
 #[derive(Clone)]
-pub(crate) struct Http(Inner);
+pub(crate) struct Http {
+    inner: Inner,
+    /// Requests run on [`background`] (the shared client), so its pooled connections never
+    /// belong to a runtime that is dropped or busy; a private client runs them on the
+    /// caller's runtime, which owns its pool.
+    background: bool,
+}
 
 impl Http {
+    /// The process's shared client. Its requests run on [`background`], whichever runtime
+    /// the caller is on.
     pub(crate) fn shared() -> Result<Http, ApiError> {
         static CLIENT: OnceLock<Http> = OnceLock::new();
         if let Some(c) = CLIENT.get() {
             return Ok(c.clone());
         }
-        let client = Http::build()?;
+        let client = Http::build(true)?;
         Ok(CLIENT.get_or_init(|| client).clone())
     }
 
     /// A client with its own connection pool, for a component that runs on its own
-    /// runtime (the player engine): pooled connections belong to the runtime that made
-    /// them.
+    /// runtime (the player engine, the downloader): its pooled connections belong to that
+    /// runtime and go with it, and never reach the shared pool.
     pub(crate) fn private() -> Result<Http, ApiError> {
-        Http::build()
+        Http::build(false)
     }
 
-    fn build() -> Result<Http, ApiError> {
+    fn build(background: bool) -> Result<Http, ApiError> {
         let mut tcp = HttpConnector::new();
         tcp.enforce_http(false);
         tcp.set_connect_timeout(Some(CONNECT_TIMEOUT));
@@ -166,7 +246,10 @@ impl Http {
         let client = Client::builder(TokioExecutor::new())
             .pool_idle_timeout(Duration::from_secs(30))
             .build(https);
-        Ok(Http(client))
+        Ok(Http {
+            inner: client,
+            background,
+        })
     }
 
     pub(crate) fn get(&self, url: Url) -> Request {
@@ -259,7 +342,20 @@ impl Request {
             .body(Full::new(self.body))
             .map_err(|_| ApiError::invalid("bad request"))?;
         *req.headers_mut() = self.headers;
-        match tokio::time::timeout(headers_timeout, self.http.0.request(req)).await {
+        let client = self.http.inner.clone();
+        let exchange =
+            async move { tokio::time::timeout(headers_timeout, client.request(req)).await };
+        let answer = if self.http.background {
+            // The connection (and the task that hands it back to the pool) is made inside
+            // this task, so it lives on the long-lived runtime.
+            match AbortOnDrop(background().spawn(exchange)).await {
+                Ok(a) => a,
+                Err(_) => return Err(ApiError::network("connection interrupted")),
+            }
+        } else {
+            exchange.await
+        };
+        match answer {
             Ok(Ok(resp)) => Ok(Response(resp)),
             Ok(Err(e)) if e.is_connect() => Err(ApiError::network(format!(
                 "could not connect: {}",
@@ -391,37 +487,62 @@ pub(crate) async fn send_json(req: Request) -> Result<Value, ApiError> {
     serde_json::from_slice(&body).map_err(|_| ApiError::bad_response("malformed answer"))
 }
 
-/// The refresh exchange: like [`send_json`], but only the gateway's own 401 (with its JSON
-/// `error`) is a refusal. Anything else in the way (a proxy's or CDN's 400/403/404 page
-/// during maintenance, a challenge page) is a failure to reach the gateway, so the sign-in,
-/// and with it the downloads, is kept.
-pub(crate) async fn send_refresh(req: Request) -> Result<Value, ApiError> {
+/// How a sign-in exchange (refresh, sign-out) failed, read strictly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AuthFailure {
+    /// The gateway itself refused (its own 401, with its JSON `error`): this device's
+    /// sign-in has ended there. `expired`: it ran out (the 401 says `"reason": "expired"`),
+    /// rather than being revoked; the app then keeps its downloads (SPEC §8.5).
+    Ended { expired: bool },
+    /// Anything else: the gateway could not be reached or did not answer for itself. The
+    /// sign-in is kept.
+    Failed(ApiError),
+}
+
+/// A sign-in exchange (`/v1/auth/refresh`, `/v1/auth/logout`): like [`send_json`], but only
+/// the gateway's own 401 (with its JSON `error`) is a refusal. Anything else in the way (a
+/// proxy's or CDN's 400/401/403/404 page during maintenance, a challenge page) is a failure
+/// to reach the gateway, so the sign-in, and with it the downloads, is kept.
+pub(crate) async fn send_auth(req: Request) -> Result<Value, AuthFailure> {
     let mut req = req;
     req.headers
         .insert(ACCEPT, HeaderValue::from_static("application/json"));
-    let resp = req.send().await?;
+    let resp = req.send().await.map_err(AuthFailure::Failed)?;
     let status = resp.status();
+    if status == StatusCode::NO_CONTENT {
+        return Ok(Value::Null);
+    }
     if status.is_success() {
-        let body = resp.read_limited(MAX_JSON).await?;
+        let body = resp
+            .read_limited(MAX_JSON)
+            .await
+            .map_err(AuthFailure::Failed)?;
         return serde_json::from_slice(&body)
-            .map_err(|_| ApiError::bad_response("malformed answer"));
+            .map_err(|_| AuthFailure::Failed(ApiError::bad_response("malformed answer")));
     }
     let headers = resp.headers().clone();
     let body = resp.read_limited(64 * 1024).await.unwrap_or_default();
-    Err(refresh_error_of(status.as_u16(), &headers, &body))
+    Err(auth_error_of(status.as_u16(), &headers, &body))
 }
 
-fn refresh_error_of(status: u16, headers: &HeaderMap, body: &[u8]) -> ApiError {
-    let from_gateway = serde_json::from_slice::<Value>(body)
-        .ok()
+fn auth_error_of(status: u16, headers: &HeaderMap, body: &[u8]) -> AuthFailure {
+    let v = serde_json::from_slice::<Value>(body).ok();
+    let from_gateway = v
+        .as_ref()
         .is_some_and(|v| v.get("error").is_some_and(Value::is_string));
     match error_of(status, headers, body) {
-        ApiError::Unauthorised if from_gateway => ApiError::Unauthorised,
-        e @ (ApiError::RateLimited { .. } | ApiError::Network { .. }) => e,
-        _ => ApiError::Server {
-            status,
-            detail: format!("HTTP {status} while renewing the sign-in"),
+        ApiError::Unauthorised if from_gateway => AuthFailure::Ended {
+            expired: v
+                .as_ref()
+                .and_then(|v| v.get("reason"))
+                .and_then(Value::as_str)
+                == Some("expired"),
         },
+        e @ (ApiError::RateLimited { .. } | ApiError::Network { .. }) => AuthFailure::Failed(e),
+        _ => AuthFailure::Failed(ApiError::Server {
+            status,
+            detail: format!("HTTP {status} from the sign-in service"),
+        }),
     }
 }
 
@@ -433,14 +554,20 @@ mod tests {
     fn only_the_gateways_own_401_ends_a_sign_in_on_refresh() {
         let h = HeaderMap::new();
         let gw = br#"{"error":"invalid credentials"}"#;
-        assert_eq!(refresh_error_of(401, &h, gw), ApiError::Unauthorised);
+        assert_eq!(
+            auth_error_of(401, &h, gw),
+            AuthFailure::Ended { expired: false }
+        );
         // In the way: a proxy, a CDN challenge, maintenance pages. Never a revocation.
         for (status, body) in [
             (401, &b"<html>Unauthorized</html>"[..]),
             (401, &b""[..]),
             (401, &br#"{"message":"nope"}"#[..]),
+            (401, &br#"{"reason":"expired"}"#[..]),
+            (401, &br#"{"error":7,"reason":"expired"}"#[..]),
             (400, &br#"{"error":"malformed request"}"#[..]),
             (403, &br#"{"error":"forbidden"}"#[..]),
+            (403, &br#"{"error":"forbidden","reason":"expired"}"#[..]),
             (403, &b"<html>Attention required</html>"[..]),
             (404, &b"Not found"[..]),
             (409, &b""[..]),
@@ -448,21 +575,75 @@ mod tests {
             (451, &b""[..]),
             (502, &b"Bad gateway"[..]),
         ] {
-            let e = refresh_error_of(status, &h, body);
+            let e = auth_error_of(status, &h, body);
             assert!(
-                matches!(e, ApiError::Server { .. }),
+                matches!(e, AuthFailure::Failed(ApiError::Server { .. })),
                 "{status}: {e:?} must not end the sign-in"
             );
-            assert!(!matches!(e, ApiError::Unauthorised));
         }
         assert!(matches!(
-            refresh_error_of(429, &h, b""),
-            ApiError::RateLimited { .. }
+            auth_error_of(429, &h, b""),
+            AuthFailure::Failed(ApiError::RateLimited { .. })
         ));
         assert!(matches!(
-            refresh_error_of(408, &h, b""),
-            ApiError::Network { .. }
+            auth_error_of(408, &h, b""),
+            AuthFailure::Failed(ApiError::Network { .. })
         ));
+    }
+
+    /// M18: the gateway names an expired sign-in (`"reason": "expired"` on its own 401);
+    /// every other refusal of its own, whatever else it says, is a revocation.
+    #[test]
+    fn an_expired_sign_in_is_told_apart_from_a_revoked_one() {
+        let h = HeaderMap::new();
+        assert_eq!(
+            auth_error_of(
+                401,
+                &h,
+                br#"{"error":"invalid credentials","reason":"expired"}"#
+            ),
+            AuthFailure::Ended { expired: true }
+        );
+        for revoked in [
+            &br#"{"error":"invalid credentials"}"#[..],
+            br#"{"error":"invalid credentials","reason":"revoked"}"#,
+            br#"{"error":"invalid credentials","reason":"EXPIRED"}"#,
+            br#"{"error":"invalid credentials","reason":" expired"}"#,
+            br#"{"error":"invalid credentials","reason":["expired"]}"#,
+            br#"{"error":"invalid credentials","reason":{"expired":true}}"#,
+            br#"{"error":"invalid credentials","reason":true}"#,
+            br#"{"error":"invalid credentials","reason":null}"#,
+            br#"{"error":"invalid credentials","expired":true}"#,
+        ] {
+            assert_eq!(
+                auth_error_of(401, &h, revoked),
+                AuthFailure::Ended { expired: false },
+                "{}",
+                String::from_utf8_lossy(revoked)
+            );
+        }
+    }
+
+    /// Arbitrary refusal bodies never panic and only ever end a sign-in on a 401.
+    #[test]
+    fn arbitrary_refusals_never_panic() {
+        let alphabet = br#"{}[]":,errorasonxpid 0123456789\"#;
+        let mut seed = 0x0bad_5eed_1234_5678u64;
+        for round in 0..20_000u32 {
+            let len = (seed % 80) as usize;
+            let mut body = Vec::with_capacity(len);
+            for _ in 0..len {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                body.push(alphabet[(seed % alphabet.len() as u64) as usize]);
+            }
+            let status = [200, 204, 302, 400, 401, 403, 404, 429, 500, 503][round as usize % 10];
+            let e = auth_error_of(status, &HeaderMap::new(), &body);
+            if matches!(e, AuthFailure::Ended { .. }) {
+                assert_eq!(status, 401);
+            }
+        }
     }
 
     /// Regression (review, 15 October): a gateway that answers at once and then sends its
@@ -507,6 +688,72 @@ mod tests {
     fn platform_tls_config_builds() {
         let cfg = tls_config(&[b"http/1.1"]).unwrap();
         assert_eq!(cfg.alpn_protocols, vec![b"http/1.1".to_vec()]);
+        assert!(tls_config(&[]).unwrap().alpn_protocols.is_empty());
+    }
+
+    /// Review 2026-11-12: every WebSocket connect rebuilt the platform verifier (and on
+    /// Android re-read the system CA store). It is built once per process now.
+    #[test]
+    fn the_tls_verifier_is_built_once_per_process() {
+        for _ in 0..5 {
+            tls_config(&[b"http/1.1"]).unwrap();
+            tls_config(&[]).unwrap();
+            Http::private().unwrap();
+        }
+        let (a, b) = (ws_tls_config().unwrap(), ws_tls_config().unwrap());
+        assert!(Arc::ptr_eq(&a, &b), "one configuration for every connect");
+        assert_eq!(a.alpn_protocols, vec![b"http/1.1".to_vec()]);
+        assert_eq!(
+            crate::tls::VERIFIERS_BUILT.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+    }
+
+    /// M17: the shared client's requests run on the long-lived runtime, whatever runtime
+    /// the caller is on; a private client's run on the caller's.
+    #[test]
+    fn shared_requests_run_on_the_long_lived_runtime() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let caller = rt.block_on(async {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = l.local_addr().unwrap();
+            // A server on the caller's runtime that answers each request once.
+            tokio::spawn(async move {
+                while let Ok((mut s, _)) = l.accept().await {
+                    tokio::spawn(async move {
+                        let mut buf = [0u8; 4096];
+                        while s.read(&mut buf).await.is_ok_and(|n| n > 0) {
+                            let ok = b"HTTP/1.1 204 No Content\r\n\r\n";
+                            if s.write_all(ok).await.is_err() {
+                                return;
+                            }
+                        }
+                    });
+                }
+            });
+            let url = Url::parse(&format!("http://{addr}/v1/me")).unwrap();
+            let shared = Http::shared().unwrap();
+            assert!(shared.background && !Http::private().unwrap().background);
+            let r = shared.get(url.clone()).send().await.unwrap();
+            assert_eq!(r.status(), StatusCode::NO_CONTENT);
+            let r = Http::private().unwrap().get(url).send().await.unwrap();
+            assert_eq!(r.status(), StatusCode::NO_CONTENT);
+            tokio::runtime::Handle::current().id()
+        });
+        assert_ne!(caller, background().id());
+        // Dropping the caller's runtime leaves the long-lived one running.
+        drop(rt);
+        let (tx, rx) = std::sync::mpsc::channel();
+        background().spawn(async move { tx.send(7).unwrap() });
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)),
+            Ok(7),
+            "the long-lived runtime still runs tasks"
+        );
     }
 
     #[tokio::test]
@@ -558,7 +805,10 @@ mod tests {
             }
         );
         // A busy answer is never a refusal: the sign-in is kept.
-        assert!(!error_of(503, &h, busy).is_refusal());
+        assert!(matches!(
+            auth_error_of(503, &h, busy),
+            AuthFailure::Failed(ApiError::ServerBusy { .. } | ApiError::Server { .. })
+        ));
 
         // A 503 without `busy: true` keeps its old meaning.
         assert_eq!(
@@ -604,8 +854,8 @@ mod tests {
         assert_eq!(error_of(401, &h, busy), ApiError::Unauthorised);
         // Renewing a sign-in never ends it on a busy answer.
         assert!(!matches!(
-            refresh_error_of(503, &h, busy),
-            ApiError::Unauthorised
+            auth_error_of(503, &h, busy),
+            AuthFailure::Ended { .. }
         ));
     }
 

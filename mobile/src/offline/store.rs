@@ -7,6 +7,7 @@
 //!     queue.json             downloads waiting (see `download`)
 //!     tracks/<key>.<ext>     finished downloads, named by stable key
 //!     partial/<key>.<fmt>    downloads in progress (resumed with HTTP Range)
+//!     partial/<key>.<fmt>.rec  what the server said of that file (its size, validator)
 //!     art/<album>.img        album covers, for offline browsing
 //! ```
 //!
@@ -28,6 +29,8 @@ use super::plays::{self, PlayRecord};
 
 /// Largest cached cover (a large cover is well under this).
 pub const MAX_ART_BYTES: usize = 4 * 1024 * 1024;
+/// The extension of the record beside a partial download (`partial/<key>.<fmt>.rec`).
+pub(crate) const PARTIAL_RECORD: &str = "rec";
 
 /// An album on the device (its tracks grouped by [`OfflineTrack::album_ref`]).
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
@@ -46,11 +49,28 @@ pub struct OfflineAlbum {
     pub origin: DownloadOrigin,
 }
 
+#[derive(Default)]
 struct State {
     tracks: Vec<OfflineTrack>,
     plays: Vec<PlayRecord>,
     /// Ratings made offline, waiting to be sent (see `crate::routine`).
     ratings: Vec<crate::routine::QueuedRating>,
+    /// The sequence number of the index as last written whole, and how many entries its
+    /// journal holds since (see `index`).
+    seq: u64,
+    journal: usize,
+}
+
+/// The journal beside the index in a user's folder (`dir`, from [`scope_dir`]).
+pub(crate) fn journal_file(dir: &Path) -> PathBuf {
+    dir.join("index.journal")
+}
+
+/// The journal may hold this many entries before the index is written whole again: half
+/// the index, so a batch of downloads costs writes in proportion to it, not its square,
+/// and replaying the journal stays cheap.
+fn journal_limit(tracks: usize) -> usize {
+    (tracks / 2).max(64)
 }
 
 /// The offline library of one user on one server.
@@ -146,8 +166,9 @@ fn io_error(what: &str, e: std::io::Error) -> ApiError {
     ApiError::invalid(format!("{what}: {}", e.kind()))
 }
 
-/// Write `bytes` to `path` atomically: a temporary file, flushed, renamed over it. With
-/// `backup`, the previous version is kept as `<path>.bak`.
+/// Write `bytes` to `path` atomically: a temporary file, flushed, renamed over it, and the
+/// folder flushed so the rename itself survives a power cut. With `backup`, the previous
+/// version is kept as `<path>.bak`.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8], backup: bool) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
     {
@@ -158,7 +179,38 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8], backup: bool) -> std::io::
     if backup && path.exists() {
         let _ = fs::rename(path, path.with_extension("json.bak"));
     }
-    fs::rename(&tmp, path)
+    rename_durably(&tmp, path)
+}
+
+/// Flush a folder, so that renames and new files in it are on disk (review 2026-11-12: a
+/// file was flushed, but not the folder entry that names it). Best effort: a folder that
+/// can't be flushed is no reason to fail what was written.
+pub(crate) fn sync_dir(dir: &Path) {
+    #[cfg(unix)]
+    {
+        let _ = fs::File::open(dir).and_then(|d| d.sync_all());
+    }
+    #[cfg(test)]
+    SYNCED_DIRS.with(|s| s.borrow_mut().push(dir.to_path_buf()));
+}
+
+/// Rename `from` to `to` and flush the folder it lands in.
+pub(crate) fn rename_durably(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::rename(from, to)?;
+    if let Some(dir) = to.parent() {
+        sync_dir(dir);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The folders this thread flushed (tests).
+    pub(crate) static SYNCED_DIRS: std::cell::RefCell<Vec<PathBuf>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Index entries this thread wrote out whole (tests).
+    pub(crate) static INDEX_ENTRIES_WRITTEN: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
 }
 
 /// Read at most `limit` bytes of a file (`None` if missing, unreadable or larger).
@@ -259,6 +311,20 @@ impl OfflineLibrary {
             .join(format!("{key}.{}", format.as_str()))
     }
 
+    /// The record kept beside a download in progress: what the server said of the whole
+    /// file, so a resume only joins bytes of the same file (see `download::PartialRecord`).
+    pub(crate) fn partial_record_path(&self, key: &str, format: DownloadFormat) -> PathBuf {
+        debug_assert!(index::valid_key(key));
+        self.partial_dir()
+            .join(format!("{key}.{}.{PARTIAL_RECORD}", format.as_str()))
+    }
+
+    /// Delete a download in progress and its record.
+    pub(crate) fn remove_partial(&self, key: &str, format: DownloadFormat) {
+        let _ = fs::remove_file(self.partial_path(key, format));
+        let _ = fs::remove_file(self.partial_record_path(key, format));
+    }
+
     fn art_path(&self, album_ref: &str) -> Option<PathBuf> {
         valid_album_ref(album_ref).then(|| self.art_dir().join(format!("{album_ref}.img")))
     }
@@ -277,20 +343,21 @@ impl OfflineLibrary {
         self.index_path().with_extension("json.unreadable")
     }
 
-    /// The index, and whether it can be trusted to name every download (so files it
-    /// doesn't name may be deleted). An index that exists but can't be read (a read error,
-    /// damage, a newer app's format) is never grounds for deleting the files.
-    /// Also says whether a copy kept aside was read back (so the index should be saved).
-    fn load_index(&self) -> (Vec<OfflineTrack>, bool, bool) {
+    /// The index (with its journal applied) and its sequence number, and whether it can be
+    /// trusted to name every download (so files it doesn't name may be deleted). An index
+    /// that exists but can't be read (a read error, damage, a newer app's format) is never
+    /// grounds for deleting the files. Also says whether the index should be written whole
+    /// again: a copy kept aside was read back, or a journal was there.
+    fn load_index(&self) -> (Vec<OfflineTrack>, u64, bool, bool) {
         let read = |p: &Path| read_limited(p, index::MAX_INDEX_BYTES).map(|b| index::parse(&b));
         let (main, bak, aside) = (
             self.index_path(),
             self.index_path().with_extension("json.bak"),
             self.unreadable_index_path(),
         );
-        let (mut tracks, mut trusted) = match read(&main) {
-            Some(Parsed::Tracks(t, _)) => (t, true),
-            _ if !main.exists() && !bak.exists() => (Vec::new(), true),
+        let (mut tracks, mut seq, mut trusted) = match read(&main) {
+            Some(Parsed::Tracks(t, _, seq)) => (t, seq, true),
+            _ if !main.exists() && !bak.exists() => (Vec::new(), 0, true),
             _ => {
                 // Keep what couldn't be read (the first copy only), then try the last good
                 // version. Its files are kept: the list may be missing some.
@@ -298,17 +365,24 @@ impl OfflineLibrary {
                     let _ = fs::copy(&main, &aside);
                 }
                 match read(&bak) {
-                    Some(Parsed::Tracks(t, _)) => (t, false),
-                    _ => (Vec::new(), false),
+                    Some(Parsed::Tracks(t, _, seq)) => (t, seq, false),
+                    _ => (Vec::new(), 0, false),
                 }
             }
         };
-        let mut recovered = false;
+        // Downloads finished since the index was last written whole. Over an index that
+        // couldn't be read, whatever it continues: better listed than lost.
+        let journal = journal_file(&self.dir);
+        let mut recovered = journal.exists();
+        if let Some(b) = read_limited(&journal, index::MAX_INDEX_BYTES) {
+            index::apply_journal(&b, trusted.then_some(seq), &mut tracks);
+        }
         if aside.exists() {
             match read(&aside) {
                 // Readable after all: take back what it lists (reconcile drops entries
                 // whose file has gone), and it's no longer needed.
-                Some(Parsed::Tracks(t, _)) if trusted => {
+                Some(Parsed::Tracks(t, _, aside_seq)) if trusted => {
+                    seq = seq.max(aside_seq);
                     for x in t {
                         if !tracks.iter().any(|k| k.key == x.key)
                             && tracks.len() < index::MAX_TRACKS
@@ -322,12 +396,60 @@ impl OfflineLibrary {
                 _ => trusted = false,
             }
         }
-        (tracks, trusted, recovered)
+        (tracks, seq, trusted, recovered)
     }
 
-    fn save_index(&self, tracks: &[OfflineTrack]) -> Result<(), ApiError> {
-        write_atomic(&self.index_path(), &index::serialise(tracks), true)
-            .map_err(|e| io_error("could not save the download list", e))
+    /// Write the index whole, as the next sequence number, and drop the journal it now
+    /// includes. A crash between the two leaves a journal naming the older number, which is
+    /// then never replayed.
+    fn save_index(&self, st: &mut State) -> Result<(), ApiError> {
+        let seq = st.seq.wrapping_add(1);
+        #[cfg(test)]
+        INDEX_ENTRIES_WRITTEN.with(|n| n.set(n.get() + st.tracks.len()));
+        write_atomic(
+            &self.index_path(),
+            &index::serialise_seq(&st.tracks, seq),
+            true,
+        )
+        .map_err(|e| io_error("could not save the download list", e))?;
+        st.seq = seq;
+        st.journal = 0;
+        let _ = fs::remove_file(journal_file(&self.dir));
+        Ok(())
+    }
+
+    /// Record a new or changed entry (already in `st.tracks`): one line appended to the
+    /// journal, or, once that has grown to its limit (or can't be written), the index
+    /// written whole.
+    fn save_entry(&self, st: &mut State, t: &OfflineTrack) -> Result<(), ApiError> {
+        if st.journal < journal_limit(st.tracks.len()) && self.append_journal(st, t).is_ok() {
+            st.journal += 1;
+            return Ok(());
+        }
+        self.save_index(st)
+    }
+
+    fn append_journal(&self, st: &State, t: &OfflineTrack) -> std::io::Result<()> {
+        let path = journal_file(&self.dir);
+        let fresh = st.journal == 0;
+        let mut bytes = if fresh {
+            index::journal_header(st.seq)
+        } else {
+            Vec::new()
+        };
+        bytes.extend(index::journal_line(t));
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(!fresh)
+            .truncate(fresh)
+            .open(&path)?;
+        f.write_all(&bytes)?;
+        f.sync_data()?;
+        if fresh {
+            sync_dir(&self.dir);
+        }
+        Ok(())
     }
 
     fn save_plays(&self, plays: &[PlayRecord]) {
@@ -367,12 +489,13 @@ impl OfflineLibrary {
     /// Add (or replace) a finished download. The file must already be in place.
     pub(crate) fn add(&self, t: OfflineTrack) -> Result<(), ApiError> {
         let mut st = self.state.lock().unwrap();
-        st.tracks.retain(|x| x.key != t.key);
-        if st.tracks.len() >= index::MAX_TRACKS {
+        let replacing = st.tracks.iter().any(|x| x.key == t.key);
+        if !replacing && st.tracks.len() >= index::MAX_TRACKS {
             return Err(ApiError::invalid("too many downloads"));
         }
-        st.tracks.push(t);
-        self.save_index(&st.tracks)
+        st.tracks.retain(|x| x.key != t.key);
+        st.tracks.push(t.clone());
+        self.save_entry(&mut st, &t)
     }
 
     /// The finished file for `key`, if the device has it.
@@ -455,17 +578,17 @@ impl OfflineLibrary {
     /// Change a track's origin (a smart download the user then chose keeps it for good).
     pub(crate) fn set_origin(&self, key: &str, origin: DownloadOrigin) {
         let mut st = self.state.lock().unwrap();
-        let mut changed = false;
+        let mut changed = None;
         for t in st
             .tracks
             .iter_mut()
             .filter(|t| t.key == key && t.origin != origin)
         {
             t.origin = origin;
-            changed = true;
+            changed = Some(t.clone());
         }
-        if changed {
-            let _ = self.save_index(&st.tracks);
+        if let Some(t) = changed {
+            let _ = self.save_entry(&mut st, &t);
         }
     }
 
@@ -501,30 +624,31 @@ impl OfflineLibrary {
         let lib = OfflineLibrary {
             dir,
             scope,
-            state: Mutex::new(State {
-                tracks: Vec::new(),
-                plays: Vec::new(),
-                ratings: Vec::new(),
-            }),
+            state: Mutex::new(State::default()),
             claims: KeyClaims::default(),
         };
         lib.create_dirs()?;
-        let (loaded, trusted, recovered) = lib.load_index();
+        let (loaded, seq, trusted, recovered) = lib.load_index();
         let (tracks, changed) = lib.reconcile(loaded, trusted);
-        if changed || recovered {
-            lib.save_index(&tracks)?;
-        }
         let plays = read_limited(&lib.plays_path(), 8 * 1024 * 1024)
             .map(|b| plays::parse(&b))
             .unwrap_or_default();
         let ratings = read_limited(&lib.ratings_path(), 4 * 1024 * 1024)
             .map(|b| crate::routine::parse_queue(&b))
             .unwrap_or_default();
-        *lib.state.lock().unwrap() = State {
+        let mut st = State {
             tracks,
             plays,
             ratings,
+            seq,
+            journal: 0,
         };
+        // Also takes in (and drops) any journal: this run starts a fresh one. An index is
+        // always there, for the journal to continue (the player reads both).
+        if changed || recovered || !lib.index_path().exists() {
+            lib.save_index(&mut st)?;
+        }
+        *lib.state.lock().unwrap() = st;
         Ok(Arc::new(lib))
     }
 
@@ -562,7 +686,7 @@ impl OfflineLibrary {
                 let _ = fs::remove_file(p);
             }
         }
-        self.save_index(&st.tracks)?;
+        self.save_index(&mut st)?;
         Ok(gone.len() as u32)
     }
 }
@@ -733,7 +857,7 @@ impl OfflineLibrary {
         let _ = fs::remove_file(self.queue_path());
         let _ = fs::remove_file(self.index_path().with_extension("json.bak"));
         let _ = fs::remove_file(self.unreadable_index_path());
-        self.save_index(&st.tracks)?;
+        self.save_index(&mut st)?;
         drop(st);
         self.create_dirs()
     }
@@ -770,6 +894,12 @@ pub(crate) mod tests {
         let d = std::env::temp_dir().join(format!("anywhere-offline-{}", super::plays::new_key()));
         fs::create_dir_all(&d).unwrap();
         d.to_string_lossy().into_owned()
+    }
+
+    /// Write the index whole now (tests that need an index and its backup in a known state).
+    fn write_whole(lib: &OfflineLibrary) {
+        let mut st = lib.state.lock().unwrap();
+        lib.save_index(&mut st).unwrap();
     }
 
     fn put(lib: &OfflineLibrary, t: &OfflineTrack) {
@@ -888,7 +1018,9 @@ pub(crate) mod tests {
         let lib = OfflineLibrary::open(root.clone(), "https://s".into(), "u".into()).unwrap();
         let (a, b) = (sample(1), sample(2));
         put(&lib, &a);
-        put(&lib, &b); // the backup now lists a only
+        write_whole(&lib);
+        put(&lib, &b);
+        write_whole(&lib); // the backup now lists a only, and there is no journal
         fs::write(lib.index_path(), b"{\"v\":1,\"tracks\":[{\"key\":").unwrap();
         drop(lib);
         let again = OfflineLibrary::open(root.clone(), "https://s".into(), "u".into()).unwrap();
@@ -908,6 +1040,7 @@ pub(crate) mod tests {
         let (a, b) = (sample(1), sample(2));
         put(&lib, &a);
         put(&lib, &b);
+        write_whole(&lib);
         // Each open below is after a restart (nothing else has the downloads open).
         let (index, aside) = (lib.index_path(), lib.unreadable_index_path());
         drop(lib);
@@ -978,6 +1111,127 @@ pub(crate) mod tests {
         remove_offline_data(root.clone(), "https://s".into(), "u".into()).unwrap();
         assert!(!lib.dir().exists());
         remove_offline_data(root, "https://s".into(), "u".into()).unwrap();
+    }
+
+    /// A track with its own key for any `i` (`sample` has 255).
+    fn numbered(i: u32) -> OfflineTrack {
+        let mut t = sample(1);
+        t.key = format!("{i:064x}");
+        t.track_id = 1000 + i64::from(i);
+        t
+    }
+
+    fn keys(lib: &OfflineLibrary) -> Vec<String> {
+        let mut k: Vec<String> = lib.tracks().into_iter().map(|t| t.key).collect();
+        k.sort();
+        k
+    }
+
+    /// Review 2026-11-12 (open since 10-15): each finished download wrote the whole index
+    /// again, so a batch of n downloads wrote about n²/2 entries (and as many fsyncs of an
+    /// ever larger file). The journal takes each one now, and the index is written whole
+    /// only as often as keeps the total in proportion to n.
+    #[test]
+    fn a_batch_of_downloads_writes_the_index_a_linear_amount() {
+        let root = temp_root();
+        let lib = OfflineLibrary::open(root.clone(), "https://s".into(), "u".into()).unwrap();
+        INDEX_ENTRIES_WRITTEN.with(|n| n.set(0));
+        let n = 600;
+        for i in 0..n {
+            put(&lib, &numbered(i));
+        }
+        let written = INDEX_ENTRIES_WRITTEN.with(|w| w.get());
+        assert!(
+            written <= 4 * n as usize,
+            "{written} index entries written for {n} downloads"
+        );
+        // A smart download the user then chooses is one journal line too, not a rewrite.
+        let before = INDEX_ENTRIES_WRITTEN.with(|w| w.get());
+        lib.set_origin(&numbered(3).key, DownloadOrigin::Recent);
+        assert_eq!(INDEX_ENTRIES_WRITTEN.with(|w| w.get()), before);
+        // Every one is there after a restart, from the index and its journal.
+        drop(lib);
+        let again = OfflineLibrary::open(root, "https://s".into(), "u".into()).unwrap();
+        assert_eq!(again.tracks().len(), n as usize);
+        let t = again
+            .tracks()
+            .into_iter()
+            .find(|t| t.key == numbered(3).key)
+            .unwrap();
+        assert_eq!(t.origin, DownloadOrigin::Recent);
+    }
+
+    #[test]
+    fn downloads_in_the_journal_survive_a_restart_and_a_stale_one_is_never_replayed() {
+        let root = temp_root();
+        let open = || OfflineLibrary::open(root.clone(), "https://s".into(), "u".into()).unwrap();
+        let lib = open();
+        let (a, b) = (sample(1), sample(2));
+        put(&lib, &a);
+        put(&lib, &b);
+        let journal = journal_file(lib.dir());
+        assert!(journal.exists(), "taken by the journal");
+        let index = lib.index_path();
+        // The app is killed: nothing more is written.
+        drop(lib);
+        let again = open();
+        assert_eq!(keys(&again), vec![a.key.clone(), b.key.clone()]);
+        assert!(!journal.exists(), "taken into the index on opening");
+        drop(again);
+
+        // A journal from before the index was last written whole (a crash between writing
+        // the index and removing the journal) is never replayed over it.
+        let Parsed::Tracks(_, _, seq) = index::parse(&fs::read(&index).unwrap()) else {
+            panic!("the index reads");
+        };
+        let mut old = a.clone();
+        old.title = "Stale".into();
+        let mut j = index::journal_header(seq.wrapping_sub(1));
+        j.extend(index::journal_line(&old));
+        fs::write(&journal, &j).unwrap();
+        let later = open();
+        let t = later.tracks().into_iter().find(|t| t.key == a.key).unwrap();
+        assert_eq!(t.title, a.title, "the stale journal was ignored");
+        assert!(!journal.exists());
+        drop(later);
+
+        // One that does continue the index is replayed, its cut-off last line skipped.
+        let mut j = index::journal_header(seq.wrapping_add(1));
+        let c = sample(3);
+        fs::write(later_file(&root, &c), vec![7u8; c.size as usize]).unwrap();
+        j.extend(index::journal_line(&c));
+        j.extend(&index::journal_line(&sample(4))[..30]);
+        fs::write(&journal, &j).unwrap();
+        let last = open();
+        assert_eq!(keys(&last), vec![a.key, b.key, c.key]);
+    }
+
+    /// Where a track's file goes in the folder of `u` on `https://s` under `root`.
+    fn later_file(root: &str, t: &OfflineTrack) -> PathBuf {
+        track_file(&scope_dir(root, "https://s", "u").unwrap(), t)
+    }
+
+    /// Review 2026-11-12: a replaced file was flushed, but not the folder entry naming it,
+    /// so a power cut could leave the old file, or none. Renames here flush their folder,
+    /// and so does a new journal.
+    #[test]
+    fn renames_and_new_files_flush_their_folder() {
+        let root = temp_root();
+        let dir = PathBuf::from(&root);
+        let synced = |d: &Path| SYNCED_DIRS.with(|s| s.borrow().iter().any(|x| x == d));
+        SYNCED_DIRS.with(|s| s.borrow_mut().clear());
+        write_atomic(&dir.join("x.json"), b"{}", true).unwrap();
+        assert!(synced(&dir));
+        let (from, to) = (dir.join("a.part"), dir.join("sub").join("a.flac"));
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(&from, b"x").unwrap();
+        SYNCED_DIRS.with(|s| s.borrow_mut().clear());
+        rename_durably(&from, &to).unwrap();
+        assert!(synced(&dir.join("sub")) && to.exists());
+        let lib = OfflineLibrary::open(root.clone(), "https://s".into(), "u".into()).unwrap();
+        SYNCED_DIRS.with(|s| s.borrow_mut().clear());
+        put(&lib, &sample(1));
+        assert!(synced(lib.dir()), "the new journal's folder");
     }
 
     #[test]

@@ -879,3 +879,32 @@ async fn artist_and_album_information() {
     }
     assert_eq!(h.lms.rpc_calls().len(), before);
 }
+
+/// Review 2026-11-12 (open since 10-15): the in-flight cap on artwork (LMS resizes it on
+/// its one thread) belonged to each `Art`, and the downloader's cover cache makes its own,
+/// so together they sent more at once. The cap is the session's now, whichever `Art` asks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_art_of_a_session_shares_one_in_flight_cap() {
+    let fake = FakeAuth::start().await;
+    let (s, _) = fake.saved_session();
+    s.restore().await.unwrap();
+    let (app, downloader) = (Art::new(s.clone()), Art::new(s.clone()));
+    let fetches: Vec<_> = (1..=12)
+        .map(|i| {
+            let art = if i % 2 == 0 {
+                app.clone()
+            } else {
+                downloader.clone()
+            };
+            tokio::spawn(async move { art.fetch(format!("music/{i}/cover"), 300).await })
+        })
+        .collect();
+    for f in fetches {
+        assert_eq!(f.await.unwrap().unwrap().mime_type, "image/jpeg");
+    }
+    let peak = fake
+        .state
+        .art_peak
+        .load(std::sync::atomic::Ordering::SeqCst);
+    assert!((1..=6).contains(&peak), "{peak} artwork requests at once");
+}
