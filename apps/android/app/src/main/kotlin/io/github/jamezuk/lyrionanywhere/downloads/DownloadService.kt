@@ -73,12 +73,23 @@ class DownloadService : Service() {
         // if it then stops at once.
         ensureChannel(this)
         val first = DownloadProgress.of(a?.container?.offline?.state?.value?.downloads)
-        ServiceCompat.startForeground(
-            this,
-            NOTIFICATION_ID,
-            notification(first),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
-        )
+        try {
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                notification(first),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+            )
+        } catch (_: IllegalStateException) {
+            // ForegroundServiceStartNotAllowedException: Android refuses the foreground (from
+            // the background, or Android 15's daily dataSync time used up). The downloads go
+            // on while the process lives and resume when the app next opens.
+            stopSelf()
+            return START_NOT_STICKY
+        } catch (_: SecurityException) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         if (a == null) {
             ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
             stopSelf()
