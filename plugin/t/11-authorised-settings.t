@@ -24,6 +24,8 @@ my ($restarts, $stops) = (0, 0);
 use warnings 'redefine';
 
 my $token = Plugins::LyrionAnywhere::Commands::csrf_token();
+# The settings page handler, as LMS calls it for a page opened at the server's address.
+sub page { my $p = shift; $p->{host} //= '10.0.0.10:9000'; Plugins::LyrionAnywhere::Settings->handler(undef, $p); $p }
 
 sub fresh {
 	$Slim::Utils::Prefs::DIR = tempdir(CLEANUP => 1);
@@ -37,7 +39,7 @@ sub fresh {
 sub save_page {
 	my %v = @_;
 	my $p = { saveSettings => 1, anywhere_form_token => $token, map { ("pref_$_" => $v{$_}) } keys %v };
-	Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+	page($p);
 	return $p;
 }
 
@@ -91,7 +93,7 @@ sub argv_has {
 
 	# The page shows the page's values, not the forged ones, when opened.
 	$prefs->set(listen => '0.0.0.0:9443');
-	Plugins::LyrionAnywhere::Settings->handler(undef, {});
+	page({});
 	is($prefs->get('listen'), '127.0.0.1:9444', 'opening the page puts the pref back before it is shown');
 
 	# Saving the page records the new values and clears the notice.
@@ -106,7 +108,7 @@ sub argv_has {
 
 # --- a refused (forged) page save never updates the copy ---------------------------------
 {
-	Plugins::LyrionAnywhere::Settings->handler(undef, { saveSettings => 1, pref_listen => '0.0.0.0:9443',
+	page({ saveSettings => 1, pref_listen => '0.0.0.0:9443',
 		pref_trusted_proxies => '10.0.0.66' });
 	my %o = Plugins::LyrionAnywhere::Gateway::_options();
 	is($o{listen}, '127.0.0.1:9446', 'a save without the page\'s token changes nothing');
@@ -202,7 +204,7 @@ sub argv_has {
 		ok(!defined Plugins::LyrionAnywhere::Gateway::read_authorised(), "$name: the forged value was not recorded as a first run");
 		is($prefs->get('listen'), '0.0.0.0:9443', "$name: the page will show the pref as it is now");
 		my $view = {};
-		Plugins::LyrionAnywhere::Settings->handler(undef, $view);
+		page($view);
 		like($view->{warning}, qr/^The settings page&#39;s saved values cannot be used: .* save them/, "$name: the page says so, escaped");
 		# Saving the page records what it shows, and the gateway may start again.
 		chmod 0600, copy_file() if -f copy_file() && !-l copy_file();

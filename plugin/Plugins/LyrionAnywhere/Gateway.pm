@@ -372,6 +372,70 @@ sub private_http_origin {
 	return $origin;
 }
 
+# --- the settings page's Host (DNS rebinding; review 2026-11-12, M14) --------------------
+#
+# A web page can point a name of its own at this server's LAN address (DNS rebinding), and
+# the browser then treats LMS's pages as that site's own: it could read the settings page
+# and its token. LMS never checks the Host header, so the settings page and the commands that
+# carry its token do: they work only under an IP address, localhost, this machine's own host
+# name, or a name the admin listed on the page (Other names for this page). A rebinding page
+# always arrives under its own name, never one of those.
+
+my $LABEL = qr/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?/;
+
+# A DNS name in lower case: letters, digits and hyphens in dot-separated labels.
+sub valid_host_name {
+	my $n = shift;
+	return 0 if !defined $n || ref $n || length($n) > 253;
+	return $n =~ /\A$LABEL(?:\.$LABEL)*\z/ ? 1 : 0;
+}
+
+# The Other names setting: comma/space separated host names (empty is fine).
+sub valid_settings_hosts {
+	my $s = shift // '';
+	return 0 if ref $s || $s =~ /[\r\n\x00]/ || length($s) > 2048;
+	return (grep { !valid_host_name(_plain_host($_)) } split_list($s)) ? 0 : 1;
+}
+
+sub _plain_host { my $n = lc(shift // ''); $n =~ s/\.\z//; return $n }
+
+sub settings_host_list { map { _plain_host($_) } split_list(shift) }
+
+# The host part of a Host header: (name, is_ip_literal), lower case, without the port or a
+# final dot; () when it is not a well-formed Host.
+sub host_of {
+	my $h = shift;
+	return () if !defined $h || ref $h || length($h) > 300;
+	if ($h =~ /\A\[([0-9A-Fa-f:.]+)\](?::[0-9]{1,5})?\z/) {
+		return _v6_words($1) ? (lc $1, 1) : ();
+	}
+	return () unless $h =~ /\A([A-Za-z0-9.-]+)(?::[0-9]{1,5})?\z/;
+	my $name = _plain_host($1);
+	return ($name, 1) if _v4_words($name);
+	return valid_host_name($name) ? ($name, 0) : ();
+}
+
+# This machine's own names: its host name, that name's first label, and the label under
+# .local (mDNS). The host name comes from the system (or is given, for tests).
+sub own_host_names {
+	my $h = @_ ? shift : eval { require Sys::Hostname; Sys::Hostname::hostname() };
+	$h = _plain_host($h);
+	return () unless valid_host_name($h);
+	my ($short) = split /\./, $h;
+	my %n = map { $_ => 1 } ($h, $short, "$short.local");
+	return sort keys %n;
+}
+
+# Is a request with this Host header one this server's settings page may answer? @names are
+# the names allowed besides IP literals and localhost.
+sub page_host_allowed {
+	my ($header, @names) = @_;
+	my ($host, $ip) = host_of($header);
+	return 0 unless defined $host;
+	return 1 if $ip || $host eq 'localhost';
+	return (grep { $_ eq $host } @names) ? 1 : 0;
+}
+
 # The gateway's argument list. Returns (\@argv) or (undef, $error).
 sub command_line {
 	my (%o) = @_;
@@ -681,6 +745,7 @@ my %VALIDATE = (
 	download_cache_mb => \&valid_cache_mb,
 	transcode       => sub { my $v = shift // ''; !ref $v && $v =~ /^[01]?\z/ },
 	analysis        => sub { my $v = shift // ''; !ref $v && $v =~ /^[01]?\z/ },
+	settings_hosts  => \&valid_settings_hosts,
 );
 
 sub valid_pref {
@@ -708,7 +773,12 @@ sub register_validators {
 # page's decision, so a forged `pref …:enabled 1` and `restartserver` never bring it back
 # after an admin turned remote access off (review 2026-11-12, M12).
 my @GUARDED = qw(enabled listen public_url trusted_proxies trusted_networks client_ip_header admin_port gateway_path
-	transcode ffmpeg_path download_cache_mb analysis);
+	transcode ffmpeg_path download_cache_mb analysis settings_hosts);
+
+# Guarded prefs newer than the copy's format: a copy without one takes this value, never the
+# current pref, since no value the page saved can predate the setting (a page could have
+# set the pref beforehand, ready for the upgrade). Older settings keep their current value.
+my %INTRODUCED_WITH = (settings_hosts => '');
 
 sub guarded_prefs { @GUARDED }
 sub settings_file { catfile(data_dir(), SETTINGS_FILE) }
@@ -818,6 +888,12 @@ sub authorised_values {
 	}
 	if ($notice_is_problem) { $settings_notice = ''; $notice_is_problem = 0 }
 	unless ($copy) {
+		# Those settings only ever come from the page, which records the others first.
+		for my $n (sort keys %INTRODUCED_WITH) {
+			next if _encode_value($live{$n}) eq _encode_value($INTRODUCED_WITH{$n});
+			$live{$n} = $INTRODUCED_WITH{$n};
+			$prefs->set($n, $live{$n});
+		}
 		record_authorised(\%live);
 		$settings_notice = '';
 		return \%live;
@@ -825,9 +901,15 @@ sub authorised_values {
 	my (%use, @changed, $missing);
 	for my $n (@GUARDED) {
 		if (!exists $copy->{$n}) {
-			# A setting this copy predates: the current value stands.
-			$use{$n} = $live{$n};
+			# A setting this copy predates: the current value stands, or for a setting newer
+			# than the page's record of the others, its default.
 			$missing = 1;
+			if (exists $INTRODUCED_WITH{$n}) {
+				$use{$n} = $INTRODUCED_WITH{$n};
+				push @changed, $n if _encode_value($live{$n}) ne _encode_value($use{$n});
+				next;
+			}
+			$use{$n} = $live{$n};
 			next;
 		}
 		$use{$n} = $copy->{$n};
@@ -888,6 +970,15 @@ sub _options {
 		trusted_networks => [ trusted_network_list($auth->{trusted_networks}) ],
 		allowed_origins => [ $public ? $public : () ],
 	);
+}
+
+# May the settings page (or a command carrying its token) answer a request with this Host
+# header? Names listed on the page count only as the page recorded them.
+sub settings_host_allowed {
+	my $header = shift;
+	my ($auth) = authorised_values();
+	my @listed = $auth ? settings_host_list($auth->{settings_hosts}) : ();
+	return page_host_allowed($header, own_host_names(), @listed);
 }
 
 # Where the plugin lives (for the bundled binary). Set at load, so status is right at once.

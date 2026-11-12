@@ -14,7 +14,8 @@ package Plugins::LyrionAnywhere::Commands;
 # only in part: without the token it says whether the gateway runs and the gist of the last
 # error; the binary and data paths, pid, listen address and the gateway's stderr need the
 # token (review 2026-10-15). The gateway never forwards `anywhere` commands from the
-# internet (it is reserved in its allow-list).
+# internet (it is reserved in its allow-list). The token counts only on a request a web page
+# under another name could not have sent and read (DNS rebinding): see host_ok().
 #
 # The `anywhere tunnel_*` commands (the built-in Cloudflare Tunnel) need the token too,
 # `tunnel_status` and `tunnel_log` included: they return the public hostname and log lines.
@@ -83,6 +84,30 @@ sub token_ok {
 	return $diff == 0 ? 1 : 0;
 }
 
+# Did this command come by a way a page under another name could have sent it and read the
+# answer (DNS rebinding, review 2026-11-12, M14)? Commands carrying the settings page's
+# token are accepted over LMS's JSON-RPC only when the HTTP request's Host is this server's
+# address or one of its names, as for the page itself (Gateway::settings_host_allowed).
+# LMS's telnet CLI has no Host (and a browser cannot read its answers); a request made inside
+# LMS has no source; anything else (Cometd) carries no Host this can check, so is refused.
+sub host_ok {
+	my $request = shift;
+	my $source = eval { $request->source } // '';
+	return 1 if $source eq '' || $source eq 'CLI';
+	return 0 unless $source eq 'JSONRPC';
+	# LMS 9 keeps each JSON-RPC connection's context, with the HTTP request, keyed by the
+	# connection the request names (Slim::Web::JSONRPC). No Host found: refused.
+	my $conn = eval { $request->connectionID };
+	my $host = defined $conn ? eval { $Slim::Web::JSONRPC::contexts{$conn}{httpResponse}->request->header('Host') } : undef;
+	return Plugins::LyrionAnywhere::Gateway::settings_host_allowed($host) ? 1 : 0;
+}
+
+# The settings page's token, given by a caller this may answer.
+sub authorised {
+	my $request = shift;
+	return token_ok($request->getParam('csrf')) && host_ok($request) ? 1 : 0;
+}
+
 # Commands that change state (everything the admin API does with POST, and restart).
 sub mutating {
 	my $op = shift // return 1;
@@ -92,8 +117,13 @@ sub mutating {
 
 sub _refuse {
 	my ($request, $op) = @_;
-	$log->warn("refused `anywhere $op` without the settings page's token");
-	$request->addResult('error', 'refused: use the Lyrion Anywhere settings page (reload it if LMS restarted)');
+	if (token_ok($request->getParam('csrf'))) {
+		$log->warn("refused `anywhere $op` with the settings page's token from a page under another name (see the settings page)");
+		$request->addResult('error', 'refused: open the Lyrion Anywhere settings page at this server\'s IP address, or under a name listed in its Other names for this page');
+	} else {
+		$log->warn("refused `anywhere $op` without the settings page's token");
+		$request->addResult('error', 'refused: use the Lyrion Anywhere settings page (reload it if LMS restarted)');
+	}
 	$request->setStatusDone;
 }
 
@@ -124,7 +154,7 @@ sub public_error {
 sub status {
 	my $request = shift;
 	my $state = Plugins::LyrionAnywhere::Gateway->state;
-	if (token_ok($request->getParam('csrf'))) {
+	if (authorised($request)) {
 		$request->addResult($_, $state->{$_}) for sort keys %$state;
 	} else {
 		$request->addResult($_, $state->{$_}) for @PUBLIC_STATUS;
@@ -135,7 +165,7 @@ sub status {
 
 sub restart {
 	my $request = shift;
-	return _refuse($request, 'restart') unless token_ok($request->getParam('csrf'));
+	return _refuse($request, 'restart') unless authorised($request);
 	# A gateway that is turned off is stopped, never started: only Enabled (and Save) turns
 	# remote access on.
 	my ($started, $why) = Plugins::LyrionAnywhere::Gateway->restart;
@@ -153,7 +183,7 @@ sub admin {
 	my $request = shift;
 	my $op = $request->getRequest(1) // '';
 	# Reads too: devices, diagnostics, audit and users hold personal data.
-	return _refuse($request, $op) unless token_ok($request->getParam('csrf'));
+	return _refuse($request, $op) unless authorised($request);
 	my %args;
 	for my $k (@ARG_NAMES) {
 		my $v = $request->getParam($k);

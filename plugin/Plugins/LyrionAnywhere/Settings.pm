@@ -25,7 +25,7 @@ sub name { 'PLUGIN_LYRIONANYWHERE' }
 sub page { 'plugins/LyrionAnywhere/settings/basic.html' }
 
 sub prefs {
-	return ($prefs, qw(enabled listen public_url trusted_proxies trusted_networks client_ip_header admin_port gateway_path transcode ffmpeg_path download_cache_mb analysis));
+	return ($prefs, qw(enabled listen public_url trusted_proxies trusted_networks client_ip_header admin_port gateway_path transcode ffmpeg_path download_cache_mb analysis settings_hosts));
 }
 
 # The page's checkboxes: a browser sends nothing for one that is not ticked.
@@ -54,7 +54,7 @@ sub _trim {
 sub clean {
 	my ($params) = @_;
 	my (%out, @errors, @notices, %keep);
-	for my $k (qw(listen public_url trusted_proxies trusted_networks client_ip_header admin_port gateway_path ffmpeg_path download_cache_mb)) {
+	for my $k (qw(listen public_url trusted_proxies trusted_networks client_ip_header admin_port gateway_path ffmpeg_path download_cache_mb settings_hosts)) {
 		my $name = "pref_$k";
 		next unless exists $params->{$name};
 		my $v = _trim($params->{$name});
@@ -136,6 +136,17 @@ sub clean {
 				next;
 			}
 		}
+		elsif ($k eq 'settings_hosts') {
+			my @names = Plugins::LyrionAnywhere::Gateway::split_list($v);
+			my @bad = grep { !Plugins::LyrionAnywhere::Gateway::valid_host_name(Plugins::LyrionAnywhere::Gateway::_plain_host($_)) } @names;
+			if (@bad || length($v) > 2048) {
+				push @errors, 'Other names for this page must be host names such as lms.example.lan, comma-separated'
+					. (@bad ? ': not ' . join(', ', map { substr($_, 0, 64) } @bad) : '');
+				next;
+			}
+			my %seen;
+			$v = join ', ', grep { !$seen{$_}++ } Plugins::LyrionAnywhere::Gateway::settings_host_list($v);
+		}
 		elsif ($k eq 'download_cache_mb') {
 			$v = 2048 if $v eq '';
 			unless (Plugins::LyrionAnywhere::Gateway::valid_cache_mb($v)) {
@@ -201,16 +212,27 @@ sub assets_stamp {
 	return substr($sha->hexdigest, 0, 16);
 }
 
+# Where to open the page instead of a refused name: this server's address as the browser's
+# connection reached it, if that is not loopback (behind a proxy on this machine it is).
+sub address_url {
+	my ($class, $http_client) = @_;
+	my ($addr, $port) = map { my $m = $_; scalar eval { $http_client->$m } } qw(sockhost sockport);
+	return undef unless defined $addr && defined $port && $port =~ /\A[0-9]{1,5}\z/;
+	$addr =~ s/\A::ffff:(?=[0-9.]+\z)//i;
+	return undef unless Plugins::LyrionAnywhere::Gateway::valid_ip($addr);
+	return undef if $addr =~ /\A127\./ || $addr eq '::1' || $addr eq '0.0.0.0' || $addr eq '::';
+	my $host = $addr =~ /:/ ? "[$addr]" : $addr;
+	return "http://$host:$port/" . $class->page;
+}
+
 sub handler {
-	my ($class, $client, $params) = @_;
+	my ($class, $client, $params, undef, $http_client) = @_;
 	# The token the form came back with (read before the page's own copy is set below).
 	my $form_token = $params->{anywhere_form_token};
-	# Only this handler hands a refused address back to the page (below): one arriving with
-	# the request, from a crafted link or another site's form, must not reach the field.
-	delete $params->{anywhere_keep_public_url};
-	# The page's script needs this to change accounts (see Commands.pm), and the form sends
-	# it back when saving. Only this page, which other web sites cannot read, carries it.
-	$params->{anywhere_csrf} = Plugins::LyrionAnywhere::Commands::csrf_token();
+	# Only this handler hands a refused address back to the page (below), and only it marks a
+	# save it accepted: values arriving with the request must not reach the page.
+	delete $params->{$_} for qw(anywhere_keep_public_url anywhere_saving anywhere_host_refused anywhere_refused_host
+		anywhere_address_url anywhere_own_names);
 	# LMS serves the page's script and stylesheet with a week-long cache; stamping their
 	# URLs with the files' modification time makes browsers fetch them again after an update.
 	$params->{anywhere_assets} = assets_stamp();
@@ -218,6 +240,28 @@ sub handler {
 	# the page shows them, so it never displays, or saves again, a value it did not set. If
 	# the page's record of them cannot be used, the page says so: saving records them again.
 	my (undef, $record_problem) = Plugins::LyrionAnywhere::Gateway::authorised_values();
+	# DNS rebinding (review 2026-11-12, M14): a web site that points a name of its own at this
+	# server could read this page, and its token, as its own. LMS never checks the Host
+	# header, so this page does: under any other name it shows only why, and how to open it
+	# (at the server's IP address, or under a name the admin lists), saves nothing and gives
+	# out no token. ($params->{host} is the request's Host header, set by LMS after the form's
+	# own values, so a form field cannot stand in for it.)
+	unless (Plugins::LyrionAnywhere::Gateway::settings_host_allowed($params->{host})) {
+		my ($name) = Plugins::LyrionAnywhere::Gateway::host_of($params->{host});
+		$log->warn('refused the settings page under the name ' . (defined $name ? "'$name'" : 'given')
+			. ', which is not this server\'s address or one of its names');
+		delete $params->{$_} for grep { /^pref_/ } keys %$params;
+		delete $params->{saveSettings};
+		$params->{anywhere_csrf} = '';
+		$params->{anywhere_host_refused} = 1;
+		$params->{anywhere_refused_host} = $name // '';
+		$params->{anywhere_address_url} = $class->address_url($http_client) // '';
+		$params->{anywhere_own_names} = join ', ', Plugins::LyrionAnywhere::Gateway::own_host_names();
+		return $class->SUPER::handler($client, $params);
+	}
+	# The page's script needs this to change accounts (see Commands.pm), and the form sends
+	# it back when saving. Only this page, which other web sites cannot read, carries it.
+	$params->{anywhere_csrf} = Plugins::LyrionAnywhere::Commands::csrf_token();
 	# The address the apps use, for pairing QR codes (the page checks it again).
 	$params->{anywhere_public_url} = $prefs->get('public_url') // '';
 	$params->{anywhere_gateway_path_allowed} =
@@ -254,12 +298,9 @@ sub handler {
 		# Notices are saved settings that won't work as they stand: shown after any errors.
 		my @lines = (@$errors, @$notices);
 		$params->{warning} = join('<br>', map { escape_html($_) } @lines) if @lines;
+		# LMS saves the prefs, then calls beforeRender (below: the record), then renders.
+		$params->{anywhere_saving} = 1;
 		my $result = $class->SUPER::handler($client, $params);
-		# This page is the one authorised writer: what it saved is what the gateway runs with.
-		unless (Plugins::LyrionAnywhere::Gateway::settings_saved()) {
-			$params->{warning} = join '<br>', grep { length } $params->{warning} // '',
-				escape_html('The settings could not be recorded for the gateway (see the server log), so it keeps running with the ones saved before.');
-		}
 		my $changed = grep { ($before{$_} // '') ne ($prefs->get($_) // '') } keys %before;
 		if ($changed) {
 			if ($prefs->get('enabled')) { Plugins::LyrionAnywhere::Gateway->restart }
@@ -269,6 +310,17 @@ sub handler {
 	}
 	$params->{warning} = escape_html(ucfirst $record_problem) if $record_problem && !$params->{warning};
 	return $class->SUPER::handler($client, $params);
+}
+
+# LMS calls this after saving the prefs and before rendering the page. This page is the one
+# authorised writer: what it saved is what the gateway runs with. A save that cannot be
+# recorded says so on the page it renders.
+sub beforeRender {
+	my ($class, $params) = @_;
+	return unless $params->{anywhere_saving};
+	return if Plugins::LyrionAnywhere::Gateway::settings_saved();
+	$params->{warning} = join '<br>', grep { length } $params->{warning} // '',
+		escape_html('The settings could not be recorded for the gateway (see the server log), so it keeps running with the ones saved before.');
 }
 
 1;
