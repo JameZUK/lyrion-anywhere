@@ -44,6 +44,7 @@ const MAX_REPLAYS: u8 = 3;
 /// still needed for a station to play, so it is retried, but not on every LMS frame while
 /// LMS's JSON-RPC is unwell).
 const PROXIED_RETRY_AFTER: Duration = Duration::from_secs(30);
+use crate::live::UNFETCHED_SLOT;
 use crate::relay::Relay;
 use crate::{AppState, Gateway};
 
@@ -152,9 +153,11 @@ struct State {
     stream_messages: VecDeque<(u64, String)>,
     /// The level the client asked for (docs/plans/streaming-quality.md).
     quality: crate::live::Quality,
-    /// The current stream is to be re-encoded: the level, its bit rate and the slot it
-    /// holds, until its relay is made.
-    live: Option<(crate::live::Quality, u32, tokio::sync::OwnedSemaphorePermit)>,
+    /// The current stream is to be re-encoded: the slot it holds, until its relay is made.
+    live: Option<PendingLive>,
+    /// Ends the running grace timer (see [`Session::hold_for_resume`]) when dropped: on a
+    /// resume, and when a newer detach starts its own.
+    grace_timer: Option<tokio::sync::oneshot::Sender<()>>,
     relay: Option<Arc<Relay>>,
     /// Client → LMS framing; persists across sockets so a frame split by a drop is safe.
     from_client: ClientFrameReader,
@@ -200,6 +203,15 @@ struct State {
     lookups: VecDeque<Instant>,
 }
 
+/// A stream chosen for re-encoding, waiting for its client to fetch it.
+struct PendingLive {
+    quality: crate::live::Quality,
+    bitrate_k: u32,
+    slot: crate::live::Slot,
+    /// When the `strm` took the slot.
+    since: Instant,
+}
+
 /// Most track-start lookups (LMS `status` queries) one session may make a minute. A
 /// player starts a new track every few minutes; a client looping `STMs` frames must not
 /// turn the gateway into an amplifier against LMS.
@@ -225,6 +237,9 @@ pub struct Session {
     state: Mutex<State>,
     /// The gateway, for listening history (weak: the gateway owns its sessions).
     gw: std::sync::Weak<Gateway>,
+    /// Carried by each live-encode slot this session holds ([`crate::live::Slot`]): the
+    /// count of its other references is the count of slots held.
+    slots: Arc<()>,
 }
 
 #[derive(Debug)]
@@ -254,6 +269,7 @@ impl Session {
     fn new(device: Principal, lms_tx: OwnedWriteHalf, gw: std::sync::Weak<Gateway>) -> Session {
         Session {
             gw,
+            slots: Arc::new(()),
             id: random_id(),
             name: Mutex::new(device.device_name.clone()),
             device,
@@ -281,6 +297,7 @@ impl Session {
                 stream_messages: VecDeque::new(),
                 quality: Default::default(),
                 live: None,
+                grace_timer: None,
                 relay: None,
                 from_client: ClientFrameReader::default(),
                 last_stat: None,
@@ -407,6 +424,8 @@ impl Session {
         st.sent_upto = st.last_seq;
         st.last_heard = Instant::now();
         st.speaking_for_silent = false;
+        // Resumed: the grace timer of the detach ends now, not when its grace would have.
+        st.grace_timer = None;
         st.next_generation += 1;
         let generation = st.next_generation;
         let (kick, kick_rx) = watch::channel(None);
@@ -462,24 +481,41 @@ impl Session {
 
     /// The socket for `generation` has been detached: keep LMS happy and end the session
     /// if nobody resumes it within the grace period.
+    ///
+    /// One timer per session (review low: each detach left a task sleeping for the whole
+    /// grace, up to ten minutes, however soon the client came back, so a device dropping and
+    /// resuming quickly piled them up). It reports to LMS for the client while it is away,
+    /// and ends as soon as the client resumes (or a newer detach starts its own timer).
     fn hold_for_resume(self: &Arc<Self>, gw: &AppState, generation: u64) {
-        // Keep LMS from timing the player out while the client is away.
-        let me = self.clone();
-        tokio::spawn(async move {
-            let mut every = tokio::time::interval(DETACHED_HEARTBEAT);
-            every.tick().await;
-            loop {
-                every.tick().await;
-                if !me.detached_since(generation) {
-                    break;
-                }
-                me.heartbeat(0).await;
+        let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
+        {
+            let mut st = self.state.lock().unwrap();
+            if st.ended {
+                return;
             }
-        });
+            // Dropping the previous timer's sender ends it.
+            st.grace_timer = Some(stop);
+        }
         let (gw, me) = (gw.clone(), self.clone());
         let grace = self.grace();
         tokio::spawn(async move {
-            tokio::time::sleep(grace).await;
+            let deadline = tokio::time::sleep(grace);
+            tokio::pin!(deadline);
+            // Keep LMS from timing the player out while the client is away.
+            let first = tokio::time::Instant::now() + DETACHED_HEARTBEAT;
+            let mut every = tokio::time::interval_at(first, DETACHED_HEARTBEAT);
+            loop {
+                tokio::select! {
+                    _ = &mut stopped => return,
+                    _ = &mut deadline => break,
+                    _ = every.tick() => {
+                        if !me.detached_since(generation) {
+                            return;
+                        }
+                        me.heartbeat(0).await;
+                    }
+                }
+            }
             let expired = {
                 let st = me.state.lock().unwrap();
                 !st.ended && st.attached.is_none() && st.next_generation == generation
@@ -816,8 +852,8 @@ impl Session {
         if st.relay.is_none() {
             let relay = Relay::new(window);
             let relay = match (st.live.take(), live_ffmpeg) {
-                (Some((level, bitrate, permit)), Some(ffmpeg)) => {
-                    relay.with_live(ffmpeg, level, bitrate, permit)
+                (Some(live), Some(ffmpeg)) => {
+                    relay.with_live(ffmpeg, live.quality, live.bitrate_k, live.slot)
                 }
                 // (The player was told Opus but gets FLAC: its core probes the content.)
                 _ if strip_flac && st.stream_format == b'f' => relay.with_flac_strip(),
@@ -881,6 +917,8 @@ impl Session {
             st.ended = true;
             st.log.clear();
             st.log_bytes = 0;
+            st.live = None; // an unused encode slot goes back at once
+            st.grace_timer = None;
             let mut steps = std::mem::take(&mut st.steps);
             steps.extend(st.tracker.finish());
             (st.attached.take(), st.relay.take(), steps)
@@ -1168,6 +1206,9 @@ impl Session {
             warn!(mac = %self.device.mac_string(), %ip, "refused direct stream to non-LMS address");
             None
         };
+        // Slots the user's other devices hold, counted before this session's state is
+        // locked (the sessions table is never locked after a session's state).
+        let others_hold = self.slots_held_by_other_sessions(gw);
         let mut st = self.state.lock().unwrap();
         st.stream_seq += 1;
         st.stream_path = path;
@@ -1199,13 +1240,53 @@ impl Session {
             );
         }
         let bitrate = crate::live::wanted(s.format, st.quality, gw.live_ffmpeg().is_some())?;
+        if others_hold >= crate::live::per_user(gw.cfg.live_transcode_jobs) {
+            info!(mac = %self.device.mac_string(), held = others_hold, "this user's devices hold their share of live-encode slots; sending the stream as it is");
+            return None;
+        }
         let Some(permit) = gw.live_slot() else {
             info!(mac = %self.device.mac_string(), "no free live-encode slot; sending the stream as it is");
             return None;
         };
         let rewritten = crate::live::rewrite_strm(payload)?;
-        st.live = Some((st.quality, bitrate, permit));
+        st.live = Some(PendingLive {
+            quality: st.quality,
+            bitrate_k: bitrate,
+            slot: crate::live::Slot::new(permit, self.slots.clone()),
+            since: Instant::now(),
+        });
         Some(rewritten)
+    }
+
+    /// Live-encode slots this session holds, wherever they are (pending, in its relay, in
+    /// an encoder).
+    pub fn live_slots_held(&self) -> usize {
+        Arc::strong_count(&self.slots) - 1
+    }
+
+    /// Live-encode slots the same user's other sessions hold (the per-user cap).
+    fn slots_held_by_other_sessions(&self, gw: &Gateway) -> usize {
+        gw.sessions
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|s| s.device.user_id == self.device.user_id && s.id != self.id)
+            .map(|s| s.live_slots_held())
+            .sum()
+    }
+
+    /// Give back a live-encode slot taken for a stream the client has not fetched within
+    /// [`UNFETCHED_SLOT`] (its relay is made when it does).
+    fn reclaim_unfetched_slot(&self) {
+        let mut st = self.state.lock().unwrap();
+        if st
+            .live
+            .as_ref()
+            .is_some_and(|l| l.since.elapsed() >= UNFETCHED_SLOT)
+        {
+            st.live = None;
+            info!(mac = %self.device.mac_string(), stream = st.stream_seq, "stream not fetched; its live-encode slot given back");
+        }
     }
 
     /// The upstream response for stream `n` is in: tell the client what LMS served (with a
@@ -1338,7 +1419,8 @@ fn name_reply(data: &[u8], fallback: &str) -> Vec<u8> {
 
 /// For the session's lifetime: while the attached client is silent (its socket may have
 /// died without either side noticing yet), report to LMS on its behalf, as while detached,
-/// so LMS doesn't drop the player and end the session before the client can resume.
+/// so LMS doesn't drop the player and end the session before the client can resume. Also
+/// gives back a live-encode slot its stream was never fetched for ([`UNFETCHED_SLOT`]).
 async fn speak_for_silent_client(gw: AppState, session: Arc<Session>) {
     let mut every = tokio::time::interval(DETACHED_HEARTBEAT);
     every.tick().await;
@@ -1350,6 +1432,7 @@ async fn speak_for_silent_client(gw: AppState, session: Arc<Session>) {
         if session.attached_but_silent(gw.cfg.client_silence) {
             session.heartbeat(0).await;
         }
+        session.reclaim_unfetched_slot();
     }
 }
 
@@ -1717,6 +1800,50 @@ mod tests {
             *first.kick.borrow(),
             Some((4000, "replaced by a newer connection"))
         );
+    }
+
+    fn bare_gateway() -> AppState {
+        crate::Gateway::new(
+            crate::Config::default(),
+            Arc::new(crate::accounts::Accounts::in_memory().unwrap()),
+        )
+    }
+
+    /// Regression (review low): every detach left a task sleeping for the whole grace (up to
+    /// ten minutes) however soon the client came back, and another until its next heartbeat
+    /// tick, so a device dropping and resuming quickly piled them up. Now a session runs one
+    /// grace timer at most, and a resume ends it at once.
+    #[tokio::test]
+    async fn quick_drops_and_resumes_leave_no_timers_behind() {
+        let gw = bare_gateway();
+        let (s, mut g) = session().await;
+        s.set_grace(Duration::from_secs(600));
+        let metrics = tokio::runtime::Handle::current().metrics();
+        let before = metrics.num_alive_tasks();
+        for _ in 0..200 {
+            s.detach(&gw, g);
+            g = s.attach(0).unwrap().generation;
+        }
+        // Long enough for ended timers to finish, far short of any grace or heartbeat.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let after = metrics.num_alive_tasks();
+        assert!(after <= before + 1, "{before} tasks before, {after} after");
+        // Dropping twice without a resume replaces the timer rather than adding one.
+        s.detach(&gw, g);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let one = metrics.num_alive_tasks();
+        s.hold_for_resume(&gw, g);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            metrics.num_alive_tasks() <= one,
+            "a second timer was left running"
+        );
+        // A drop that isn't resumed still ends the session when its grace runs out.
+        let g = s.attach(0).unwrap().generation;
+        s.set_grace(Duration::from_millis(100));
+        s.detach(&gw, g);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(s.is_ended(), "the grace expired");
     }
 
     /// Regression: a socket whose outbound channel had closed (its writer gone before the
