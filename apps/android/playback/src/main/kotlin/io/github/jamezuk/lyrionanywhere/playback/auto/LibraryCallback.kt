@@ -178,7 +178,9 @@ class LibraryCallback(
         ) {
             return Futures.immediateFailedFuture(UnsupportedOperationException("not playable here"))
         }
-        // Only the id and a spoken query are passed on: never a URI from outside.
+        // Only the id and a spoken query are passed on: never a URI from outside, and none of
+        // the caller's metadata (Media3 shows a new item's metadata while it loads, and would
+        // load its artwork URI for the notification). What plays is described by the app.
         return Futures.immediateFuture(
             mediaItems.map { m ->
                 MediaItem.Builder()
@@ -188,7 +190,6 @@ class LibraryCallback(
                             .setSearchQuery(m.requestMetadata.searchQuery?.take(AutoCatalogue.MAX_QUERY))
                             .build(),
                     )
-                    .setMediaMetadata(m.mediaMetadata)
                     .build()
             }.toMutableList(),
         )
