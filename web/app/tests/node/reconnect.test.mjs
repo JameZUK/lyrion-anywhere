@@ -204,7 +204,7 @@ test('a failed rate is asked for again after a pause that grows; a new rate is a
 
 test('the worker hears of a failed rate and tells RateRequest', () => {
   const src = readFileSync(new URL('../../static/player/player-worker.js', import.meta.url), 'utf8');
-  assert.match(src, /msg\.cmd === 'rate-failed'\) \{?\s*rateRequest\.failed\(msg\.rate, now\(\)\)/);
+  assert.match(src, /msg\.cmd === 'rate-failed'\) \{(\s*\/\/[^\n]*)*\s*rateRequest\.failed\(msg\.rate, now\(\)\)/);
   assert.match(src, /readyRate = msg\.rate;\s*rateRequest\.ready\(\);/);
 });
 
