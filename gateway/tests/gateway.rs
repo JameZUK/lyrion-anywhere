@@ -1365,13 +1365,22 @@ impl Drop for StaticDir {
     }
 }
 
+/// `static_files::service` on its own, as the gateway serves the web app: its address.
+async fn bare_static(dir: std::path::PathBuf) -> String {
+    let app = Router::new().fallback_service(anywhere_gateway::static_files::service(dir));
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
 async fn fetch(
-    h: &Harness,
+    base: &str,
     method: reqwest::Method,
     path: &str,
     headers: &[(&str, &[u8])],
 ) -> reqwest::Response {
-    let mut r = reqwest::Client::new().request(method, h.url(path));
+    let mut r = reqwest::Client::new().request(method, format!("{base}{path}"));
     for (k, v) in headers {
         r = r.header(*k, reqwest::header::HeaderValue::from_bytes(v).unwrap());
     }
@@ -1385,13 +1394,12 @@ fn etag(r: &reqwest::Response) -> String {
         .to_string()
 }
 
+const PAGE: &[u8] = b"<!doctype html><script src=\"/_app/immutable/start.abc123.js\"></script>";
+
 #[tokio::test]
 async fn revalidated_files_carry_a_content_etag() {
-    use anywhere_gateway::static_files::content_tag;
-    use reqwest::Method;
     let dir = StaticDir::new("static-etag");
-    let page = b"<!doctype html><script src=\"/_app/immutable/start.abc123.js\"></script>";
-    dir.write("index.html", page);
+    dir.write("index.html", PAGE);
     dir.write(
         "service-worker.js",
         b"self.addEventListener('fetch', () => {})",
@@ -1399,17 +1407,32 @@ async fn revalidated_files_carry_a_content_etag() {
     dir.write("_app/immutable/start.abc123.js", b"console.log('start')");
     let d = dir.0.clone();
     let h = harness_with(move |c| c.static_dir = Some(d)).await;
+    // Through the gateway (with its cache policy), and the service on its own.
+    content_etag_checks(&h.url(""), true).await;
+    content_etag_checks(&bare_static(dir.0.clone()).await, false).await;
+}
+
+/// `policy`: the gateway's own headers are there (its `Cache-Control`).
+async fn content_etag_checks(base: &str, policy: bool) {
+    use anywhere_gateway::static_files::content_tag;
+    use reqwest::Method;
+    let page = PAGE;
 
     // The page: a strong tag that is a hash of the content, the same at both its paths.
-    let r = fetch(&h, Method::GET, "/", &[]).await;
+    let r = fetch(base, Method::GET, "/", &[]).await;
     assert_eq!(r.status(), 200);
     let tag = etag(&r);
     assert_eq!(tag, content_tag(page).to_str().unwrap());
-    assert_eq!(r.headers()["cache-control"], "no-cache");
+    if policy {
+        assert_eq!(r.headers()["cache-control"], "no-cache");
+    }
     assert_eq!(r.bytes().await.unwrap().as_ref(), page);
-    assert_eq!(etag(&fetch(&h, Method::GET, "/index.html", &[]).await), tag);
+    assert_eq!(
+        etag(&fetch(base, Method::GET, "/index.html", &[]).await),
+        tag
+    );
     assert_ne!(
-        etag(&fetch(&h, Method::GET, "/service-worker.js", &[]).await),
+        etag(&fetch(base, Method::GET, "/service-worker.js", &[]).await),
         tag
     );
 
@@ -1420,28 +1443,30 @@ async fn revalidated_files_carry_a_content_etag() {
         format!("\"other\", {tag}, \"more\""),
         "*".to_string(),
     ] {
-        let r = fetch(&h, Method::GET, "/", &[("if-none-match", inm.as_bytes())]).await;
+        let r = fetch(base, Method::GET, "/", &[("if-none-match", inm.as_bytes())]).await;
         assert_eq!(r.status(), 304, "{inm}");
         assert_eq!(etag(&r), tag, "{inm}");
-        assert_eq!(r.headers()["cache-control"], "no-cache", "{inm}");
+        if policy {
+            assert_eq!(r.headers()["cache-control"], "no-cache", "{inm}");
+        }
         assert!(r.bytes().await.unwrap().is_empty(), "{inm}");
     }
-    let r = fetch(&h, Method::GET, "/", &[("if-none-match", b"\"other\"")]).await;
+    let r = fetch(base, Method::GET, "/", &[("if-none-match", b"\"other\"")]).await;
     assert_eq!(r.status(), 200);
     assert_eq!(r.bytes().await.unwrap().as_ref(), page);
     // Dates do not revalidate these files: every file in a release zip has the same date.
     let future = b"Fri, 01 Jan 2100 00:00:00 GMT";
-    let r = fetch(&h, Method::GET, "/", &[("if-modified-since", future)]).await;
+    let r = fetch(base, Method::GET, "/", &[("if-modified-since", future)]).await;
     assert_eq!(r.status(), 200);
 
     // HEAD: the headers of the GET, the tag included, and no body; 304 the same way.
-    let r = fetch(&h, Method::HEAD, "/index.html", &[]).await;
+    let r = fetch(base, Method::HEAD, "/index.html", &[]).await;
     assert_eq!(r.status(), 200);
     assert_eq!(etag(&r), tag);
     assert_eq!(r.headers()["content-length"], page.len().to_string());
     assert!(r.bytes().await.unwrap().is_empty());
     let r = fetch(
-        &h,
+        base,
         Method::HEAD,
         "/index.html",
         &[("if-none-match", tag.as_bytes())],
@@ -1449,26 +1474,28 @@ async fn revalidated_files_carry_a_content_etag() {
     .await;
     assert_eq!(r.status(), 304);
     assert_eq!(
-        fetch(&h, Method::HEAD, "/missing.js", &[]).await.status(),
+        fetch(base, Method::HEAD, "/missing.js", &[]).await.status(),
         404
     );
 
     // Content-hashed files are left to ServeDir: its own tag and date logic still apply.
-    let r = fetch(&h, Method::GET, "/_app/immutable/start.abc123.js", &[]).await;
+    let r = fetch(base, Method::GET, "/_app/immutable/start.abc123.js", &[]).await;
     assert_eq!(r.status(), 200);
     let served = etag(&r);
     assert_ne!(
         served,
         content_tag(b"console.log('start')").to_str().unwrap()
     );
-    assert!(
-        r.headers()["cache-control"]
-            .to_str()
-            .unwrap()
-            .contains("immutable")
-    );
+    if policy {
+        assert!(
+            r.headers()["cache-control"]
+                .to_str()
+                .unwrap()
+                .contains("immutable")
+        );
+    }
     let r = fetch(
-        &h,
+        base,
         Method::GET,
         "/_app/immutable/start.abc123.js",
         &[("if-none-match", served.as_bytes())],
@@ -1476,7 +1503,7 @@ async fn revalidated_files_carry_a_content_etag() {
     .await;
     assert_eq!(r.status(), 304);
     let r = fetch(
-        &h,
+        base,
         Method::GET,
         "/_app/immutable/start.abc123.js",
         &[("if-modified-since", future)],
@@ -1484,17 +1511,19 @@ async fn revalidated_files_carry_a_content_etag() {
     .await;
     assert_eq!(r.status(), 304);
 
-    // Range requests pass through as ServeDir answers them; other methods are refused; a
-    // route is not a static file and carries no tag.
-    let r = fetch(&h, Method::GET, "/index.html", &[("range", b"bytes=0-4")]).await;
+    // Range requests pass through as ServeDir answers them; other methods are refused.
+    let r = fetch(base, Method::GET, "/index.html", &[("range", b"bytes=0-4")]).await;
     assert_eq!(r.status(), 206);
     assert_eq!(r.bytes().await.unwrap().as_ref(), b"<!doc");
-    let r = fetch(&h, Method::POST, "/index.html", &[]).await;
+    let r = fetch(base, Method::POST, "/index.html", &[]).await;
     assert_eq!(r.status(), 405);
     assert!(!r.headers().contains_key("etag"));
-    let r = fetch(&h, Method::GET, "/healthz", &[]).await;
-    assert_eq!(r.status(), 200);
-    assert!(!r.headers().contains_key("etag"));
+    if policy {
+        // A route is not a static file and carries no tag.
+        let r = fetch(base, Method::GET, "/healthz", &[]).await;
+        assert_eq!(r.status(), 200);
+        assert!(!r.headers().contains_key("etag"));
+    }
 }
 
 /// Regression: the release zip gives every file the date 2020-01-01, and the page's size
@@ -1503,48 +1532,72 @@ async fn revalidated_files_carry_a_content_etag() {
 /// page got 304 and kept it, with scripts the server no longer had: a white screen.
 #[tokio::test]
 async fn a_file_changed_without_its_date_or_size_changing_is_served_afresh() {
-    use reqwest::Method;
-    let dir = StaticDir::new("static-redeploy");
-    let release_a = b"<!doctype html><script src=\"/_app/immutable/start.aaaaaa.js\"></script>";
-    let release_b = b"<!doctype html><script src=\"/_app/immutable/start.bbbbbb.js\"></script>";
-    assert_eq!(release_a.len(), release_b.len());
-    dir.write("index.html", release_a);
-    dir.date_like_a_release("index.html");
-    let d = dir.0.clone();
-    let h = harness_with(move |c| c.static_dir = Some(d)).await;
+    for bare in [false, true] {
+        let dir = StaticDir::new(if bare {
+            "static-redeploy-bare"
+        } else {
+            "static-redeploy"
+        });
+        dir.write("index.html", RELEASE_A);
+        dir.date_like_a_release("index.html");
+        let d = dir.0.clone();
+        let h = harness_with(move |c| c.static_dir = Some(d)).await;
+        let base = if bare {
+            bare_static(dir.0.clone()).await
+        } else {
+            h.url("")
+        };
+        redeploy_checks(&dir, &base).await;
+    }
+}
 
-    let r = fetch(&h, Method::GET, "/", &[]).await;
+const RELEASE_A: &[u8] =
+    b"<!doctype html><script src=\"/_app/immutable/start.aaaaaa.js\"></script>";
+const RELEASE_B: &[u8] =
+    b"<!doctype html><script src=\"/_app/immutable/start.bbbbbb.js\"></script>";
+
+async fn redeploy_checks(dir: &StaticDir, base: &str) {
+    use reqwest::Method;
+    assert_eq!(RELEASE_A.len(), RELEASE_B.len());
+
+    let r = fetch(base, Method::GET, "/", &[]).await;
     assert_eq!(r.status(), 200);
     let tag_a = etag(&r);
     let date_a = r.headers()["last-modified"].to_str().unwrap().to_string();
     assert_eq!(date_a, "Wed, 01 Jan 2020 00:00:00 GMT");
 
     // The next release is deployed: same name, same size, same date, other content.
-    dir.write("index.html", release_b);
+    dir.write("index.html", RELEASE_B);
     dir.date_like_a_release("index.html");
 
-    let r = fetch(&h, Method::GET, "/", &[("if-none-match", tag_a.as_bytes())]).await;
+    let r = fetch(
+        base,
+        Method::GET,
+        "/",
+        &[("if-none-match", tag_a.as_bytes())],
+    )
+    .await;
     assert_eq!(
         r.status(),
         200,
         "the changed page is served, not a stale 304"
     );
     assert_ne!(etag(&r), tag_a);
-    assert_eq!(r.bytes().await.unwrap().as_ref(), release_b);
+    assert_eq!(r.bytes().await.unwrap().as_ref(), RELEASE_B);
     let r = fetch(
-        &h,
+        base,
         Method::GET,
         "/",
         &[("if-modified-since", date_a.as_bytes())],
     )
     .await;
     assert_eq!(r.status(), 200, "a date cannot tell the two releases apart");
-    assert_eq!(r.bytes().await.unwrap().as_ref(), release_b);
+    assert_eq!(r.bytes().await.unwrap().as_ref(), RELEASE_B);
     // A browser holding a page from a release before 0.7.2 revalidates with ServeDir's
     // date-and-size tag; it gets the new page too.
-    let old_style = format!("\"5e0be100.00000000-{:x}\"", release_b.len());
+    let old_style = format!("\"5e0be100.00000000-{:x}\"", RELEASE_B.len());
     let r = fetch(
-        &h,
+        base,
         Method::GET,
         "/",
         &[("if-none-match", old_style.as_bytes())],
@@ -1557,21 +1610,25 @@ async fn a_file_changed_without_its_date_or_size_changing_is_served_afresh() {
 /// layer: nothing panics, nothing leaks, big files still stream.
 #[tokio::test]
 async fn static_revalidation_is_robust() {
-    use anywhere_gateway::static_files::{MAX_HASHED, content_tag};
-    use reqwest::Method;
     let dir = StaticDir::new("static-robust");
     dir.write("index.html", b"<!doctype html>");
-    let big = vec![b'x'; MAX_HASHED + 1];
+    let big = vec![b'x'; anywhere_gateway::static_files::MAX_HASHED + 1];
     dir.write("big.bin", &big);
     let d = dir.0.clone();
     let h = harness_with(move |c| c.static_dir = Some(d)).await;
+    robustness_checks(&h.url(""), &big).await;
+    robustness_checks(&bare_static(dir.0.clone()).await, &big).await;
+}
 
+async fn robustness_checks(base: &str, big: &[u8]) {
+    use anywhere_gateway::static_files::content_tag;
+    use reqwest::Method;
     let mut junk = b"\"".repeat(4000);
     junk.extend(b", W/\xff\xfe\x80, *garbage, \"\"\"");
-    let r = fetch(&h, Method::GET, "/", &[("if-none-match", &junk)]).await;
+    let r = fetch(base, Method::GET, "/", &[("if-none-match", &junk)]).await;
     assert_eq!(r.status(), 200);
     let r = fetch(
-        &h,
+        base,
         Method::GET,
         "/",
         &[("if-modified-since", b"not a date")],
@@ -1579,7 +1636,7 @@ async fn static_revalidation_is_robust() {
     .await;
     assert_eq!(r.status(), 200);
     let r = fetch(
-        &h,
+        base,
         Method::GET,
         "/",
         &[("if-none-match", b""), ("if-modified-since", b"")],
@@ -1591,17 +1648,116 @@ async fn static_revalidation_is_robust() {
         "/%2e%2e/Cargo.toml",
         "/..%2f..%2fCargo.toml",
         "/%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+        "/%2Fetc%2Fpasswd",
+        "/%ff",
     ] {
-        let r = fetch(&h, Method::GET, p, &[]).await;
+        let r = fetch(base, Method::GET, p, &[]).await;
         assert_eq!(r.status(), 404, "{p}");
         assert!(!r.headers().contains_key("etag"), "{p}");
     }
 
     // Beyond the hashing limit the file streams as ServeDir serves it, with its own tag.
-    let r = fetch(&h, Method::GET, "/big.bin", &[]).await;
+    let r = fetch(base, Method::GET, "/big.bin", &[]).await;
     assert_eq!(r.status(), 200);
-    assert_ne!(etag(&r), content_tag(&big).to_str().unwrap());
+    assert_ne!(etag(&r), content_tag(big).to_str().unwrap());
     assert_eq!(r.bytes().await.unwrap().len(), big.len());
+}
+
+/// Regression (review M4): every GET or HEAD of a revalidated file read the whole file and
+/// hashed it on an async worker, signed in or not, even to answer 304; a loop of HEADs with a
+/// fresh query string each (which no CDN caches) kept the gateway busy. Now a file that has
+/// settled is hashed once; after that HEADs, 304s and GETs (whose body streams as ever) use
+/// its kept tag, until the file changes in any way.
+#[tokio::test]
+async fn a_settled_file_is_hashed_once_however_often_it_is_asked_for() {
+    use anywhere_gateway::static_files::{RACY_MARGIN, content_tag, times_hashed};
+    use reqwest::Method;
+    let dir = StaticDir::new("static-kept");
+    std::fs::create_dir_all(dir.0.join("player/pkg")).unwrap();
+    let wasm: Vec<u8> = (0..1024 * 1024u32).map(|i| (i % 251) as u8).collect();
+    dir.write("player/pkg/anywhere_wasm_bg.wasm", &wasm);
+    dir.write("index.html", RELEASE_A);
+    let wasm_path = dir.0.join("player/pkg/anywhere_wasm_bg.wasm");
+    let page_path = dir.0.join("index.html");
+    // Long enough after the writes for the files to count as settled.
+    tokio::time::sleep(RACY_MARGIN + Duration::from_millis(200)).await;
+    let base = bare_static(dir.0.clone()).await;
+    let want = content_tag(&wasm).to_str().unwrap().to_string();
+    for i in 0..40 {
+        let path = format!("/player/pkg/anywhere_wasm_bg.wasm?{i}");
+        let r = fetch(&base, Method::HEAD, &path, &[]).await;
+        assert_eq!(r.status(), 200);
+        assert_eq!(etag(&r), want);
+        let r = fetch(
+            &base,
+            Method::GET,
+            &path,
+            &[("if-none-match", want.as_bytes())],
+        )
+        .await;
+        assert_eq!(r.status(), 304);
+    }
+    let r = fetch(&base, Method::GET, "/player/pkg/anywhere_wasm_bg.wasm", &[]).await;
+    assert_eq!(etag(&r), want);
+    assert_eq!(
+        r.bytes().await.unwrap().as_ref(),
+        &wasm[..],
+        "streamed whole"
+    );
+    assert_eq!(times_hashed(&wasm_path), 1, "hashed once, then kept");
+
+    // A change of any kind is noticed at once. Just after it the file is hashed on every
+    // request (a change within the same tick of the clock could otherwise go unseen) ...
+    let tag_a = etag(&fetch(&base, Method::GET, "/", &[]).await);
+    assert_eq!(times_hashed(&page_path), 1);
+    dir.write("index.html", RELEASE_B);
+    let tag_b = content_tag(RELEASE_B).to_str().unwrap().to_string();
+    let written = std::time::Instant::now();
+    for _ in 0..3 {
+        let r = fetch(
+            &base,
+            Method::GET,
+            "/",
+            &[("if-none-match", tag_a.as_bytes())],
+        )
+        .await;
+        assert_eq!(r.status(), 200);
+        assert_eq!(etag(&r), tag_b);
+    }
+    if written.elapsed() < RACY_MARGIN {
+        assert_eq!(
+            times_hashed(&page_path),
+            4,
+            "hashed again while it may still change"
+        );
+    }
+    // ... and once it has settled, once more and then not again.
+    tokio::time::sleep(RACY_MARGIN + Duration::from_millis(200)).await;
+    for _ in 0..3 {
+        let r = fetch(&base, Method::HEAD, "/", &[]).await;
+        assert_eq!(etag(&r), tag_b);
+    }
+    let settled = times_hashed(&page_path);
+    for _ in 0..3 {
+        let r = fetch(&base, Method::HEAD, "/", &[]).await;
+        assert_eq!(etag(&r), tag_b);
+    }
+    assert_eq!(times_hashed(&page_path), settled, "kept once settled");
+
+    // A deploy that renames a new copy into place, with the old date and size, too.
+    let tmp = dir.0.join(".index.html.new");
+    std::fs::write(&tmp, RELEASE_A).unwrap();
+    std::fs::rename(&tmp, &page_path).unwrap();
+    dir.date_like_a_release("index.html");
+    let r = fetch(
+        &base,
+        Method::GET,
+        "/",
+        &[("if-none-match", tag_b.as_bytes())],
+    )
+    .await;
+    assert_eq!(r.status(), 200);
+    assert_eq!(etag(&r), tag_a);
 }
 
 // ---------------------------------------------------------------------------
