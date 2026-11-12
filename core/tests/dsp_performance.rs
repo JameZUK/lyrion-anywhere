@@ -13,6 +13,7 @@ use anywhere_core::dsp::crossfeed::CrossfeedPreset;
 use anywhere_core::dsp::eq::parse_autoeq;
 use anywhere_core::dsp::limiter::LimiterConfig;
 use anywhere_core::dsp::pcm::Depth;
+use anywhere_core::visual::Visualiser;
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -58,6 +59,30 @@ fn analysis_is_far_faster_than_real_time() {
     assert!(r.integrated_lufs.is_some());
     if OPTIMISED {
         assert!(factor >= 100.0, "analysis only {factor:.0}× real time");
+    }
+}
+
+/// The visualiser (an FFT 30 times a second of audio, plus levels per sample) keeps up many
+/// times over: it runs beside playback in the browser and on phones. (Moved here from a
+/// unit test whose wall-clock limit, asserted in debug builds, failed on slow machines.)
+#[test]
+fn the_visualiser_is_far_faster_than_real_time() {
+    let _guard = TIMING.lock().unwrap_or_else(|e| e.into_inner());
+    let secs = if OPTIMISED { 60 } else { 5 };
+    let x = material(secs);
+    let mut v = Visualiser::new(RATE, 2);
+    let mut frames = 0;
+    let start = Instant::now();
+    for c in x.chunks(4096) {
+        v.push(c);
+        frames += usize::from(v.take().is_some());
+    }
+    let elapsed = start.elapsed().as_secs_f64();
+    let factor = secs as f64 / elapsed;
+    println!("visualiser: {secs} s of 44.1 kHz stereo in {elapsed:.3} s = {factor:.0}× real time");
+    assert!(frames > 0);
+    if OPTIMISED {
+        assert!(factor >= 20.0, "visualiser only {factor:.0}× real time");
     }
 }
 

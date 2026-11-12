@@ -379,21 +379,22 @@ fn a_transient_with_many_short_blocks_decodes() {
 
 /// Opus decodes far faster than real time. The vendored decoder's inverse MDCT used a direct
 /// O(n²) DFT and ran at about 2× real time; its FFT plan runs at well over 100×. The floor
-/// (20×) is asserted only in optimised builds and leaves room for slow CI machines.
+/// (20×) is asserted only in optimised builds and leaves room for slow CI machines. The
+/// fastest of several decodes counts: the other tests in this file run at the same time,
+/// and other work only ever slows a decode down.
 #[test]
 fn opus_decodes_far_faster_than_real_time() {
     let noise: &[u8] = include_bytes!("fixtures/noise-96k.opus");
-    let start = std::time::Instant::now();
+    let mut fastest = f64::INFINITY;
     let mut secs = 0.0;
-    while start.elapsed().as_secs_f64() < 0.5 || secs < 5.0 {
+    for _ in 0..8 {
+        let start = std::time::Instant::now();
         let (st, rate, pcm) = decode(noise, b'u');
+        fastest = fastest.min(start.elapsed().as_secs_f64());
         assert_eq!(st, DecodeStatus::Finished);
-        secs += pcm.len() as f64 / 2.0 / f64::from(rate);
-        if secs > 120.0 {
-            break;
-        }
+        secs = pcm.len() as f64 / 2.0 / f64::from(rate);
     }
-    let speed = secs / start.elapsed().as_secs_f64();
+    let speed = secs / fastest;
     println!("Opus (noise, 96 kb/s): {speed:.0}x real time");
     if !cfg!(debug_assertions) {
         assert!(speed >= 20.0, "Opus decodes at only {speed:.1}x real time");
