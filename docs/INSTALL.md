@@ -332,7 +332,7 @@ The proxy terminates HTTPS and passes requests, including WebSockets, to the gat
 
 - **Set `X-Forwarded-For` to the client's address** (replacing or appending both work). The gateway uses it for sign-in lockouts, reading from the right, so a client can't choose its own by sending the header itself.
 - **Pass WebSocket upgrades** and allow long-lived connections (players and audio streams stay open for hours).
-- **Add no Content-Security-Policy of its own.** The gateway sets its own strict headers. Adding HSTS is good.
+- **Add no Content-Security-Policy of its own.** The gateway sets its own strict headers, HSTS included (on HTTPS that arrives through the proxy), so the proxy need not add it.
 
 ### 4.1 nginx
 
@@ -359,7 +359,6 @@ Caddy gets a certificate automatically and replaces `X-Forwarded-For` by default
 ```caddy
 music.example.com {
     reverse_proxy 127.0.0.1:9443
-    header Strict-Transport-Security "max-age=31536000"
 }
 ```
 

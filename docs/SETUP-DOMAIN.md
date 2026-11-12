@@ -67,12 +67,11 @@ That is it. Two-step verification can be turned on by each user under *Settings 
 
 If you already have nginx, Caddy or another proxy with a certificate, skip the tunnel and point the proxy at the gateway's listen address (`127.0.0.1:9443` on the same machine). The proxy must pass the client's address in `X-Forwarded-For`, pass WebSocket upgrades, and allow long-lived connections; it must not add a Content-Security-Policy of its own.
 
-**Caddy** is two lines:
+**Caddy** is one line:
 
 ```caddy
 music.example.com {
     reverse_proxy 127.0.0.1:9443
-    header Strict-Transport-Security "max-age=31536000"
 }
 ```
 

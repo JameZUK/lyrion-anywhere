@@ -112,8 +112,8 @@ impl GatingHistogram {
             // Nearest-rank on the sorted values.
             let rank = ((q * (n - 1) as f64).round() as u64).min(n - 1);
             let mut seen = 0;
-            for i in start..BINS {
-                seen += self.count[i];
+            for (i, count) in self.count.iter().enumerate().skip(start) {
+                seen += count;
                 if seen > rank {
                     return Self::bin_lufs(i) + BIN_LU / 2.0;
                 }
