@@ -2,7 +2,6 @@ package io.github.jamezuk.lyrionanywhere
 
 import android.content.Context
 import android.os.Build
-import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.preferencesDataStoreFile
 import io.github.jamezuk.lyrionanywhere.data.RustRatingsRepository
 import io.github.jamezuk.lyrionanywhere.data.RatingsRepository
@@ -68,7 +67,7 @@ class AppContainer(context: Context, scope: CoroutineScope) {
     private val app = context.applicationContext
 
     val settings: SettingsStore = DataStoreSettings(
-        PreferenceDataStoreFactory.create { app.preferencesDataStoreFile("settings") },
+        io.github.jamezuk.lyrionanywhere.data.settingsDataStore { app.preferencesDataStoreFile("settings") },
     )
 
     private val secureStore = EncryptedCredentialStore(
