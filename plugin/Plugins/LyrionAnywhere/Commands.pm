@@ -128,9 +128,12 @@ sub _refuse {
 }
 
 sub register {
-	# [needsClient, isQuery, hasTags, function]
+	# [needsClient, isQuery, hasTags, function]. Every command carrying the page's token is
+	# registered as a query, restart included: LMS sends each command (non-query) that runs,
+	# with its arguments, to every CLI client subscribed with `listen`, which would hand them
+	# the token (review 2026-11-12). play_record is the gateway's, signed instead (Plays.pm).
 	Slim::Control::Request::addDispatch(['anywhere', 'status'],  [0, 1, 1, \&status]);
-	Slim::Control::Request::addDispatch(['anywhere', 'restart'], [0, 0, 1, \&restart]);
+	Slim::Control::Request::addDispatch(['anywhere', 'restart'], [0, 1, 1, \&restart]);
 	Slim::Control::Request::addDispatch(['anywhere', 'play_record'], [0, 0, 1, \&Plugins::LyrionAnywhere::Plays::command]);
 	for my $op (Plugins::LyrionAnywhere::Admin::operations()) {
 		Slim::Control::Request::addDispatch(['anywhere', $op], [0, 1, 1, \&admin]);

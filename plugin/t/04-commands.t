@@ -18,6 +18,23 @@ ok($Slim::Control::Request::DISPATCH{"anywhere $_"}, "$_ registered")
 		tunnel_status tunnel_log tunnel_install tunnel_update tunnel_register tunnel_create tunnel_start tunnel_stop tunnel_quick tunnel_remove);
 is($Slim::Control::Request::DISPATCH{'anywhere users'}[0], 0, 'no player needed');
 
+# Regression (review 2026-11-12): LMS sends every command that is not a query, arguments and
+# all, to each CLI client subscribed with `listen`, so `anywhere restart csrf:<token>` handed
+# the settings page's token to anyone on the LAN listening. Every command that takes the
+# token is a query; play_record (the gateway's) carries a signature and a one-time key instead.
+{
+	my @cmds = sort grep { /^anywhere / } keys %Slim::Control::Request::DISPATCH;
+	ok(@cmds > 20, 'the anywhere commands are registered');
+	for my $cmd (grep { $_ ne 'anywhere play_record' } @cmds) {
+		is($Slim::Control::Request::DISPATCH{$cmd}[1], 1, "$cmd is a query: CLI listeners never see its token");
+	}
+	is($Slim::Control::Request::DISPATCH{'anywhere restart'}[1], 1, 'restart in particular');
+	my $r = Slim::Control::Request->new(['anywhere', 'play_record'], { csrf => Plugins::LyrionAnywhere::Commands::csrf_token(),
+		track_id => 1, played_at => time - 60, key => 'abcdefgh12345678' });
+	$Slim::Control::Request::DISPATCH{'anywhere play_record'}[3]->($r);
+	like($r->{results}{error} // '', qr/^refused/, 'play_record is not authorised by the page\'s token (it needs the gateway\'s signature)');
+}
+
 my $dir = tempdir(CLEANUP => 1);
 $Slim::Utils::Prefs::DIR = $dir;
 mkdir "$dir/lyrion-anywhere";

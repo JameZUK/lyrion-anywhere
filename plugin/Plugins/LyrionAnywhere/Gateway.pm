@@ -15,6 +15,7 @@ use Digest::SHA;
 use File::Spec::Functions qw(abs2rel catdir catfile file_name_is_absolute splitpath);
 use File::Basename ();
 use File::Copy ();
+use Fcntl ();
 use Socket qw(inet_pton AF_INET AF_INET6);
 use POSIX ();
 use Time::HiRes ();
@@ -66,11 +67,32 @@ sub _now { time() }        # the clock (tests replace it)
 
 # --- pure helpers -------------------------------------------------------------------
 
-# Directory name under Bin/ for this OS and CPU.
+# This system's Perl architecture (tests set another), and its CPU as the kernel names it
+# (uname -m: armv6l, armv7l, aarch64, x86_64 ...).
+our $ARCHNAME = $Config{archname};
+sub _machine { my $m = eval { (POSIX::uname())[4] }; return $m // '' }
+
+# Why the bundled gateway cannot run on this CPU, or undef. The 32-bit ARM build is ARMv7:
+# an ARMv6 CPU (Raspberry Pi 1 and Zero) dies on its first ARMv7 instruction, so it is
+# never started there. $arch is Perl's archname and $machine uname's, both this system's
+# unless given.
+sub cpu_problem {
+	my ($arch, $machine) = @_;
+	my $here = !defined $arch;
+	$arch //= $ARCHNAME;
+	$machine //= $here ? _machine() : '';
+	return undef unless $arch =~ /^arm/i && $arch !~ /^arm64/i;
+	return undef unless $machine =~ /^armv([0-9]+)/i && $1 < 7;
+	return "this server's processor ($machine) is too old for the gateway: it needs ARMv7 or later, "
+		. 'such as a Raspberry Pi 2 or newer or a Pi Zero 2 (the Raspberry Pi 1 and the first Pi Zero are ARMv6)';
+}
+
+# Directory name under Bin/ for this OS and CPU (undef if none is bundled for it).
 sub platform {
-	my ($os, $arch) = @_;
-	$os   //= $^O;
-	$arch //= $Config{archname};
+	my ($os, $arch, $machine) = @_;
+	$os //= $^O;
+	return undef if cpu_problem($arch, $machine);
+	$arch //= $ARCHNAME;
 	my $cpu = $arch =~ /^(x86_64|amd64)/i ? 'x86_64'
 	        : $arch =~ /^(aarch64|arm64)/i ? 'aarch64'
 	        : $arch =~ /^arm/i             ? 'armhf'
@@ -178,9 +200,23 @@ sub valid_client_ip_header {
 	return $h =~ /^[A-Za-z0-9-]{1,64}\z/ && !$RESERVED_HEADER{lc $h} ? 1 : 0;
 }
 
+# A Public URL's origin: http(s), a host name or IPv4 address, or an IPv6 address in brackets
+# (no zone id, no IPv4 tail, which browsers write differently), and an optional port.
 sub valid_origin {
-	my $o = shift // return 0;
-	return $o =~ m{^https?://[a-z0-9.-]+(?::\d{1,5})?\z}i && length($o) <= 255;
+	my $o = shift;
+	return 0 if !defined $o || ref $o || length($o) > 255;
+	return 1 if $o =~ m{\Ahttps?://[a-z0-9.-]+(?::[0-9]{1,5})?\z}i;
+	return 0 unless $o =~ m{\Ahttps?://\[([0-9A-Fa-f:]+)\](?::[0-9]{1,5})?\z}i;
+	return _v6_words($1) ? 1 : 0;
+}
+
+# An origin as a browser writes it in an Origin header, which the gateway compares exactly:
+# an IPv6 address lower case, with the longest run of zeros compressed.
+sub origin_form {
+	my $o = shift;
+	return $o unless valid_origin($o);
+	$o =~ s{\A(https?)://\[([0-9A-Fa-f:]+)\]}{lc($1) . '://[' . _format_words(_v6_words($2)) . ']'}ie;
+	return $o;
 }
 
 # --- trusted networks (docs/plans/trusted-networks.md, SPEC D28) ------------------------
@@ -1172,6 +1208,11 @@ sub _launch {
 		$wanted = 0;
 		return;
 	}
+	if (!$o{dev_binary} && (my $why = cpu_problem())) {
+		$last_error = $why;
+		$log->error("cannot start gateway: $why");
+		return;
+	}
 	my ($argv, $err) = command_line(%o);
 	if (!$argv) {
 		$last_error = $err;
@@ -1218,16 +1259,18 @@ sub _launch {
 # bad flag, a port in use) can be shown in the status. The child inherits file descriptor
 # 2; the plugin's own is put back straight away. This works on descriptors, not Perl
 # handles: LMS ties STDERR to its log, and re-opening a tied handle dies. If anything here
-# fails, the gateway starts anyway, without the capture.
+# fails, the gateway starts anyway, without the capture. The file and the saved copy of fd 2
+# are close-on-exec, so the gateway inherits neither (review 2026-11-12): only its own fd 2.
 sub _spawn {
 	my ($argv, $errfile) = @_;
-	my ($fd, $saved);
+	my ($file, $saved);
 	if ($errfile) {
 		eval {
-			$fd = POSIX::open($errfile, POSIX::O_WRONLY() | POSIX::O_CREAT() | POSIX::O_TRUNC(), 0600);
-			$saved = POSIX::dup(2) if defined $fd;
-			if (!defined $saved || !defined POSIX::dup2($fd, 2)) {
-				POSIX::close($saved) if defined $saved;
+			# Perl's own sysopen marks the descriptor close-on-exec (it is above $^F).
+			sysopen($file, $errfile, POSIX::O_WRONLY() | POSIX::O_CREAT() | POSIX::O_TRUNC(), 0600) or die "$errfile: $!\n";
+			$saved = _cloexec_dup(2);
+			if (!$saved || !defined POSIX::dup2(fileno($file), 2)) {
+				close $saved if $saved;
 				$saved = undef;
 			}
 			1;
@@ -1235,13 +1278,31 @@ sub _spawn {
 	}
 	my $p = eval { Proc::Background->new({ die_upon_destroy => 1 }, @$argv) };
 	my $err = $@;
-	if (defined $saved) {
-		POSIX::dup2($saved, 2);
-		POSIX::close($saved);
+	if ($saved) {
+		POSIX::dup2(fileno($saved), 2);
+		close $saved;
 	}
-	POSIX::close($fd) if defined $fd;
+	close $file if $file;
 	$@ = $err;
 	return $p;
+}
+
+# A copy of descriptor $fd, as a Perl handle that owns it, marked close-on-exec; or undef.
+sub _cloexec_dup {
+	my $fd = shift;
+	my $copy = POSIX::dup($fd);
+	return undef unless defined $copy;
+	my $h;
+	unless (open($h, '>&=', $copy)) {
+		POSIX::close($copy);
+		return undef;
+	}
+	my $flags = fcntl($h, Fcntl::F_GETFD(), 0);
+	unless (defined $flags && fcntl($h, Fcntl::F_SETFD(), $flags | Fcntl::FD_CLOEXEC())) {
+		close $h;
+		return undef;
+	}
+	return $h;
 }
 
 sub _check {

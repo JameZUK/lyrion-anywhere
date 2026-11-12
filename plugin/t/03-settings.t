@@ -642,6 +642,39 @@ my $vectors = do {
 	ok(grep({ $_ eq 'trusted_networks' } @names), 'a pref of the page');
 }
 
+# --- a Public URL with an IPv6 address in brackets (review 2026-11-12): pairing links accept
+# http://[fd00::1]:9443, so the setting must too, written as browsers write it in Origin ------
+{
+	$prefs->set(public_url => '');
+	my %ok = (
+		'http://[fd00::1]:9443'          => 'http://[fd00::1]:9443',
+		'http://[FD00:0:0:0::1]:9443/'   => 'http://[fd00::1]:9443',
+		'https://[fd12:3456:789a::10]'   => 'https://[fd12:3456:789a::10]',
+		'HTTP://[fe80:0000::1]'          => 'http://[fe80::1]',
+		'https://[2001:db8::1]:8443'     => 'https://[2001:db8::1]:8443',
+	);
+	for my $in (sort keys %ok) {
+		my ($o, $e) = $clean->({ pref_public_url => $in, anywhere_allow_http => 1 });
+		is_deeply($e, [], "Public URL accepted: $in");
+		is($o->{pref_public_url}, $ok{$in}, "stored as a browser writes the origin: $ok{$in}");
+		ok(Plugins::LyrionAnywhere::Gateway::valid_origin($ok{$in}), 'and valid for the gateway\'s command line');
+	}
+	is(Plugins::LyrionAnywhere::Gateway::private_http_origin('http://[fd00::1]:9443'), ($clean->({ pref_public_url => 'http://[FD00::1]:9443', anywhere_allow_http => 1 }))[0]{pref_public_url},
+		'the same origin the pairing link uses');
+	for my $bad ('http://[fd00::1', 'http://fd00::1', 'http://[fd00::1]:9443/path', 'http://[fe80::1%25eth0]', 'http://[fe80::1%eth0]:9443',
+	             'http://[::ffff:10.0.0.1]', 'http://[fd00::g]', 'http://[1:2:3:4:5:6:7:8:9]', 'http://[fd00::1]:123456', 'http://[]',
+	             'http://[fd00::1]x') {
+		my ($o, $e) = $clean->({ pref_public_url => $bad, anywhere_allow_http => 1 });
+		ok(!exists $o->{pref_public_url} && @$e, 'Public URL refused: ' . show($bad));
+		ok(!Plugins::LyrionAnywhere::Gateway::valid_origin($bad), 'and never valid for the gateway: ' . show($bad));
+	}
+	ok(!Plugins::LyrionAnywhere::Gateway::valid_origin($_), 'not an origin: ' . show($_))
+		for ("http://[fd00::1]\n", "http://[fd00::1]:9443\n", ['http://[fd00::1]'], undef, 'http://[' . ('1:' x 120) . '1]');
+	my ($argv) = Plugins::LyrionAnywhere::Gateway::command_line(binary => '/srv/gw', listen => '10.8.0.1:9443', admin_listen => '127.0.0.1:9445',
+		data_dir => '/srv/data', http_port => 9000, cli_port => 9090, allowed_origins => ['http://[fd00::1]:9443']);
+	ok($argv && grep({ $_ eq 'http://[fd00::1]:9443' } @$argv), 'the gateway is started with it as an allowed origin');
+}
+
 # --- the Public URL over http:// to a private address (pairing links and QR codes) --------
 {
 	my $origin = \&Plugins::LyrionAnywhere::Gateway::private_http_origin;

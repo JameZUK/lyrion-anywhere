@@ -68,4 +68,22 @@ SKIP: {
 	ok(-x $bin, 'executable bit restored');
 	Plugins::LyrionAnywhere::Gateway->stop;
 }
+
+# An ARMv6 server (Raspberry Pi 1, the first Pi Zero) is told why, instead of being given the
+# ARMv7 build, which dies with SIGILL (review 2026-11-12).
+{
+	no warnings 'redefine';
+	local $Plugins::LyrionAnywhere::Gateway::ARCHNAME = 'arm-linux-gnueabihf-thread-multi-64int';
+	local *Plugins::LyrionAnywhere::Gateway::_machine = sub { 'armv6l' };
+	@Proc::Background::STARTED = ();
+	Plugins::LyrionAnywhere::Gateway->start;
+	is(scalar @Proc::Background::STARTED, 0, 'ARMv6: nothing is started');
+	my $state = Plugins::LyrionAnywhere::Gateway->state;
+	like($state->{error}, qr/processor \(armv6l\) is too old for the gateway: it needs ARMv7 or later/, 'the status says why');
+	is($state->{binary_ok}, 0, 'and that there is no binary for it');
+	require Plugins::LyrionAnywhere::Commands;
+	is(Plugins::LyrionAnywhere::Commands::public_error($state->{error}), "this server's processor (armv6l) is too old for the gateway",
+		'the public status gives the gist');
+	Plugins::LyrionAnywhere::Gateway->stop;
+}
 done_testing;

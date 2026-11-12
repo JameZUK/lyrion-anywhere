@@ -75,6 +75,7 @@ sub clean {
 				push @errors, 'Public URL must look like https://music.example.com (no path)';
 				next;
 			}
+			$v = Plugins::LyrionAnywhere::Gateway::origin_form($v);
 			# Over plain http, passwords and sign-in tokens cross the internet unencrypted:
 			# setting or changing such an address needs the box saying so ticked as well. The
 			# address already saved needs no tick (so Apply for another setting works), and the
