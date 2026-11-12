@@ -27,8 +27,11 @@ gh release download "v$v" -R "$repo" -D . --clobber
 echo "== checksums"
 sha256sum -c SHA256SUMS
 echo "== build provenance (silent when good)"
-gh attestation verify "$zip" -R "$repo"
-gh attestation verify repo.xml -R "$repo"
+# Built by this repository's CI workflow, on GitHub's own runners, from this tag: an
+# attestation from any other workflow in the repository, or for another ref, does not count.
+provenance=(-R "$repo" --signer-workflow "$repo/.github/workflows/ci.yml" --source-ref "refs/tags/v$v" --deny-self-hosted-runners)
+gh attestation verify "$zip" "${provenance[@]}"
+gh attestation verify repo.xml "${provenance[@]}"
 echo "== plugin repository URL"
 "$root/tools/check-latest.sh" --expect-version "$v"
 

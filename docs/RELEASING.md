@@ -4,12 +4,14 @@ Two things are released from this repository, from different tags:
 
 | What | Tag | CI job | Publishes |
 |---|---|---|---|
-| The LMS plugin (gateway, web app, plugin) | `v<version>`, e.g. `v0.2.0` | `release` | A GitHub release with the plugin zips, `repo.xml` and `SHA256SUMS`; build provenance for the zips and `repo.xml` |
-| The Android app | `android-v<version>`, e.g. `android-v1.0.0` | `android-release` | A GitHub release, **never marked Latest**, with the signed APKs (universal and one per ABI), the app bundle, `BUILDINFO.txt` and `SHA256SUMS`; build provenance for the APKs and the bundle |
+| The LMS plugin (gateway, web app, plugin) | `v<version>`, e.g. `v0.2.0` | `release` (build), then `release-publish` | A GitHub release with the plugin zips, `repo.xml` and `SHA256SUMS`; build provenance for the zips and `repo.xml` |
+| The Android app | `android-v<version>`, e.g. `android-v1.0.0` | `android-release` (build), `android-sign`, then `android-publish` | A GitHub release, **never marked Latest**, with the signed APKs (universal and one per ABI), the app bundle, `BUILDINFO.txt` and `SHA256SUMS`; build provenance for the APKs and the bundle |
 
-- The plugin job publishes only on `refs/tags/v*`, which an `android-v*` tag never matches.
-- The Android job runs only on `refs/tags/android-v*`.
+- The plugin's publish job runs only on `refs/tags/v*`, which an `android-v*` tag never matches. Its build job also runs on every push to `main`, building and checking without publishing.
+- The Android jobs run only on `refs/tags/android-v*`.
 - Both publish only after the other jobs pass for that commit.
+- **Building and publishing are separate jobs.** The build jobs run third-party code (cargo and every crate's build script, Gradle and its plugins, npm, Docker images) with read access only, no secrets, and no credentials left in the checkout (`persist-credentials: false`). Only the publish jobs hold write access (contents for the release, id-token and attestations for the provenance), and they run nothing but GitHub's CLI and actions on the files the build handed over.
+- **The Android release key is used in a job of its own** (`android-sign`), on a fresh runner where no build code has run, so no build script or Gradle daemon can be about to read it (below, *Signing keys*).
 
 ### Android releases are never Latest
 
@@ -27,20 +29,25 @@ Choosing a version number is the owner's decision; nothing here picks one.
 ## Verifying a release
 
 LMS checks a plugin download only against the SHA1 in `repo.xml`, and `SHA256SUMS` sits in the same release. Both are written by whoever publishes the release, so they prove the download is intact, not who built it. The release jobs therefore also publish signed **build provenance** ([artifact attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations), signed through Sigstore with the workflow's own identity) for:
-- the plugin zips and `repo.xml` (`release`, on `v*` tags);
-- the APKs and the app bundle (`android-release`, on `android-v*` tags).
+- the plugin zips and `repo.xml` (`release-publish`, on `v*` tags);
+- the APKs and the app bundle (`android-publish`, on `android-v*` tags).
 
 Anyone can check that a file was built by this repository's CI workflow, from a given commit and tag, with the [GitHub CLI](https://cli.github.com/):
 
 ```sh
-gh attestation verify LyrionAnywhere-<version>.zip --repo JameZUK/lyrion-anywhere
-gh attestation verify repo.xml --repo JameZUK/lyrion-anywhere
+gh attestation verify LyrionAnywhere-<version>.zip --repo JameZUK/lyrion-anywhere \
+  --signer-workflow JameZUK/lyrion-anywhere/.github/workflows/ci.yml --source-ref refs/tags/v<version> --deny-self-hosted-runners
+gh attestation verify repo.xml --repo JameZUK/lyrion-anywhere \
+  --signer-workflow JameZUK/lyrion-anywhere/.github/workflows/ci.yml --source-ref refs/tags/v<version> --deny-self-hosted-runners
 gh attestation verify LyrionAnywhere-android-<version>.apk --repo JameZUK/lyrion-anywhere \
-  --signer-workflow JameZUK/lyrion-anywhere/.github/workflows/ci.yml
+  --signer-workflow JameZUK/lyrion-anywhere/.github/workflows/ci.yml --source-ref refs/tags/android-v<version> --deny-self-hosted-runners
 ```
 
-- It prints the workflow, commit and ref that built the file; check the ref is the release's tag (`refs/tags/v<version>` or `refs/tags/android-v<version>`).
-- `--signer-workflow` also pins the workflow file, so a file attested by any other workflow in the repository fails.
+- It prints the workflow, commit and ref that built the file.
+- `--signer-workflow` pins the workflow file, so a file attested by any other workflow in the repository fails.
+- `--source-ref` pins the release's tag, so a file built from another branch or tag fails.
+- `--deny-self-hosted-runners` refuses a build that ran anywhere but GitHub's own runners.
+- `tools/release/verify-plugin.sh` and `verify-android.sh` check all three.
 - A modified file, or one built anywhere else, fails with "no matching attestations".
 - Releases published before CI started attesting them (18 October 2026) have none.
 - Only the files on the GitHub release are attested. Copies installed from Google Play or F-Droid are built or signed by those stores' pipelines and are not.
@@ -54,6 +61,7 @@ The steps below are scripted under `tools/release/` (they need the [GitHub CLI](
 | `tools/release/ci-wait.sh run <id>` \| `branch <branch> [<commit>]` \| `tag <tag>` | Waits for a CI run to finish (polling every 45 s) and fails unless it succeeded, listing the failed jobs. A tag's run is found by its head branch, a commit's by its full sha (`gh run list --commit` with a short sha finds nothing). |
 | `tools/release/tag.sh [--push] [plugin <v>] [android <v>]` | Checks the tree is ready (clean, on `origin/main`, the versions in `install.xml` / `build.gradle.kts`, the release notes, the F-Droid changelog for the versionCode) and makes the annotated tags; prints the push command, or pushes with `--push`. |
 | `tools/release/verify-plugin.sh <v> [<dir>]` | Downloads the `v<v>` release, checks `SHA256SUMS`, the build provenance of the zip and `repo.xml`, the plugin repository URL (`tools/check-latest.sh`), unpacks the zip (into `dist/releases/v<v>/unpacked` by default) and checks `install.xml` and `Bin/SHA256SUMS` inside; prints the unpacked directory last, for the deploy. |
+| `tools/release/sign-android.sh <unsigned dir> <out dir> <v>` | The `android-sign` job's signing step: signs an unsigned build (`app/build/outputs`, or a copy of it) with the key named by the `ANYWHERE_KEY*` variables, using only the SDK's `apksigner` (v2, alignment kept, as the Gradle plugin signed) and the JDK's `jarsigner`, writes the release's file names into `<out dir>`, and checks every signature and the certificate. `tools/release/test-sign-android.sh <apk>` tests it with a throwaway key (CI's `android` job runs it on the debug APK). |
 | `tools/release/verify-android.sh <v> [<previous>]` | Downloads the `android-v<v>` release into `dist/android/<v>/`, checks `SHA256SUMS`, the build provenance of every APK and the bundle, the signing certificate, the version against `build.gradle.kts`, the merged manifest against the previous release's APK (only the version lines may differ; the providers and `androidx.startup` initialisers are listed), and that the release is not marked *Latest*. |
 
 A release, end to end: push `main` and `tools/release/ci-wait.sh branch main <commit>`; `tools/release/tag.sh plugin <v> android <v>` and push the tags; `tools/release/ci-wait.sh tag v<v>` (and `tag android-v<v>`); `tools/release/verify-plugin.sh <v>` and `tools/release/verify-android.sh <v> <previous>`; then deploy. Deploying to a particular installation and checking it live are specific to that installation, so those scripts live outside the repository (gitignored `dev/local.*` files, see `CLAUDE.md`): a deploy script that installs the verified zip's web app, gateway binary and plugin files and restarts LMS (resuming whatever was playing), and a live check (health, static files, the content-hash ETag, a sign-in with a test account, an image through the image proxy, the transcoding set-up).
@@ -144,7 +152,7 @@ The `:app` manifest tests catch most of this on every build, but they test the s
 
 ### Signing keys and repository secrets (one-time set-up)
 
-The release job signs with a key held in four repository secrets. Make the key once and keep a backup of it offline: losing it means no more updates for existing installs.
+The `android-sign` job signs with a key held in four repository secrets. Make the key once and keep a backup of it offline: losing it means no more updates for existing installs.
 
 ```sh
 keytool -genkeypair -v -keystore lyrion-anywhere-release.jks -alias lyrion-anywhere \
@@ -159,8 +167,8 @@ shred -u keystore.b64
 
 Alternatively, use *Settings → Secrets and variables → Actions → New repository secret* on GitHub.
 
-- The job writes the keystore to the runner's temporary folder (mode 600) only for the build, then deletes it.
-- Locally, the same build reads `ANYWHERE_KEYSTORE` (a path), `ANYWHERE_KEYSTORE_PASSWORD`, `ANYWHERE_KEY_ALIAS` and `ANYWHERE_KEY_PASSWORD`. Without them, release builds are unsigned.
+- **Only `android-sign` sees the key.** The build job (`android-release`) has no secrets and builds unsigned. `android-sign` runs on a fresh runner, where no build code has run: it fetches the unsigned files, writes the keystore to the runner's temporary folder (mode 600), signs with `tools/release/sign-android.sh` (the SDK's `apksigner` and the JDK's `jarsigner`, passwords passed by variable name, never on a command line), checks every signature, and deletes the keystore. `android-publish` then attests and publishes the signed files.
+- Locally, either let Gradle sign: the release build reads `ANYWHERE_KEYSTORE` (a path), `ANYWHERE_KEYSTORE_PASSWORD`, `ANYWHERE_KEY_ALIAS` and `ANYWHERE_KEY_PASSWORD`, and without them builds unsigned. Or sign as CI does: build without them, then `tools/release/sign-android.sh apps/android/app/build/outputs dist-android <versionName>` with the same four variables set.
 - Earlier test builds were signed with a key whose certificate is in `docs/release-notes/android-0.1.0-alpha.1.md`. Keep using that key if existing installs should update in place.
 
 ### Tagging and publishing
@@ -168,11 +176,10 @@ Alternatively, use *Settings → Secrets and variables → Actions → New repos
 1. `git tag android-v<versionName> && git push origin android-v<versionName>`.
 2. CI runs the tests and then `android-release`, which:
    - checks the tag against `versionName` and the release notes;
-   - builds from scratch (no shared caches): `-Panywhere.splitApks=true assembleRelease`, then `bundleRelease` in a separate run (the Android Gradle plugin can't do both in one);
-   - verifies every signature;
-   - checks the native libraries carry no build paths;
-   - writes `BUILDINFO.txt` (commit, Rust, cargo-ndk, NDK and JDK versions) and `SHA256SUMS`;
-   - creates a release (`--latest=false`, and fails if it came out as Latest) with:
+   - builds from scratch (no shared caches), unsigned and with no secrets: `-Panywhere.splitApks=true assembleRelease`, then `bundleRelease` in a separate run (the Android Gradle plugin can't do both in one);
+   - checks nothing came out signed and the native libraries carry no build paths, and writes `BUILDINFO.txt` (commit, Rust, cargo-ndk, NDK and JDK versions);
+   - in `android-sign`, signs the APKs and the bundle, verifies every signature and that one certificate signed them all, and writes `SHA256SUMS`;
+   - in `android-publish`, attests the build provenance and creates a release (`--latest=false`, and fails if it came out as Latest) with:
      - `LyrionAnywhere-android-<v>.apk` (universal);
      - `LyrionAnywhere-android-<v>-arm64-v8a.apk`, `-armeabi-v7a.apk` and `-x86_64.apk`;
      - `LyrionAnywhere-android-<v>.aab`.
@@ -182,7 +189,7 @@ Alternatively, use *Settings → Secrets and variables → Actions → New repos
    - `apksigner verify --print-certs` shows the expected certificate;
    - install the per-ABI APK on a phone over the previous version (it must update in place);
    - sign in, play, download, and go offline.
-4. Leave it as a pre-release: never promote it (see *Android releases stay pre-releases* above). The job's last step checks the plugin repository URL still works.
+4. Never mark it Latest (see *Android releases are never Latest* above). The publish job's last step checks the plugin repository URL still works.
 
 ### Google Play
 
@@ -268,7 +275,8 @@ F-Droid builds the app from source. The draft recipe is `apps/android/fdroid/io.
 - `Cargo.lock` is used as it is (`--locked`);
 - the profile is fixed (`android-release`);
 - AGP writes no dependency-info blob (`dependenciesInfo` off);
-- the baseline profile is generated from a checked-in text file.
+- the baseline profile is generated from a checked-in text file;
+- the APKs are built unsigned and signed afterwards by `apksigner`, which keeps the build's entries and central directory byte for byte and adds only the signing block, after zero padding that starts it on a 4 KiB boundary (checked by stripping the block again, 2026-11-12). Releases up to 1.17.3 were signed by the Gradle plugin, without that padding: check that the first F-Droid build after the change still matches.
 
 What must match between the GitHub build and F-Droid's:
 - the Rust version (CI uses the stable toolchain of the day; `BUILDINFO.txt` records it, and the recipe pins it);

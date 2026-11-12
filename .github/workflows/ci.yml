@@ -16,6 +16,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
           components: clippy, rustfmt
@@ -56,11 +58,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Documentation links, anchors and images resolve
         run: python3 tools/check-docs.py --self-test && python3 tools/check-docs.py
       - name: The demo's fake LMS (its Slimproto side) never raises on bad client bytes
         run: python3 -m unittest tools/demo/test_fake_lms.py
-      - name: disk-gc finds cargo-sweep through cargo's subcommand list, not the shell's PATH
+      - name: disk-gc finds cargo-sweep through cargo, says its Docker prune is host-wide, honours the build lock
         run: tools/test-disk-gc.sh
 
   web:
@@ -68,6 +72,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
           targets: wasm32-unknown-unknown
@@ -100,8 +106,11 @@ jobs:
     env:
       CARGO_INCREMENTAL: '0'
       NDK_VERSION: 29.0.14206865
+      BUILD_TOOLS: 36.1.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
           components: clippy
@@ -113,10 +122,10 @@ jobs:
         run: cargo install --locked cargo-ndk --version 4.1.2
       - name: JDK 21 (preinstalled on the runner)
         run: echo "JAVA_HOME=$JAVA_HOME_21_X64" >> "$GITHUB_ENV"
-      - name: Android NDK and platform
+      - name: Android NDK, platform and build tools
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" "platforms;android-37.0"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" "platforms;android-37.0" "build-tools;$BUILD_TOOLS"
       - name: Clippy for Android (the AAudio output only compiles there)
         run: |
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
@@ -125,6 +134,10 @@ jobs:
       - name: Build, unit tests and lint (all three ABIs)
         working-directory: apps/android
         run: ./gradlew assembleDebug testDebugUnitTest lint
+      # The release job's signing step, with a throwaway key on the debug APK (it stands in for
+      # the unsigned release build), so the step is proven on every push, not first on a tag.
+      - name: The release signing script signs and checks (throwaway key)
+        run: tools/release/test-sign-android.sh "$(ls apps/android/app/build/outputs/apk/debug/*.apk | head -1)"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -141,6 +154,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
           command: check licenses advisories bans sources
@@ -156,6 +171,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -178,10 +195,21 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Build the Docker image
         run: docker build -t lyrion-anywhere:test .
       - name: Image behind nginx with the example config
         run: tools/test-deploy.sh lyrion-anywhere:test
+
+  # --- releases -----------------------------------------------------------------------------
+  # Building, signing and publishing are separate jobs. The build jobs run third-party code
+  # (cargo and every crate's build script, Gradle and its plugins, npm, Docker images) with
+  # read access only, no secrets, and no credentials left in the checkout. Write access
+  # (contents for the release, id-token and attestations for the signed build provenance) is
+  # held only by the publish jobs, on version tags, which run nothing but GitHub's CLI and
+  # actions on the files the build handed over. The Android release key is used only in a
+  # job of its own, on a fresh runner where no build code has run (docs/RELEASING.md).
 
   release:
     # The full cross-build takes a while: run it on main and on tags, not on every branch.
@@ -193,14 +221,20 @@ jobs:
     # cross-build (seen once, on 24 October: rustc went silent for 49 minutes) then fails here
     # rather than after an hour; `gh run rerun --failed` re-runs it on the same tag.
     timeout-minutes: 45
-    # Write access only here, and only used by the last steps, on version tags: contents for
-    # the release, id-token and attestations for the signed build provenance.
-    permissions:
-      contents: write
-      id-token: write
-      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the tag, version and release notes (version tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -eu
+          version=$(sed -n 's:.*<version>\(.*\)</version>.*:\1:p' plugin/Plugins/LyrionAnywhere/install.xml)
+          [ "$GITHUB_REF_NAME" = "v$version" ] || { echo "tag $GITHUB_REF_NAME doesn't match install.xml version $version" >&2; exit 1; }
+          # Plugin.pm reads its VERSION from install.xml (plugin/t/12-version.t); check it here too.
+          pm=$(cd plugin && PERL5LIB=t/stubs:. perl -e 'package main; use constant WEBUI => 0; require Plugins::LyrionAnywhere::Plugin; print Plugins::LyrionAnywhere::Plugin::VERSION()')
+          [ "$pm" = "$version" ] || { echo "Plugin.pm VERSION $pm doesn't match install.xml version $version" >&2; exit 1; }
+          [ -f "docs/release-notes/$GITHUB_REF_NAME.md" ] || { echo "missing docs/release-notes/$GITHUB_REF_NAME.md" >&2; exit 1; }
       - name: Build the plugin release (three gateways, browser player)
         run: tools/build-release.sh
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
@@ -216,28 +250,47 @@ jobs:
           path: |
             dist/*.zip
             dist/repo.xml
+          if-no-files-found: error
+
+  release-publish:
+    # Version tags only, after the build above passed (and with it every other check).
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      actions: read   # to fetch the build job's files
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Fetch the files the release job built
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" -n plugin-release -D dist
+          ls -l dist
+          ls dist/*.zip dist/repo.xml > /dev/null
       # Signed provenance (Sigstore, recorded in GitHub's attestation store): which workflow,
       # commit and tag built these files. LMS checks only the SHA1 in repo.xml, which the
       # same release writes; `gh attestation verify` (docs/RELEASING.md) checks the build.
-      - name: Attest the build provenance (version tags only)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Attest the build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             dist/*.zip
             dist/repo.xml
-      - name: Publish the GitHub release (version tags only)
-        # Only after every other job passed for this tag.
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           version=$(sed -n 's:.*<version>\(.*\)</version>.*:\1:p' plugin/Plugins/LyrionAnywhere/install.xml)
           [ "$GITHUB_REF_NAME" = "v$version" ] || { echo "tag $GITHUB_REF_NAME doesn't match install.xml version $version" >&2; exit 1; }
-          # Plugin.pm reads its VERSION from install.xml (plugin/t/12-version.t); check it here too.
-          pm=$(cd plugin && PERL5LIB=t/stubs:. perl -e 'package main; use constant WEBUI => 0; require Plugins::LyrionAnywhere::Plugin; print Plugins::LyrionAnywhere::Plugin::VERSION()')
-          [ "$pm" = "$version" ] || { echo "Plugin.pm VERSION $pm doesn't match install.xml version $version" >&2; exit 1; }
           notes="docs/release-notes/$GITHUB_REF_NAME.md"
           [ -f "$notes" ] || { echo "missing $notes" >&2; exit 1; }
           (cd dist && sha256sum *.zip repo.xml > SHA256SUMS)
@@ -249,8 +302,7 @@ jobs:
           # Explicitly Latest: LMS installs fetch releases/latest/download/repo.xml.
           gh release create "$GITHUB_REF_NAME" dist/*.zip dist/repo.xml dist/SHA256SUMS \
             --verify-tag --latest --title "Lyrion Anywhere $version" --notes-file "$notes"
-      - name: Check LMS's repository URL serves this release (version tags only)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Check LMS's repository URL serves this release
         env:
           CHECK_LATEST_TRIES: '6'
           CHECK_LATEST_DELAY: '20'
@@ -259,30 +311,28 @@ jobs:
           tools/check-latest.sh --expect-version "$version"
 
   android-release:
-    # Android releases come from `android-v*` tags only. (The plugin's `release` job above
-    # publishes on `refs/tags/v*`, which `refs/tags/android-v*` never matches.) Built from
-    # scratch without the shared caches, signed with the release key from the repository's
-    # secrets (docs/RELEASING.md), and published as a full release that is never Latest: LMS
-    # installs fetch plugin updates from releases/latest/download/repo.xml, so the plugin's
-    # `v*` release must keep that spot. `--latest=false` keeps it there, the publish step
-    # checks the new release is not Latest, and the last step checks the URL still serves
-    # the plugin. (Until 2026-10-23 these were pre-releases for the same reason.)
+    # Android releases come from `android-v*` tags only. (The plugin's release jobs above
+    # publish on `refs/tags/v*`, which `refs/tags/android-v*` never matches.) Built from
+    # scratch without the shared caches, unsigned and with no secrets, since Gradle, its
+    # plugins and every crate's build script run here; signed by `android-sign` with the
+    # release key from the repository's secrets; published by `android-publish` as a full
+    # release that is never Latest (docs/RELEASING.md). LMS installs fetch plugin updates
+    # from releases/latest/download/repo.xml, so the plugin's `v*` release must keep that
+    # spot: `--latest=false` keeps it there, the publish job checks the new release is not
+    # Latest, and its last step checks the URL still serves the plugin. (Until 2026-10-23
+    # these were pre-releases for the same reason.)
     if: startsWith(github.ref, 'refs/tags/android-v')
     needs: [test, android, supply-chain]
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # Write access only here, and only used by the last steps: contents for the release,
-    # id-token and attestations for the signed build provenance.
-    permissions:
-      contents: write
-      id-token: write
-      attestations: write
     env:
       CARGO_INCREMENTAL: '0'
       NDK_VERSION: 29.0.14206865
       BUILD_TOOLS: 36.1.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
           targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
@@ -305,59 +355,34 @@ jobs:
           [ -n "$version" ] || { echo "no versionName in apps/android/app/build.gradle.kts" >&2; exit 1; }
           [ "$GITHUB_REF_NAME" = "android-v$version" ] || { echo "tag $GITHUB_REF_NAME doesn't match versionName $version" >&2; exit 1; }
           [ -f "docs/release-notes/android-$version.md" ] || { echo "missing docs/release-notes/android-$version.md" >&2; exit 1; }
-          echo "VERSION=$version" >> "$GITHUB_ENV"
-      - name: Release signing key (from the repository's secrets)
-        env:
-          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
-        run: |
-          set -eu
-          [ -n "$ANDROID_KEYSTORE_B64" ] || { echo "the ANDROID_KEYSTORE_B64 secret isn't set (docs/RELEASING.md)" >&2; exit 1; }
-          umask 077
-          printf '%s' "$ANDROID_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
-      - name: Build the signed APKs (universal and per ABI) and the app bundle
+      - name: Build the unsigned APKs (universal and per ABI) and the app bundle
         working-directory: apps/android
-        env:
-          ANYWHERE_KEYSTORE: ${{ runner.temp }}/release.jks
-          ANYWHERE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANYWHERE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANYWHERE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        # Two runs: the Android Gradle plugin can't build per-ABI APKs and an app bundle in
-        # one (issuetracker.google.com/402800800). The bundle run leaves the APKs in place.
+        # No signing key exists in this job: without ANYWHERE_KEYSTORE the release build is
+        # unsigned (app/build.gradle.kts). Two runs: the Android Gradle plugin can't build
+        # per-ABI APKs and an app bundle in one (issuetracker.google.com/402800800). The
+        # bundle run leaves the APKs in place.
         run: |
           ./gradlew --no-build-cache -Panywhere.splitApks=true assembleRelease
           ./gradlew --no-build-cache bundleRelease
-      - name: Remove the signing key
-        if: always()
-        run: rm -f "$RUNNER_TEMP/release.jks"
-      - name: Check the signatures and collect the files
+      - name: Check the build and collect it
         run: |
           set -eu
           apksigner="$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner"
           out=apps/android/app/build/outputs
-          mkdir -p dist-android
-          for apk in "$out"/apk/release/app-*-release.apk; do
-            abi=$(basename "$apk" | sed 's/^app-\(.*\)-release\.apk$/\1/')
-            "$apksigner" verify --print-certs "$apk"
-            if [ "$abi" = universal ]; then
-              cp "$apk" "dist-android/LyrionAnywhere-android-$VERSION.apk"
-            else
-              cp "$apk" "dist-android/LyrionAnywhere-android-$VERSION-$abi.apk"
-            fi
+          mkdir -p unsigned/apk/release unsigned/bundle/release
+          cp "$out"/apk/release/app-*-release-unsigned.apk unsigned/apk/release/
+          cp "$out/bundle/release/app-release.aab" unsigned/bundle/release/
+          ls -l unsigned/apk/release unsigned/bundle/release
+          [ -f unsigned/apk/release/app-universal-release-unsigned.apk ] || { echo "no universal APK" >&2; exit 1; }
+          # Nothing here is signed: no key reached the build.
+          for apk in unsigned/apk/release/*.apk; do
+            if "$apksigner" verify "$apk" > /dev/null 2>&1; then echo "$apk is signed, but the build had no key" >&2; exit 1; fi
           done
-          [ -f "dist-android/LyrionAnywhere-android-$VERSION.apk" ] || { echo "no universal APK" >&2; exit 1; }
           # No build-machine paths in the native library (they would reach crash reports).
-          unzip -o -q "dist-android/LyrionAnywhere-android-$VERSION.apk" 'lib/*' -d "$RUNNER_TEMP/libs"
+          unzip -o -q unsigned/apk/release/app-universal-release-unsigned.apk 'lib/*' -d "$RUNNER_TEMP/libs"
           if grep -r -a -l -e "$HOME" -e "$GITHUB_WORKSPACE" "$RUNNER_TEMP/libs"; then
             echo "build paths found in the native libraries" >&2; exit 1
           fi
-          # The bundle: verified, and signed by the same certificate as the APKs. (Not
-          # `jarsigner -strict`, which calls any self-signed key, as Android keys are, an error.)
-          aab="$out/bundle/release/app-release.aab"
-          jarsigner -verify "$aab" | grep -q '^jar verified' || { echo "the app bundle doesn't verify" >&2; exit 1; }
-          expected=$("$apksigner" verify --print-certs "dist-android/LyrionAnywhere-android-$VERSION.apk" | sed -n 's/.*certificate SHA-256 digest: //p' | head -1)
-          got=$(keytool -printcert -jarfile "$aab" | sed -n 's/^[[:space:]]*SHA256: //p' | head -1 | tr -d ':' | tr 'A-F' 'a-f')
-          [ -n "$expected" ] && [ "$expected" = "$got" ] || { echo "the app bundle isn't signed with the APKs' certificate" >&2; exit 1; }
-          cp "$out/bundle/release/app-release.aab" "dist-android/LyrionAnywhere-android-$VERSION.aab"
           # What it was built with, for anyone reproducing the build (docs/RELEASING.md).
           {
             echo "commit: $GITHUB_SHA"
@@ -367,8 +392,101 @@ jobs:
             # The JDK Gradle runs under (JAVA_HOME), not the runner's default `java`: 1.15.7's
             # file said 17 and 1.15.8's said 25 while both were built with 21.
             "${JAVA_HOME:-/usr}/bin/java" -version 2>&1 | head -1
-          } > dist-android/BUILDINFO.txt
+          } > unsigned/BUILDINFO.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-unsigned
+          path: unsigned/
+          if-no-files-found: error
+
+  android-sign:
+    # The release key is used here only: a fresh runner on which no build code has run, so no
+    # build script or Gradle daemon from the build job can still be about. It runs GitHub's
+    # checkout, the SDK's sdkmanager, apksigner and zipalign, the JDK's jarsigner and keytool,
+    # and the repository's own tools/release/sign-android.sh. Read access only.
+    if: startsWith(github.ref, 'refs/tags/android-v')
+    needs: [android-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read   # to fetch the build job's files
+    env:
+      BUILD_TOOLS: 36.1.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: JDK 21 (preinstalled on the runner) and the SDK's build tools
+        run: |
+          echo "JAVA_HOME=$JAVA_HOME_21_X64" >> "$GITHUB_ENV"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;$BUILD_TOOLS"
+      - name: Fetch the unsigned build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" -n android-unsigned -D unsigned
+          ls -lR unsigned
+          version=$(sed -n 's/^ *versionName = "\(.*\)"$/\1/p' apps/android/app/build.gradle.kts)
+          [ "$GITHUB_REF_NAME" = "android-v$version" ] || { echo "tag $GITHUB_REF_NAME doesn't match versionName $version" >&2; exit 1; }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Release signing key (from the repository's secrets)
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          set -eu
+          [ -n "$ANDROID_KEYSTORE_B64" ] || { echo "the ANDROID_KEYSTORE_B64 secret isn't set (docs/RELEASING.md)" >&2; exit 1; }
+          umask 077
+          printf '%s' "$ANDROID_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+      - name: Sign the APKs and the app bundle, and check every signature
+        env:
+          ANYWHERE_KEYSTORE: ${{ runner.temp }}/release.jks
+          ANYWHERE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANYWHERE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANYWHERE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: tools/release/sign-android.sh unsigned dist-android "$VERSION"
+      - name: Remove the signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks"
+      - name: Checksums
+        run: |
+          set -eu
+          cp unsigned/BUILDINFO.txt dist-android/
           (cd dist-android && sha256sum LyrionAnywhere-* BUILDINFO.txt > SHA256SUMS && cat SHA256SUMS)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-release
+          path: dist-android/
+          if-no-files-found: error
+
+  android-publish:
+    if: startsWith(github.ref, 'refs/tags/android-v')
+    needs: [android-sign]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      actions: read   # to fetch the signing job's files
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Fetch the signed release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" -n android-release -D dist-android
+          ls -l dist-android
+          (cd dist-android && sha256sum -c SHA256SUMS)
+          version=$(sed -n 's/^ *versionName = "\(.*\)"$/\1/p' apps/android/app/build.gradle.kts)
+          [ "$GITHUB_REF_NAME" = "android-v$version" ] || { echo "tag $GITHUB_REF_NAME doesn't match versionName $version" >&2; exit 1; }
+          [ -f "dist-android/LyrionAnywhere-android-$version.apk" ] || { echo "no universal APK" >&2; exit 1; }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
       # Signed provenance for the APKs and the app bundle (docs/RELEASING.md).
       - name: Attest the build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -376,10 +494,6 @@ jobs:
           subject-path: |
             dist-android/LyrionAnywhere-android-*.apk
             dist-android/LyrionAnywhere-android-*.aab
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: android-release
-          path: dist-android/
       - name: Publish the release (a full release, never Latest)
         env:
           GH_TOKEN: ${{ github.token }}
