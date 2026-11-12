@@ -163,10 +163,10 @@ interface OfflinePlayerHandle {
 }
 
 private class RustOfflinePlayer(store: OfflineStore, dsp: DspSettings) : OfflinePlayerHandle {
-    private val p = OfflinePlayer(
-        (store as RustOfflineStore).library,
-        LocalPlayerConfig(OutputKind.A_AUDIO, MAX_SAMPLE_RATE.toUInt(), dsp),
-    )
+    // The player keeps its own hold on the library once made.
+    private val p = (store as RustOfflineStore).lend {
+        OfflinePlayer(it, LocalPlayerConfig(OutputKind.A_AUDIO, MAX_SAMPLE_RATE.toUInt(), dsp))
+    }
 
     override fun start(observer: OfflinePlayerObserver) = p.start(observer)
 
