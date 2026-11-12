@@ -11,7 +11,8 @@
 //! box (`__TAGGEDINPUT__`). On top of that, server-level commands are never allowed, and
 //! actions that change shared data are for admins only.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
@@ -334,11 +335,27 @@ pub fn allowed(learned: &DeviceActions, raw: &[String], admin: bool) -> Result<(
 }
 
 /// Actions learned for one device, bounded and expiring.
+///
+/// Every operation costs time in proportion to the actions it is given, never to the actions
+/// held (review low: adding a menu compared each item with every action held for its command,
+/// up to 2,000 items against 4,000 actions, under the gateway-wide lock):
+/// - an action is found by hashing it whole, so adding, refreshing and matching a request
+///   with no typed input are lookups;
+/// - `order` lists actions oldest first, by when they were last offered; a refresh appends a
+///   new record and leaves the old one stale (its number no longer matches), and stale
+///   records are skipped as they reach the front, or swept out once they outnumber the rest;
+/// - actions with typed input (search boxes, rare) are also kept by command, since a request
+///   can only be matched to them one by one.
 #[derive(Debug, Default)]
 pub struct DeviceActions {
-    by_cmd: HashMap<Vec<String>, Vec<(Action, Instant)>>,
-    order: VecDeque<(Vec<String>, Instant)>,
-    len: usize,
+    /// Every action held: the number of its latest record in `order`, and when it was last
+    /// offered.
+    held: HashMap<Arc<Action>, (u64, Instant)>,
+    /// (record number, when, action), oldest first.
+    order: VecDeque<(u64, Instant, Arc<Action>)>,
+    next: u64,
+    /// The actions with typed input, by command.
+    with_input: HashMap<Vec<String>, HashSet<Arc<Action>>>,
     /// When actions were last added or looked up (for evicting idle devices).
     last_used: Option<Instant>,
 }
@@ -355,73 +372,118 @@ impl DeviceActions {
     pub fn add(&mut self, actions: Vec<Action>, now: Instant) {
         self.touch(now);
         for a in actions {
-            let list = self.by_cmd.entry(a.cmd.clone()).or_default();
-            if let Some(existing) = list.iter_mut().find(|(x, _)| *x == a) {
-                existing.1 = now; // refresh
-                continue;
+            self.next += 1;
+            let seq = self.next;
+            match self.held.get_key_value(&a) {
+                // Offered again: refreshed, and now the newest.
+                Some((key, _)) => {
+                    let key = key.clone();
+                    self.held.insert(key.clone(), (seq, now));
+                    self.order.push_back((seq, now, key));
+                }
+                None => {
+                    let a = Arc::new(a);
+                    if a.params.values().any(|v| *v == PValue::Input) {
+                        self.with_input
+                            .entry(a.cmd.clone())
+                            .or_default()
+                            .insert(a.clone());
+                    }
+                    self.held.insert(a.clone(), (seq, now));
+                    self.order.push_back((seq, now, a));
+                }
             }
-            self.order.push_back((a.cmd.clone(), now));
-            list.push((a, now));
-            self.len += 1;
         }
-        while self.len > PER_DEVICE {
+        while self.held.len() > PER_DEVICE {
             self.evict_oldest();
         }
+        // Stale records (left by refreshes) never outnumber the live ones for long.
+        if self.order.len() > 2 * self.held.len() + 64 {
+            let held = &self.held;
+            self.order
+                .retain(|(seq, _, a)| held.get(a).is_some_and(|(s, _)| s == seq));
+        }
     }
 
-    fn evict_oldest(&mut self) {
-        let Some((cmd, _)) = self.order.pop_front() else {
-            return;
-        };
-        if let Some(list) = self.by_cmd.get_mut(&cmd)
-            && !list.is_empty()
-        {
-            // Drop the oldest action for that command.
-            let idx = list
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, (_, t))| *t)
-                .map(|(i, _)| i)
-                .unwrap_or(0);
-            list.remove(idx);
-            self.len -= 1;
-            if list.is_empty() {
-                self.by_cmd.remove(&cmd);
+    /// Whether `order`'s record is the latest one of its action.
+    fn live(&self, seq: u64, a: &Action) -> bool {
+        self.held.get(a).is_some_and(|(s, _)| *s == seq)
+    }
+
+    fn forget(&mut self, a: &Arc<Action>) {
+        self.held.remove(a);
+        if let Some(set) = self.with_input.get_mut(&a.cmd) {
+            set.remove(a);
+            if set.is_empty() {
+                self.with_input.remove(&a.cmd);
             }
         }
     }
 
-    pub fn expire(&mut self, now: Instant) {
-        for list in self.by_cmd.values_mut() {
-            let before = list.len();
-            list.retain(|(_, t)| now.duration_since(*t) < TTL);
-            self.len -= before - list.len();
+    /// Drop the action offered longest ago.
+    fn evict_oldest(&mut self) {
+        while let Some((seq, _, a)) = self.order.pop_front() {
+            if self.live(seq, &a) {
+                self.forget(&a);
+                return;
+            }
         }
-        self.by_cmd.retain(|_, l| !l.is_empty());
-        self.order.retain(|(_, t)| now.duration_since(*t) < TTL);
+    }
+
+    /// Drop the actions not offered again within [`TTL`].
+    pub fn expire(&mut self, now: Instant) {
+        while let Some((seq, at, a)) = self.order.front() {
+            let (seq, at) = (*seq, *at);
+            if self.live(seq, a) && now.saturating_duration_since(at) < TTL {
+                break;
+            }
+            let (_, _, a) = self.order.pop_front().expect("just looked");
+            if self.live(seq, &a) {
+                self.forget(&a);
+            }
+        }
     }
 
     fn find(&self, r: &Request, strict: bool) -> bool {
-        self.by_cmd
+        // An action without typed input matches only a request with exactly its parameters.
+        let exact: BTreeMap<String, PValue> = r
+            .params
+            .iter()
+            .map(|(k, v)| (k.clone(), PValue::Exact(v.clone())))
+            .collect();
+        let mut probe = Action {
+            cmd: r.cmd.clone(),
+            params: exact,
+            nav: false,
+        };
+        for nav in [false, true] {
+            probe.nav = nav;
+            if self.held.contains_key(&probe) && probe.matches(r, strict) {
+                return true;
+            }
+        }
+        self.with_input
             .get(&r.cmd)
-            .is_some_and(|l| l.iter().any(|(a, _)| a.matches(r, strict)))
+            .is_some_and(|set| set.iter().any(|a| a.matches(r, strict)))
     }
 
     pub fn len(&self) -> usize {
-        self.len
+        self.held.len()
     }
 
     /// Every action held (to hand them to a device: see `crate::stations`).
-    pub fn into_actions(self) -> Vec<Action> {
-        self.by_cmd
-            .into_values()
-            .flatten()
-            .map(|(a, _)| a)
+    pub fn into_actions(mut self) -> Vec<Action> {
+        // The other references go first, so each action is moved out rather than copied.
+        self.order.clear();
+        self.with_input.clear();
+        std::mem::take(&mut self.held)
+            .into_keys()
+            .map(|a| Arc::try_unwrap(a).unwrap_or_else(|a| (*a).clone()))
             .collect()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.held.is_empty()
     }
 }
 
@@ -808,6 +870,129 @@ mod tests {
             |i: usize| parse(&strs(&["x", "items", "0", "1", &format!("item_id:{i}")])).unwrap();
         assert!(!d.find(&req(0), true));
         assert!(d.find(&req(PER_DEVICE + 49), true));
+    }
+
+    fn item(cmd: &[&str], i: usize) -> Action {
+        Action {
+            cmd: strs(cmd),
+            params: [("item_id".to_string(), PValue::Exact(format!("{i}.0")))].into(),
+            nav: true,
+        }
+    }
+
+    /// Regression (review low): adding a menu compared every item with every action held for
+    /// its command, and each eviction scanned them again, all under the gateway-wide lock:
+    /// a device holding 4,000 actions of one command and shown 2,000 more items of it cost
+    /// millions of comparisons a page. Now adding, refreshing, evicting and matching cost
+    /// the same however many are held.
+    #[test]
+    fn adding_and_matching_cost_the_same_however_many_actions_are_held() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let t0 = Instant::now();
+            let mut d = DeviceActions::default();
+            d.add(
+                (0..PER_DEVICE).map(|i| item(&["x", "items"], i)).collect(),
+                t0,
+            );
+            // Page after page of new items of the same command, each evicting the oldest.
+            // Linear, this takes well under a second in a debug build on an idle machine;
+            // as it was, each page cost 16 million comparisons.
+            for page in 0..20 {
+                let base = PER_DEVICE + page * 2000;
+                d.add(
+                    (base..base + 2000)
+                        .map(|i| item(&["x", "items"], i))
+                        .collect(),
+                    t0,
+                );
+            }
+            // The same page offered again and again only refreshes it.
+            let again: Vec<Action> = (0..2000)
+                .map(|i| item(&["x", "items"], PER_DEVICE + 19 * 2000 + i))
+                .collect();
+            for _ in 0..30 {
+                d.add(again.clone(), t0);
+            }
+            let mut found = 0;
+            for i in 0..20_000 {
+                let r = parse(&strs(&["x", "items", "0", "10", &format!("item_id:{i}.0")]));
+                found += usize::from(d.find(&r.unwrap(), true));
+            }
+            let _ = tx.send((d.len(), d.order.len(), found));
+        });
+        let (len, records, found) = rx
+            .recv_timeout(Duration::from_secs(60))
+            .expect("adding and matching took far too long");
+        assert_eq!(len, PER_DEVICE);
+        assert!(records <= 2 * PER_DEVICE + 64, "{records} records kept");
+        assert_eq!(found, 0, "the first 20,000 were evicted long ago");
+    }
+
+    /// Refreshing keeps an action alive past its first offer's lifetime; expiry and eviction
+    /// go by when an action was last offered; typed-input actions follow the same rules.
+    #[test]
+    fn refreshed_actions_live_on_and_expired_ones_go_everywhere() {
+        let t0 = Instant::now();
+        let mut d = DeviceActions::default();
+        d.add(learn(&radio_menu()), t0);
+        let n = d.len();
+        let half = t0 + TTL / 2;
+        // Only the search box is offered again.
+        let search = learn(&radio_menu())
+            .into_iter()
+            .filter(|a| a.params.values().any(|v| *v == PValue::Input))
+            .collect::<Vec<_>>();
+        assert_eq!(search.len(), 1);
+        d.add(search, half);
+        assert_eq!(d.len(), n, "a refresh adds nothing");
+        d.expire(t0 + TTL + Duration::from_secs(1));
+        assert_eq!(d.len(), 1, "only the refreshed one is left");
+        let typed = strs(&[
+            "podcasts",
+            "items",
+            "0",
+            "20",
+            "search:in our time",
+            "item_id:1",
+            "menu:podcasts",
+        ]);
+        assert_eq!(allowed(&d, &typed, false), Ok(()));
+        let other = strs(&[
+            "radiofeeds",
+            "items",
+            "0",
+            "50",
+            "item_id:63f0.0",
+            "menu:radiofeeds",
+        ]);
+        assert_eq!(allowed(&d, &other, false), Err(Refusal::NotOffered));
+        d.expire(half + TTL);
+        assert!(d.is_empty());
+        assert!(d.with_input.is_empty(), "typed-input index emptied too");
+        assert_eq!(allowed(&d, &typed, false), Err(Refusal::NotOffered));
+
+        // Eviction drops the action offered longest ago: a refreshed old one survives.
+        let mut d = DeviceActions::default();
+        d.add(
+            (0..PER_DEVICE).map(|i| item(&["y", "items"], i)).collect(),
+            t0,
+        );
+        d.add(vec![item(&["y", "items"], 0)], t0 + Duration::from_secs(1));
+        d.add(
+            vec![item(&["y", "items"], PER_DEVICE)],
+            t0 + Duration::from_secs(2),
+        );
+        let has = |d: &DeviceActions, i: usize| {
+            d.find(
+                &parse(&strs(&["y", "items", "0", "1", &format!("item_id:{i}.0")])).unwrap(),
+                true,
+            )
+        };
+        assert!(has(&d, 0), "refreshed, so not the oldest");
+        assert!(!has(&d, 1), "the oldest went");
+        assert!(has(&d, PER_DEVICE));
+        assert_eq!(d.len(), PER_DEVICE);
     }
 
     #[test]

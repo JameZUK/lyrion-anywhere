@@ -13,7 +13,9 @@
 //!
 //! Locking: the relay's bookkeeping sits behind a plain mutex that is never held across an
 //! `.await`, so acknowledgements (which arrive on the player socket's read loop) never wait
-//! for network I/O. Only the upstream reader has its own async lock.
+//! for network I/O. Only the upstream reader has its own async lock (one reader at a time);
+//! the upstream stream itself sits behind a plain mutex held only while it is polled, so a
+//! cancel can drop it, and with it LMS's connection and any encoder, at any moment.
 //!
 //! A relay stops promptly when its session ends ([`Relay::cancel`]), when an upstream read
 //! stalls for [`UPSTREAM_READ_TIMEOUT`], and when the client neither acknowledges nor can
@@ -70,10 +72,23 @@ const WAIT_LOG_AFTER: Duration = Duration::from_secs(5);
 
 type Upstream = BoxStream<'static, Result<Bytes, std::io::Error>>;
 
+/// The reader's turn (held across its read) and whether LMS has been asked yet.
 struct UpstreamSlot {
-    stream: Option<Upstream>,
     /// The request to LMS has been made (it is never made twice).
     opened: bool,
+}
+
+/// The upstream itself. Its lock is held only while the stream is polled, never across an
+/// `.await`, so [`Relay::cancel`] can always drop it, whatever a reader is doing (review
+/// M15: it lived inside the reader's lock, out of reach of a cancel while a response whose
+/// client had stopped reading sat in the middle of a read).
+#[derive(Default)]
+struct Source {
+    stream: Option<Upstream>,
+    /// The rest of a chunk read from upstream that was larger than [`CHUNK`]: handed out a
+    /// [`CHUNK`] at a time, so one read never puts more than that past the window (a FLAC
+    /// stream's held metadata arrives as one piece of up to 16 MiB).
+    pending: Bytes,
 }
 
 struct RelayState {
@@ -86,6 +101,8 @@ struct RelayState {
     done: bool,
     /// LMS's stream ended with an error or stalled (not a clean end of the track).
     failed: bool,
+    /// The relay was cancelled: nothing more is served, and its window is let go.
+    cancelled: bool,
     /// Incremented per client request; an older request stops when superseded.
     consumer: u64,
     /// Bytes the client has confirmed receiving.
@@ -95,6 +112,7 @@ struct RelayState {
 pub struct Relay {
     state: Mutex<RelayState>,
     upstream: tokio::sync::Mutex<UpstreamSlot>,
+    source: Mutex<Source>,
     ack_changed: Notify,
     cancelled: watch::Sender<bool>,
     idle_timeout: Duration,
@@ -113,7 +131,7 @@ pub struct Relay {
 struct LiveSetup {
     ffmpeg: crate::live::Encoder,
     bitrate_k: u32,
-    permit: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
+    permit: Mutex<Option<crate::live::Slot>>,
     counts: Arc<crate::live::Counts>,
 }
 
@@ -138,6 +156,12 @@ impl RelayState {
         let keep = (self.window_cap as u64).max(self.received - self.acked) as usize;
         let excess = self.window.len().saturating_sub(keep);
         self.window.drain(..excess);
+        // Memory grown for more than the window (a client slow to acknowledge) is given
+        // back once it is no longer needed, not held for the rest of the track.
+        let room = self.window_cap + CHUNK;
+        if self.window.capacity() > 2 * room && self.window.len() <= room {
+            self.window.shrink_to(room);
+        }
     }
 
     fn replay(&self, from: u64, max: usize) -> Bytes {
@@ -161,13 +185,12 @@ impl Relay {
                 window_cap,
                 done: false,
                 failed: false,
+                cancelled: false,
                 consumer: 0,
                 acked: 0,
             }),
-            upstream: tokio::sync::Mutex::new(UpstreamSlot {
-                stream: None,
-                opened: false,
-            }),
+            upstream: tokio::sync::Mutex::new(UpstreamSlot { opened: false }),
+            source: Mutex::default(),
             ack_changed: Notify::new(),
             cancelled: watch::channel(false).0,
             idle_timeout,
@@ -185,7 +208,7 @@ impl Relay {
         ffmpeg: crate::live::Encoder,
         level: crate::live::Quality,
         bitrate_k: u32,
-        permit: tokio::sync::OwnedSemaphorePermit,
+        permit: crate::live::Slot,
     ) -> Self {
         self.sent = crate::stream_info::Sent::Opus {
             kbps: bitrate_k,
@@ -237,10 +260,49 @@ impl Relay {
         }
     }
 
-    /// Stop every response for this stream and drop the upstream connection.
+    /// Stop every response for this stream, and let go of what it holds now: the upstream
+    /// (LMS's connection, and any encoder with its encode slot), an encode slot not yet
+    /// used, and the replay window. A response whose client has stopped reading is not
+    /// polled, so it would never notice the flag itself (review M15): what it holds goes
+    /// here, not when its connection finally closes. Never waits.
     pub fn cancel(&self) {
         self.cancelled.send_replace(true);
+        {
+            let mut st = self.state.lock().unwrap();
+            st.cancelled = true;
+            st.window = VecDeque::new();
+        }
+        if let Some(live) = &self.live {
+            live.permit.lock().unwrap().take();
+        }
+        self.close_source();
         self.ack_changed.notify_waiters();
+    }
+
+    /// Drop the upstream: LMS's connection, and any encoder with its slot.
+    fn close_source(&self) {
+        let gone = std::mem::take(&mut *self.source.lock().unwrap());
+        drop(gone);
+    }
+
+    /// Up to a [`CHUNK`] of what a big piece left over, if any.
+    fn take_pending(&self) -> Option<Bytes> {
+        let mut src = self.source.lock().unwrap();
+        (!src.pending.is_empty()).then(|| {
+            let n = src.pending.len().min(CHUNK);
+            src.pending.split_to(n)
+        })
+    }
+
+    /// Poll the upstream (its lock held only for the poll).
+    fn poll_source(
+        &self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<Bytes, std::io::Error>>> {
+        match self.source.lock().unwrap().stream.as_mut() {
+            Some(s) => s.poll_next_unpin(cx),
+            None => std::task::Poll::Ready(Some(Err(io_error("no stream from the music server")))),
+        }
     }
 
     fn is_cancelled(&self) -> bool {
@@ -357,7 +419,7 @@ pub async fn stream(
                         sess.announce_stream(n, None, relay.sent);
                         body
                     };
-                    up.stream = Some(match (&relay.live, &relay.flac) {
+                    let stream = match (&relay.live, &relay.flac) {
                         (Some(live), _) => {
                             // The slot is used once: an encoder that failed to start gave
                             // it back, and a retry must not run one outside the limit.
@@ -385,8 +447,14 @@ pub async fn stream(
                         }
                         (None, Some(info)) => StripStream::new(body.boxed(), info.clone()).boxed(),
                         (None, None) => body.boxed(),
-                    });
+                    };
+                    relay.source.lock().unwrap().stream = Some(stream);
                     up.opened = true;
+                    if relay.is_cancelled() {
+                        // Cancelled while LMS answered: nothing is kept for it.
+                        relay.close_source();
+                        return StatusCode::NOT_FOUND.into_response();
+                    }
                 }
                 Ok(Ok(resp)) => {
                     warn!(status = %resp.status(), "LMS stream status");
@@ -571,6 +639,9 @@ fn body(
 /// What the current request can do now, decided under the state lock.
 fn step(cur: &mut Cursor) -> Step {
     let st = cur.relay.state.lock().unwrap();
+    if st.cancelled {
+        return Step::Fail("stream cancelled");
+    }
     if st.consumer != cur.my_turn {
         debug!(pos = cur.pos, "stream request superseded");
         return Step::Fail("superseded by a newer request");
@@ -678,25 +749,51 @@ async fn next_chunk(cur: &mut Cursor) -> Option<Result<Bytes, std::io::Error>> {
 /// or the state changed); `Some(None)` ends the body cleanly (LMS finished).
 async fn read_upstream(cur: &mut Cursor) -> Option<Option<Result<Bytes, std::io::Error>>> {
     let relay = cur.relay.clone();
-    let mut up = tokio::select! {
+    // One reader at a time; the upstream itself is behind its own lock, held only while it
+    // is polled, so a cancel can drop it at any moment (see [`Source`]).
+    let _turn = tokio::select! {
         g = relay.upstream.lock() => g,
         _ = cancelled(&mut cur.cancel) => return None,
     };
     {
         let st = relay.state.lock().unwrap();
-        // Superseded, finished, or moved on while waiting for the reader: `step` decides.
-        if st.consumer != cur.my_turn || st.done || cur.pos != st.received || st.too_far_ahead() {
+        // Cancelled, superseded, finished, or moved on while waiting for the reader: `step`
+        // decides.
+        if st.cancelled
+            || st.consumer != cur.my_turn
+            || st.done
+            || cur.pos != st.received
+            || st.too_far_ahead()
+        {
             return None;
         }
     }
-    let Some(stream) = up.stream.as_mut() else {
-        return Some(Some(Err(io_error("no stream from the music server"))));
+    let next = match relay.take_pending() {
+        Some(chunk) => Ok(Some(Ok(chunk))),
+        None => {
+            let next = std::future::poll_fn(|cx| relay.poll_source(cx));
+            tokio::select! {
+                r = tokio::time::timeout(relay.read_timeout, next) => r,
+                _ = cancelled(&mut cur.cancel) => return None,
+            }
+        }
     };
-    let next = tokio::select! {
-        r = tokio::time::timeout(relay.read_timeout, stream.next()) => r,
-        _ = cancelled(&mut cur.cancel) => return None,
+    // A big piece goes on a chunk at a time; the rest waits in `pending`.
+    let next = match next {
+        Ok(Some(Ok(mut chunk))) if chunk.len() > CHUNK => {
+            relay.source.lock().unwrap().pending = chunk.split_off(CHUNK);
+            Ok(Some(Ok(chunk)))
+        }
+        other => other,
     };
     let mut st = relay.state.lock().unwrap();
+    if st.cancelled {
+        // Cancelled during the read: nothing more goes into the window, and whatever the
+        // read left over goes too.
+        drop(st);
+        relay.close_source();
+        return None;
+    }
     match next {
         Ok(Some(Ok(chunk))) => {
             st.remember(&chunk);
@@ -711,20 +808,20 @@ async fn read_upstream(cur: &mut Cursor) -> Option<Option<Result<Bytes, std::io:
             warn!(received = st.received, error = %e, "LMS stream failed");
             st.done = true;
             st.failed = true;
-            up.stream = None;
+            relay.close_source();
             Some(Some(Err(std::io::Error::other(e))))
         }
         Ok(None) => {
             info!(received = st.received, "LMS stream finished");
             st.done = true;
-            up.stream = None;
+            relay.close_source();
             Some(None)
         }
         Err(_) => {
             warn!(received = st.received, "LMS stream stalled; giving up");
             st.done = true;
             st.failed = true;
-            up.stream = None;
+            relay.close_source();
             Some(Some(Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "upstream read timed out",
@@ -819,11 +916,8 @@ mod tests {
                 rx,
                 |mut rx| async move { rx.recv().await.map(|x| (x, rx)) },
             );
-        {
-            let mut slot = relay.upstream.lock().await;
-            slot.stream = Some(up.boxed());
-            slot.opened = true;
-        }
+        relay.source.lock().unwrap().stream = Some(up.boxed());
+        relay.upstream.lock().await.opened = true;
         state(&relay).consumer = 1;
         let b = Box::pin(body(relay.clone(), 0, 1, None));
         (relay, tx, b)
@@ -845,12 +939,87 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_ends_a_body_waiting_on_upstream() {
-        let (relay, _feed, mut b) = rig(1024, IDLE_TIMEOUT, UPSTREAM_READ_TIMEOUT).await;
-        let task = tokio::spawn(async move { drain(&mut b).await });
+        let (relay, feed, mut b) = rig(1024, IDLE_TIMEOUT, UPSTREAM_READ_TIMEOUT).await;
+        let task = tokio::spawn(async move {
+            let r = drain(&mut b).await;
+            // The body is held on to, as a connection would until it closes.
+            (r, b)
+        });
         tokio::time::sleep(Duration::from_millis(50)).await;
+        // The body is in the middle of a read, holding the reader's turn: the upstream goes
+        // all the same.
         relay.cancel();
+        assert!(feed.is_closed(), "the upstream was dropped at once");
         let r = tokio::time::timeout(Duration::from_secs(2), task).await;
         assert!(r.is_ok(), "body must end promptly once cancelled");
+    }
+
+    /// Regression (review M15): cancelling only set a flag, which a response notices when it
+    /// is polled; one whose client has stopped reading isn't, so the upstream (LMS's
+    /// connection, an encoder and its slot) and the window stayed for as long as that client
+    /// held its connection. Cancelling lets go of them itself.
+    #[tokio::test]
+    async fn cancel_lets_go_of_the_upstream_and_window_of_a_body_nobody_polls() {
+        let (relay, feed, mut b) = rig(1024, IDLE_TIMEOUT, UPSTREAM_READ_TIMEOUT).await;
+        feed.send(Ok(Bytes::from_static(b"abcd"))).unwrap();
+        assert_eq!(&b.next().await.unwrap().unwrap()[..], b"abcd");
+        // The client stops reading: the body is never polled again, but lives on.
+        relay.cancel();
+        assert!(feed.is_closed(), "the upstream was dropped");
+        assert!(state(&relay).window.is_empty() && state(&relay).window.capacity() == 0);
+        assert!(relay.source.lock().unwrap().stream.is_none());
+        // If it is polled after all, it ends with an error.
+        let (_, err) = tokio::time::timeout(Duration::from_secs(2), drain(&mut b))
+            .await
+            .unwrap();
+        assert!(err);
+    }
+
+    /// Regression (review low): a FLAC stream's metadata, held whole by `flac_strip` (up to
+    /// 16 MiB, when it is more than that it is passed on as it is), reached the relay as one
+    /// piece, and all of it went into the replay window, whose memory then stayed for the
+    /// rest of the track. A big piece now goes on a chunk at a time, so reading still stops
+    /// a window ahead of the client, and the bytes arrive whole and in order.
+    #[tokio::test]
+    async fn a_huge_piece_from_upstream_goes_on_a_chunk_at_a_time() {
+        let cap = 64 * 1024;
+        let (relay, feed, mut b) = rig(cap, IDLE_TIMEOUT, UPSTREAM_READ_TIMEOUT).await;
+        let piece: Vec<u8> = (0..4 * 1024 * 1024u32).map(|i| (i % 253) as u8).collect();
+        feed.send(Ok(Bytes::from(piece.clone()))).unwrap();
+        drop(feed);
+        let mut got = Vec::new();
+        while let Some(chunk) = tokio::time::timeout(Duration::from_secs(5), b.next())
+            .await
+            .expect("the body keeps going")
+        {
+            let chunk = chunk.unwrap();
+            got.extend_from_slice(&chunk);
+            {
+                let st = state(&relay);
+                assert!(st.received <= got.len() as u64 + cap as u64 + CHUNK as u64);
+                assert!(st.window.len() <= cap + CHUNK, "{}", st.window.len());
+            }
+            relay.ack(got.len() as u64);
+        }
+        assert_eq!(got, piece);
+    }
+
+    /// Memory the window grew to for a client slow to acknowledge is given back once it has
+    /// caught up, not kept for the rest of the track.
+    #[test]
+    fn the_window_gives_back_memory_it_no_longer_needs() {
+        let r = Relay::new(64 * 1024);
+        state(&r).remember(&vec![1u8; 8 * 1024 * 1024]);
+        assert!(state(&r).window.capacity() >= 8 * 1024 * 1024);
+        r.ack(8 * 1024 * 1024);
+        state(&r).remember(&[2u8; 16]);
+        let st = state(&r);
+        assert!(st.window.len() <= 64 * 1024);
+        assert!(
+            st.window.capacity() <= 2 * (64 * 1024 + CHUNK),
+            "{} bytes still held",
+            st.window.capacity()
+        );
     }
 
     #[tokio::test]

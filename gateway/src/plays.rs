@@ -401,12 +401,20 @@ pub async fn record(State(gw): State<AppState>, headers: HeaderMap, body: Body) 
 
     let now = unix_now();
     let oldest = now.saturating_sub(MAX_AGE.as_secs() + 86_400);
-    {
+    let prune_everyone = {
         let mut pruned = limits.pruned.lock().unwrap();
-        if pruned.is_none_or(|t| t.elapsed() >= PRUNE_EVERY) {
+        let due = pruned.is_none_or(|t| t.elapsed() >= PRUNE_EVERY);
+        if due {
             *pruned = Some(Instant::now());
-            let _ = gw.accounts().prune_plays(None, oldest, MAX_KEYS_PER_USER);
         }
+        due
+    };
+    // Every database step of an upload runs on the blocking pool (review M16): on a disk
+    // that stalls, only this upload waits, not the player sessions sharing its worker.
+    if prune_everyone {
+        let _ = gw
+            .db(move |a| a.prune_plays(None, oldest, MAX_KEYS_PER_USER))
+            .await;
     }
 
     let started = Instant::now();
@@ -438,17 +446,21 @@ pub async fn record(State(gw): State<AppState>, headers: HeaderMap, body: Body) 
         }
         results.push(outcome.json(Some(&play.key)));
     }
+    let (user, username, device) = (p.user_id, p.username.clone(), p.device_id);
     let _ = gw
-        .accounts()
-        .prune_plays(Some(p.user_id), oldest, MAX_KEYS_PER_USER);
-    if recorded > 0 {
-        gw.accounts().audit(
-            "plays",
-            Some(&p.username),
-            Some(p.device_id),
-            &format!("recorded {recorded}"),
-        );
-    }
+        .db(move |a| {
+            let pruned = a.prune_plays(Some(user), oldest, MAX_KEYS_PER_USER);
+            if recorded > 0 {
+                a.audit(
+                    "plays",
+                    Some(&username),
+                    Some(device),
+                    &format!("recorded {recorded}"),
+                );
+            }
+            pruned
+        })
+        .await;
     let retry = results.iter().any(|r| r["result"] == "retry");
     let mut out = json!({ "results": results });
     if retry {
@@ -477,15 +489,17 @@ impl crate::Gateway {
         if let Err(reason) = check_time(play.played_at, play.seconds, now) {
             return Outcome::Refused(reason);
         }
-        let accounts = self.accounts();
-        match accounts.claim_play(
+        let (user, device, key, track_id, played_at) = (
             p.user_id,
             p.device_id,
-            &play.key,
+            play.key.clone(),
             play.track_id,
             play.played_at,
-            STALE_CLAIM,
-        ) {
+        );
+        let claimed = self
+            .db(move |a| a.claim_play(user, device, &key, track_id, played_at, STALE_CLAIM))
+            .await;
+        match claimed {
             Ok(PlayClaim::Claimed) => {}
             Ok(PlayClaim::Recorded) => return Outcome::Duplicate,
             Ok(PlayClaim::InFlight) => return Outcome::Retry("in_progress"),
@@ -500,10 +514,13 @@ impl crate::Gateway {
             self.forward(p, play, secret, started, lookups, lms_down)
                 .await
         };
-        let _ = match outcome {
-            Outcome::Recorded | Outcome::Duplicate => accounts.finish_play(p.user_id, &play.key),
-            _ => accounts.release_play(p.user_id, &play.key),
-        };
+        let key = play.key.clone();
+        let _ = self
+            .db(move |a| match outcome {
+                Outcome::Recorded | Outcome::Duplicate => a.finish_play(user, &key),
+                _ => a.release_play(user, &key),
+            })
+            .await;
         outcome
     }
 
@@ -549,13 +566,12 @@ impl crate::Gateway {
         // needs to count: anything closer is the same listening sent twice under new keys
         // (pentest 2026-10: fresh keys could inflate a track's play count at will).
         let within = needed(track.duration).ceil() as u64;
-        match self.accounts().play_overlaps(
-            p.user_id,
-            &play.key,
-            play.track_id,
-            play.played_at,
-            within,
-        ) {
+        let (user, key, track_id, played_at) =
+            (p.user_id, play.key.clone(), play.track_id, play.played_at);
+        let overlaps = self
+            .db(move |a| a.play_overlaps(user, &key, track_id, played_at, within))
+            .await;
+        match overlaps {
             Ok(false) => {}
             Ok(true) => return Outcome::Refused("overlap"),
             Err(_) => return Outcome::Retry("server_error"),

@@ -196,6 +196,37 @@ impl Counts {
     }
 }
 
+/// A live-encode slot taken for a stream the client hasn't fetched within this long is given
+/// back (review M15: one that never fetched held it until its next stream). A client fetches
+/// at once on the `strm`; one that was away meanwhile gets the stream as LMS sends it (its
+/// player probes what it receives, whatever the `strm` said).
+pub const UNFETCHED_SLOT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// One of the gateway's live-encode slots ([`crate::Config::live_transcode_jobs`]), held for
+/// one session from the `strm` that asks for an encode until its encoder stops (or the
+/// stream goes unfetched, see [`UNFETCHED_SLOT`]). It carries its session's
+/// mark, so the slots a session holds are counted by that mark's references wherever the
+/// slot has got to (pending, in the relay, in the encoder): the per-user cap counts them.
+pub struct Slot {
+    _permit: OwnedSemaphorePermit,
+    _holder: Arc<()>,
+}
+
+impl Slot {
+    pub fn new(permit: OwnedSemaphorePermit, holder: Arc<()>) -> Slot {
+        Slot {
+            _permit: permit,
+            _holder: holder,
+        }
+    }
+}
+
+/// Slots one user's devices may hold at once: half of all of them, at least one, so one
+/// household member's devices can't take every slot (review M15).
+pub fn per_user(total: usize) -> usize {
+    (total / 2).max(1)
+}
+
 /// Aborts the feeder when the stream is dropped.
 struct Feeder(JoinHandle<Result<(), String>>);
 
@@ -212,7 +243,7 @@ struct Live {
     counts: Arc<Counts>,
     done: bool,
     /// The live-encode slot, given back when the stream is dropped.
-    _permit: Option<OwnedSemaphorePermit>,
+    _permit: Option<Slot>,
 }
 
 /// Re-encode `upstream` (FLAC) to Ogg Opus at `bitrate_k` with `ffmpeg`. The stream ends
@@ -221,7 +252,7 @@ pub fn encode(
     ffmpeg: &Encoder,
     bitrate_k: u32,
     upstream: BoxStream<'static, Result<Bytes, io::Error>>,
-    permit: Option<OwnedSemaphorePermit>,
+    permit: Option<Slot>,
     counts: Arc<Counts>,
 ) -> io::Result<BoxStream<'static, Result<Bytes, io::Error>>> {
     let mut cmd = tokio::process::Command::from(crate::transcode::command(&ffmpeg.path));
@@ -324,6 +355,33 @@ pub fn wanted(format: u8, quality: Quality, opus_ffmpeg: bool) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_user_may_hold_half_the_slots_and_at_least_one() {
+        assert_eq!(per_user(0), 1);
+        assert_eq!(per_user(1), 1);
+        assert_eq!(per_user(2), 1);
+        assert_eq!(per_user(4), 2);
+        assert_eq!(per_user(5), 2);
+        assert_eq!(per_user(16), 8);
+    }
+
+    /// A slot counts against its session's mark wherever it goes, until it is dropped.
+    #[test]
+    fn slots_are_counted_by_their_sessions_mark() {
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+        let mark = Arc::new(());
+        let a = Slot::new(sem.clone().try_acquire_owned().unwrap(), mark.clone());
+        let b = Slot::new(sem.clone().try_acquire_owned().unwrap(), mark.clone());
+        assert_eq!(Arc::strong_count(&mark) - 1, 2);
+        assert_eq!(sem.available_permits(), 0);
+        drop(a);
+        assert_eq!(Arc::strong_count(&mark) - 1, 1);
+        assert_eq!(sem.available_permits(), 1);
+        drop(b);
+        assert_eq!(Arc::strong_count(&mark), 1);
+        assert_eq!(sem.available_permits(), 2);
+    }
 
     #[test]
     fn quality_grammar() {

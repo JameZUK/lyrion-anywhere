@@ -59,6 +59,8 @@ pub const RUNS_TOTAL: usize = 8;
 pub const KEEP_RESULTS: Duration = Duration::from_secs(120);
 /// Results kept, for everyone.
 const MAX_KEPT: usize = 256;
+/// Results kept for one user (a user has at most a few filters open at once).
+const KEPT_PER_USER: usize = 16;
 /// Each LMS query's time limit.
 const LMS_LIMIT: Duration = Duration::from_secs(10);
 
@@ -586,12 +588,32 @@ impl Results {
         (s == spec && now.duration_since(*at) < KEEP_RESULTS).then(|| ids.clone())
     }
 
+    /// Keep a result. When full, expired results go first; then the user's own oldest, if
+    /// they hold their share ([`KEPT_PER_USER`]); then the oldest of anyone's. Review low:
+    /// a full table was emptied, so one user running filters threw away everyone's pages.
     fn put(&self, key: (i64, i64), spec: String, ids: Vec<i64>, now: Instant) {
         let mut m = self.0.lock().unwrap();
-        if m.len() >= MAX_KEPT {
+        if !m.contains_key(&key) && m.len() >= MAX_KEPT {
             m.retain(|_, (at, _, _)| now.duration_since(*at) < KEEP_RESULTS);
-            if m.len() >= MAX_KEPT {
-                m.clear();
+        }
+        if !m.contains_key(&key) {
+            let user = key.0;
+            let mine = m.keys().filter(|(u, _)| *u == user).count();
+            let oldest = |m: &HashMap<(i64, i64), Kept>, only_user: bool| {
+                m.iter()
+                    .filter(|((u, _), _)| !only_user || *u == user)
+                    .min_by_key(|(_, (at, _, _))| *at)
+                    .map(|(k, _)| *k)
+            };
+            let victim = if mine >= KEPT_PER_USER {
+                oldest(&m, true)
+            } else if m.len() >= MAX_KEPT {
+                oldest(&m, false)
+            } else {
+                None
+            };
+            if let Some(v) = victim {
+                m.remove(&v);
             }
         }
         m.insert(key, (now, spec, ids));
@@ -847,6 +869,49 @@ mod tests {
 
     fn spec(v: Value) -> Result<Spec, Invalid> {
         parse_spec(&v)
+    }
+
+    /// Regression (review low): when the table of kept results was full it was emptied, so
+    /// one user running filters threw away every other user's later pages. Once a user holds
+    /// their share, their own oldest goes; when the table is full, the oldest of anyone's.
+    #[test]
+    fn one_user_filling_the_kept_results_keeps_to_their_share() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let r = Results::default();
+        r.put((1, 1), "a".into(), vec![1], t0);
+        for i in 0..(2 * MAX_KEPT) as i64 {
+            r.put((2, i), "b".into(), vec![i], at(i as u64 + 1));
+        }
+        let later = at(5_000);
+        assert_eq!(
+            r.get((1, 1), "a", later),
+            Some(vec![1]),
+            "another user's page survives"
+        );
+        let held = r.0.lock().unwrap().keys().filter(|(u, _)| *u == 2).count();
+        assert_eq!(held, KEPT_PER_USER);
+        let last = (2 * MAX_KEPT) as i64 - 1;
+        assert_eq!(
+            r.get((2, last), "b", later),
+            Some(vec![last]),
+            "the newest kept"
+        );
+        assert_eq!(r.get((2, 0), "b", later), None);
+
+        // Many users, the table full: the oldest of anyone's goes, and only it.
+        let r = Results::default();
+        for u in 0..MAX_KEPT as i64 {
+            r.put((u, 0), "c".into(), vec![u], at(u as u64));
+        }
+        r.put((9_999, 0), "c".into(), vec![], at(1_000));
+        assert_eq!(r.0.lock().unwrap().len(), MAX_KEPT);
+        assert_eq!(r.get((0, 0), "c", later), None, "the oldest went");
+        assert_eq!(r.get((1, 0), "c", later), Some(vec![1]));
+        // A result made again replaces its own entry, evicting nothing.
+        r.put((1, 0), "c2".into(), vec![2], at(2_000));
+        assert_eq!(r.0.lock().unwrap().len(), MAX_KEPT);
+        assert_eq!(r.get((2, 0), "c", later), Some(vec![2]));
     }
 
     fn with_rules(rules: Value) -> Value {

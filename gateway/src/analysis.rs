@@ -410,7 +410,7 @@ pub async fn track(
     );
     let tag = etag(&name, enc);
 
-    if let Some(bytes) = svc.cached(&name) {
+    if let Some(bytes) = cached_off(&gw, &name).await {
         return answer(&bytes, enc, &tag, &headers);
     }
     if let Some(f) = svc.remembered_failure(&name) {
@@ -494,6 +494,26 @@ fn answer(bytes: &[u8], enc: Encoding, tag: &str, req: &HeaderMap) -> Response {
     r
 }
 
+/// [`Analysis::cached`] on the blocking pool: it reads the cache's file (and may delete it).
+async fn cached_off(gw: &AppState, name: &str) -> Option<Vec<u8>> {
+    let (gw, name) = (gw.clone(), name.to_string());
+    tokio::task::spawn_blocking(move || gw.analysis.as_ref()?.cached(&name))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// [`Analysis::store`] on the blocking pool: it writes the cache's file.
+async fn store_off(gw: &AppState, name: &str, bytes: Arc<Vec<u8>>) {
+    let (gw, name) = (gw.clone(), name.to_string());
+    let _ = tokio::task::spawn_blocking(move || {
+        if let Some(svc) = gw.analysis.as_ref() {
+            svc.store(&name, &bytes);
+        }
+    })
+    .await;
+}
+
 // ---------------------------------------------------------------------------
 // Jobs
 // ---------------------------------------------------------------------------
@@ -520,7 +540,7 @@ async fn run_job(
     }
     let _unlist = Unlist(svc, &name);
     let outcome = match svc.jobs.acquire().await {
-        Ok(_running) => match svc.cached(&name) {
+        Ok(_running) => match cached_off(&gw, &name).await {
             // Finished by an earlier job meanwhile.
             Some(bytes) => Ok(Arc::new(bytes)),
             None => analyse(&gw, svc, &track, ext).await.map(Arc::new),
@@ -528,7 +548,7 @@ async fn run_job(
         Err(_) => Err(Failure::Internal),
     };
     match &outcome {
-        Ok(bytes) => svc.store(&name, bytes),
+        Ok(bytes) => store_off(&gw, &name, bytes.clone()).await,
         Err(f) => {
             tracing::info!(track = track.id, failure = ?f, "track analysis failed");
             if f.lasting() {

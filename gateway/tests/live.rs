@@ -625,6 +625,154 @@ async fn a_superseded_stream_is_cancelled_even_if_its_client_stays() {
     assert_eq!(strm[2], b'u', "the next FLAC stream is re-encoded");
 }
 
+/// Sign in on a device by its token and MAC, say HELO, and have LMS send a `strm s` in
+/// `format`: the socket, the session id, LMS's end and the `strm` the player received.
+async fn announce_as(
+    h: &mut Harness,
+    token: &str,
+    mac: [u8; 6],
+    format: u8,
+) -> (Ws, String, OwnedWriteHalf, Vec<u8>) {
+    let mut ws = h.dial().await;
+    ws.send(Message::Text(auth(token, Some("high")).into()))
+        .await
+        .unwrap();
+    let g = loop {
+        if let Message::Text(t) = next(&mut ws).await {
+            break serde_json::from_str::<serde_json::Value>(&t).unwrap();
+        }
+    };
+    let sid = g["session"].as_str().unwrap().to_string();
+    let mut lms = h.lms.accept().await;
+    ws.send(Message::Binary(helo(mac).into())).await.unwrap();
+    lms.write_all(&strm_format(
+        b's',
+        format,
+        Ipv4Addr::UNSPECIFIED,
+        &stream_req(mac),
+    ))
+    .await
+    .unwrap();
+    let strm = strm_payload(&next_skipping_stream(&mut ws).await);
+    (ws, sid, lms, strm)
+}
+
+/// Regression (review M15): a live-encode slot was taken at each FLAC `strm s` and kept
+/// until the client fetched the stream, so a client that never fetched held it until its
+/// next stream. Now it is given back after a few seconds; a fetch after that gets the
+/// stream as LMS sends it (the player probes what it receives).
+#[tokio::test]
+async fn an_unfetched_stream_gives_its_encode_slot_back() {
+    use anywhere_gateway::live::UNFETCHED_SLOT;
+    let Live { mut h, dir } = live(None, 1).await;
+    let file = library_flac(0, 5);
+    *h.lms.stream_body.lock().unwrap() = Some(Arc::new(file.clone()));
+    let (ta, tb) = (h.tok_a.clone(), h.tok_b.clone());
+    let (_wa, sa, _la, strm_a) = announce(&mut h, auth(&ta, Some("high")), A, b'f').await;
+    assert_eq!(strm_a[2], b'u', "the only slot");
+    // A never fetches. B (another user) finds no free slot ...
+    let (mut wb, _sb, mut lb, strm_b) = announce(&mut h, auth(&tb, Some("high")), B, b'f').await;
+    assert_eq!(strm_b[2], b'f');
+    // ... until A's has been given back.
+    tokio::time::sleep(UNFETCHED_SLOT + Duration::from_millis(1500)).await;
+    let again = restream(&mut wb, &mut lb, h.mac_b, b'f').await;
+    assert_eq!(again[2], b'u', "the unfetched slot was given back");
+    // A's late fetch gets the stream as LMS sent it, without an encoder.
+    let (got, _) = fetch_all(&h, &sa, 1, &ta).await;
+    assert!(got.starts_with(b"fLaC"), "the original, not Opus");
+    assert!(runs(&dir).is_empty());
+}
+
+/// Regression (review M15): one user's devices could hold every live-encode slot (four
+/// devices, the four default slots). A user's devices may hold at most half of them; other
+/// users are not affected, and a device's next stream gives its own slot back first.
+#[tokio::test]
+async fn one_users_devices_hold_at_most_half_the_encode_slots() {
+    let Live { mut h, dir: _dir } = live(None, 4).await;
+    *h.lms.stream_body.lock().unwrap() = Some(Arc::new(library_flac(0, 5)));
+    let mut alice = vec![(h.tok_a.clone(), h.mac_a)];
+    for name in ["phone", "tablet"] {
+        let t = h
+            .accounts
+            .login("alice", PW, None, name, None, "test")
+            .unwrap();
+        alice.push((t.access, t.principal.mac));
+    }
+    let mut held = Vec::new();
+    for (i, (tok, mac)) in alice.clone().into_iter().enumerate() {
+        let (ws, sid, lms, strm) = announce_as(&mut h, &tok, mac, b'f').await;
+        let want = if i < 2 { b'u' } else { b'f' };
+        assert_eq!(strm[2], want, "alice's device {i}");
+        held.push((ws, sid, lms));
+    }
+    // Bob still gets one of the two slots left.
+    let tb = h.tok_b.clone();
+    let (_wb, _sb, _lb, strm_b) = announce(&mut h, auth(&tb, Some("high")), B, b'f').await;
+    assert_eq!(strm_b[2], b'u');
+    // Alice's first device moves on to its next track: its own slot comes back to it.
+    let (ws, _, lms) = &mut held[0];
+    let again = restream(ws, lms, alice[0].1, b'f').await;
+    assert_eq!(again[2], b'u');
+}
+
+/// Regression (review M15): cancelling a stream (its session ending, the next `strm`) only
+/// set a flag, which a response notices when it is polled. A response whose client had
+/// stopped reading is not polled, so it kept LMS's connection, the encoder and its slot,
+/// and the replay window, for as long as the client held the connection. Cancelling lets go
+/// of them itself.
+#[tokio::test]
+async fn a_stream_whose_client_stopped_reading_is_cancelled_all_the_same() {
+    let dir = scratch("enc");
+    let path = fake_encoder(&dir, None);
+    let mut h = harness_with(|c| {
+        c.ffmpeg = Setup::Ready(Ffmpeg {
+            path,
+            mp3: true,
+            opus: Some(OpusEncoder::Libopus),
+        });
+        c.live_transcode_jobs = 1;
+        // The relay never waits for acknowledgements here: only the socket stops it.
+        c.replay_window = 64 * 1024 * 1024;
+    })
+    .await;
+    *h.lms.stream_body.lock().unwrap() = Some(Arc::new(vec![0x5a; 32 * 1024 * 1024]));
+    let tok = h.tok_a.clone();
+    let (mut ws, sid, mut lms, strm) = announce(&mut h, auth(&tok, Some("high")), A, b'f').await;
+    assert_eq!(strm[2], b'u');
+    // A client that reads the response head and then nothing more.
+    let mut client = TcpStream::connect(h.addr).await.unwrap();
+    client
+        .write_all(
+            format!(
+                "GET /v1/stream/{sid}/1 HTTP/1.1\r\nhost: test\r\nauthorization: Bearer {tok}\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut head = Vec::new();
+    let mut buf = [0u8; 4096];
+    while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+        let n = client.read(&mut buf).await.unwrap();
+        assert!(n > 0);
+        head.extend_from_slice(&buf[..n]);
+    }
+    assert!(String::from_utf8_lossy(&head).starts_with("HTTP/1.1 200"));
+    wait_for(|| !pids(&dir).is_empty()).await;
+    let pid = pids(&dir)[0];
+    let alive = |pid: u32| Path::new(&format!("/proc/{pid}")).exists();
+    // Long enough for the socket buffers to fill and the response to stop being polled.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(alive(pid));
+    // The next track: the old stream is cancelled while its client still holds it.
+    let _ = restream(&mut ws, &mut lms, h.mac_a, b'm').await;
+    wait_for(|| !alive(pid)).await;
+    // Its encode slot (the only one) is free again.
+    let strm = restream(&mut ws, &mut lms, h.mac_a, b'f').await;
+    assert_eq!(strm[2], b'u', "the next FLAC stream is re-encoded");
+    drop(client);
+}
+
 // ---------------------------------------------------------------------------
 // The real ffmpeg
 // ---------------------------------------------------------------------------

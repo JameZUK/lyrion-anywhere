@@ -239,6 +239,23 @@ async fn fetch_into(
     Ok(())
 }
 
+/// The SHA-256 of a file, as lower-case hex, read in pieces (blocking file work: call it on
+/// the blocking pool).
+pub fn file_sha256(path: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
 async fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
     #[cfg(unix)]
     {

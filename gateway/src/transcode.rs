@@ -648,7 +648,16 @@ impl Cache {
         let units = u32::try_from(bytes.div_ceil(self.unit)).ok()?;
         let room = self.room.acquire_many(units).await.ok()?;
         self.index.lock().unwrap().reserved += bytes;
-        self.evict(None);
+        // The files evicted to make room are deleted on the blocking pool, not here.
+        let doomed = self.victims(None);
+        if !doomed.is_empty() {
+            let _ = tokio::task::spawn_blocking(move || {
+                for p in doomed {
+                    let _ = std::fs::remove_file(p);
+                }
+            })
+            .await;
+        }
         Some(Reservation {
             cache: self,
             bytes,
@@ -660,7 +669,9 @@ impl Cache {
         self.index.lock().unwrap().entries.contains_key(name)
     }
 
-    /// A cached transcode, marked as just used.
+    /// A cached transcode, marked as just used. Blocking file work (a `stat` and a date
+    /// written), as are [`Self::insert`] and [`Self::remove`]: callers on the async runtime
+    /// run them on its blocking pool (review low), so a stalled disk holds up only them.
     pub fn lookup(&self, name: &str) -> Option<PathBuf> {
         if !valid_name_with(name, self.exts) {
             return None;
@@ -723,9 +734,19 @@ impl Cache {
         let _ = std::fs::remove_file(self.dir.join(name));
     }
 
-    /// Remove least recently used entries (never `keep`) until the cache fits.
+    /// Remove least recently used entries (never `keep`) until the cache fits, deleting
+    /// their files (blocking file work).
     fn evict(&self, keep: Option<&str>) {
+        for p in self.victims(keep) {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    /// Forget least recently used entries (never `keep`) until the cache fits: the files to
+    /// delete. No file work, so it may run anywhere.
+    fn victims(&self, keep: Option<&str>) -> Vec<PathBuf> {
         let mut ix = self.index.lock().unwrap();
+        let mut doomed = Vec::new();
         while ix.total + ix.reserved > self.cap {
             let victim = ix
                 .entries
@@ -737,8 +758,9 @@ impl Cache {
             if let Some((size, _)) = ix.entries.remove(&victim) {
                 ix.total -= size;
             }
-            let _ = std::fs::remove_file(self.dir.join(&victim));
+            doomed.push(self.dir.join(&victim));
         }
+        doomed
     }
 
     /// A fresh temporary path in the cache directory (removed at next start if left over).

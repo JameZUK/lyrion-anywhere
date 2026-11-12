@@ -40,6 +40,10 @@ pub const MAX_BODY: usize = 1024;
 pub const MAX_NAME: usize = names::PLAYLIST_NAME_MAX;
 /// Saved playlists of a similar name looked through for an exact match.
 const SEARCH_ROWS: u32 = 1_000;
+/// Longest a save waits for another save (or an edit of the queue) to finish.
+const SAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Each LMS request of a save (healthy, LMS answers in milliseconds).
+const LMS_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The name a playlist may be saved under (trimmed), or why not: the shared rules
 /// ([`names::playlist_name`]: length, control and invisible characters, path separators,
@@ -160,16 +164,37 @@ pub async fn save(
         Err(why) => return error(StatusCode::BAD_REQUEST, why),
     };
 
+    // LMS is blocked: say so at once, as `/v1/rpc` does (review low).
+    if gw.lms_health().is_busy() {
+        return crate::rpc::busy();
+    }
     // One save at a time (names are shared by every player), and none while the gateway
-    // edits this queue.
+    // edits this queue. A save waits only briefly for another to finish, and each of its
+    // LMS requests has a time limit of its own, so a save stuck on a slow LMS holds the
+    // others up for a bounded time.
     static SAVING: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    let _saving = SAVING.get_or_init(Default::default).lock().await;
+    let Ok(_saving) =
+        tokio::time::timeout(SAVE_WAIT, SAVING.get_or_init(Default::default).lock()).await
+    else {
+        return crate::rpc::busy();
+    };
     let lock = crate::queue_edit::lock_for(&player);
-    let _held = lock.lock().await;
+    let Ok(_held) = tokio::time::timeout(SAVE_WAIT, lock.lock()).await else {
+        return crate::rpc::busy();
+    };
+    if gw.lms_health().is_busy() {
+        return crate::rpc::busy();
+    }
+    let lms = |player: String, cmd: Vec<String>| {
+        let gw = gw.clone();
+        async move { gw.lms_command_within(&player, &cmd, LMS_LIMIT).await }
+    };
 
-    let status = match gw
-        .lms_command(&player, &["status".into(), "0".into(), "1".into()])
-        .await
+    let status = match lms(
+        player.clone(),
+        vec!["status".into(), "0".into(), "1".into()],
+    )
+    .await
     {
         Ok(v) => v,
         Err(e) => {
@@ -181,19 +206,16 @@ pub async fn save(
         return error(StatusCode::CONFLICT, "the queue is empty");
     }
 
-    let find = |name: String| {
-        let gw = gw.clone();
-        async move {
-            let cmd = [
-                "playlists".to_string(),
-                "0".into(),
-                SEARCH_ROWS.to_string(),
-                format!("search:{name}"),
-            ];
-            gw.lms_command("", &cmd)
-                .await
-                .map(|list| same_name(&list, &name))
-        }
+    let find = |name: String| async move {
+        let cmd = vec![
+            "playlists".to_string(),
+            "0".into(),
+            SEARCH_ROWS.to_string(),
+            format!("search:{name}"),
+        ];
+        lms(String::new(), cmd)
+            .await
+            .map(|list| same_name(&list, &name))
     };
     let mut name = save.name;
     match find(name.clone()).await {
@@ -221,9 +243,11 @@ pub async fn save(
         Ok(None) => {}
     }
 
-    let saved = match gw
-        .lms_command(&player, &["playlist".into(), "save".into(), name.clone()])
-        .await
+    let saved = match lms(
+        player.clone(),
+        vec!["playlist".into(), "save".into(), name.clone()],
+    )
+    .await
     {
         Ok(v) => v,
         Err(e) => {

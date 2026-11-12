@@ -110,6 +110,134 @@ async fn a_stalled_last_seen_write_does_not_hold_up_other_requests() {
 }
 
 // ---------------------------------------------------------------------------
+// Uploads of plays, downloads and clearing the history (review M16)
+// ---------------------------------------------------------------------------
+
+/// Keep the database's write side busy, back to back, with `rounds` stalled writes from a
+/// thread of its own (token renewals of a device of alice's), so that any database work a
+/// request does inline meets one of them and holds up the test's only thread.
+fn keep_the_writer_busy(h: &Harness, rounds: usize) -> std::thread::JoinHandle<()> {
+    let accounts = h.accounts.clone();
+    let t = accounts
+        .login("alice", PW, None, "Busy", None, "test")
+        .unwrap();
+    // Bob's device makes no last-seen write of its own here.
+    let b = accounts.authenticate(&h.tok_b).unwrap().device_id;
+    assert!(accounts.claim_seen(b));
+    accounts.stall_writes_for_test(STALL);
+    std::thread::spawn(move || {
+        let mut refresh = t.refresh;
+        for _ in 0..rounds {
+            match accounts.refresh(&refresh) {
+                Ok(t) => refresh = t.refresh,
+                Err(_) => break,
+            }
+        }
+        accounts.stall_writes_for_test(Duration::ZERO);
+    })
+}
+
+/// Run `request` while timing `/healthz` over and over: it must answer promptly throughout.
+async fn healthz_stays_prompt_during(
+    h: &Harness,
+    request: impl std::future::Future<Output = S> + Send + 'static,
+) -> S {
+    // Long enough for the busy thread to have taken the write side.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let task = tokio::spawn(request);
+    let mut worst = Duration::ZERO;
+    while !task.is_finished() {
+        let t = Instant::now();
+        assert_eq!(healthz(h).await, S::OK);
+        worst = worst.max(t.elapsed());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        worst < PROMPT,
+        "an unrelated request waited {worst:?} for another's database work"
+    );
+    task.await.unwrap()
+}
+
+#[tokio::test]
+async fn an_upload_of_plays_on_a_stalled_disk_does_not_hold_up_other_requests() {
+    let h = harness().await;
+    let busy = keep_the_writer_busy(&h, 4);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let (url, token) = (h.url("/v1/plays"), h.tok_b.clone());
+    let upload = async move {
+        reqwest::Client::new()
+            .post(url)
+            .bearer_auth(token)
+            .json(&json!([{"key": "stalled-play-1", "track_id": 1,
+                            "played_at": now - 900, "seconds": 300}]))
+            .send()
+            .await
+            .unwrap()
+            .status()
+    };
+    assert_eq!(healthz_stays_prompt_during(&h, upload).await, S::OK);
+    busy.join().unwrap();
+}
+
+#[tokio::test]
+async fn clearing_the_history_on_a_stalled_disk_does_not_hold_up_other_requests() {
+    let h = harness().await;
+    let busy = keep_the_writer_busy(&h, 4);
+    let (url, token) = (h.url("/v1/me/history"), h.tok_b.clone());
+    let clear = async move {
+        reqwest::Client::new()
+            .delete(url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .status()
+    };
+    assert_eq!(healthz_stays_prompt_during(&h, clear).await, S::OK);
+    busy.join().unwrap();
+    assert!(
+        h.accounts
+            .audit_log(100)
+            .unwrap()
+            .iter()
+            .any(|e| e.event == "history.cleared" && e.username.as_deref() == Some("bob")),
+        "still audited"
+    );
+}
+
+#[tokio::test]
+async fn a_download_on_a_stalled_disk_does_not_hold_up_other_requests() {
+    let h = harness().await;
+    let busy = keep_the_writer_busy(&h, 4);
+    let (url, token) = (h.url("/v1/download/track/1"), h.tok_b.clone());
+    let download = async move {
+        let r = reqwest::Client::new()
+            .get(url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap();
+        let status = r.status();
+        let _ = r.bytes().await;
+        status
+    };
+    assert_eq!(healthz_stays_prompt_during(&h, download).await, S::OK);
+    busy.join().unwrap();
+    assert!(
+        h.accounts
+            .audit_log(100)
+            .unwrap()
+            .iter()
+            .any(|e| e.event == "download" && e.username.as_deref() == Some("bob")),
+        "still audited"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Reads have their own connection; admin writes run off the async workers
 // ---------------------------------------------------------------------------
 

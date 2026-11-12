@@ -4,6 +4,10 @@
 //! tells the apps (`{"lms":"busy"}` on `/v1/events`), refuses new `/v1/rpc` requests at once
 //! instead of piling them up inside LMS, and keeps one probe waiting so it notices the moment
 //! LMS answers again.
+//!
+//! It also keeps one user from piling requests into LMS while it is healthy
+//! ([`RpcLimits`]): a few of each user's `/v1/rpc` requests may wait for LMS at
+//! once, and a generous number may be made a minute.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
@@ -16,6 +20,34 @@ use tracing::info;
 const WATCH_EVERY: Duration = Duration::from_secs(1);
 /// What clients are told to wait before retrying a request refused while busy.
 pub const RETRY_AFTER_SECS: u64 = 2;
+
+/// A user's `/v1/rpc` requests waiting for LMS at once; one more waits [`RPC_QUEUE_WAIT`] for
+/// one of them to finish, then gets 429. The apps send a handful at a time (a page's
+/// status, menus and lists), so this leaves them room while keeping one user, or one stolen
+/// token, from filling LMS's queue (review low: there was no cap at all).
+pub const RPC_IN_FLIGHT_PER_USER: usize = 8;
+/// `/v1/rpc` requests waiting for LMS at once, everyone's together.
+pub const RPC_IN_FLIGHT_TOTAL: usize = 64;
+/// `/v1/rpc` requests a user may make a minute (all their devices together): ten a second
+/// on average, far beyond what the apps make, which poll a player every few seconds.
+pub const RPC_PER_MINUTE: usize = 600;
+/// How long a request beyond the user's share waits for a slot before 429.
+pub const RPC_QUEUE_WAIT: Duration = Duration::from_secs(2);
+
+/// Each user's share of `/v1/rpc`.
+pub(crate) struct RpcLimits {
+    pub(crate) in_flight: Arc<crate::limits::Limiter>,
+    pub(crate) per_minute: crate::plays::Window,
+}
+
+impl Default for RpcLimits {
+    fn default() -> Self {
+        RpcLimits {
+            in_flight: crate::limits::Limiter::new(RPC_IN_FLIGHT_PER_USER, RPC_IN_FLIGHT_TOTAL),
+            per_minute: crate::plays::Window::new(RPC_PER_MINUTE, Duration::from_secs(60)),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -51,11 +83,14 @@ pub struct LmsHealth {
     /// A request unanswered this long means LMS is blocked (healthy answers take
     /// milliseconds).
     stall_after: Duration,
+    /// Each user's share of `/v1/rpc`.
+    pub(crate) rpc: RpcLimits,
 }
 
 impl LmsHealth {
     pub fn new(stall_after: Duration) -> Self {
         LmsHealth {
+            rpc: RpcLimits::default(),
             stall_after,
             state: Mutex::new(State {
                 waiting: HashMap::new(),

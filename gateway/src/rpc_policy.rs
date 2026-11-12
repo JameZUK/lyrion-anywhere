@@ -605,16 +605,25 @@ pub fn check(
             c[0]
         ));
     }
-    let kind = if c[0] == "menu" {
-        Kind::HomeMenu
-    } else {
-        Kind::Plain
-    };
     Ok(Checked {
         player: player.to_string(),
+        kind: response_kind(c[0]),
         cmd,
-        kind,
     })
+}
+
+/// How the answer to a command is filtered, by its first word: the same whichever way the
+/// command got through, the fixed allow-list or a menu action LMS offered (review low: menu
+/// actions were all filtered as plain answers, so a menu offering `players` or
+/// `serverstatus` would have listed every player on the server). Sync groups need nothing
+/// more: [`filter_response`] keeps sync information to permitted players for every kind.
+pub(crate) fn response_kind(first: &str) -> Kind {
+    match first {
+        "serverstatus" | "players" => Kind::PlayerList,
+        "apps" | "radios" => Kind::AppMenu,
+        "menu" => Kind::HomeMenu,
+        _ => Kind::Plain,
+    }
 }
 
 /// Random Mix's kinds of mix, as its command takes them.
@@ -876,27 +885,49 @@ fn has_local_proxy_target(s: &str) -> bool {
     })
 }
 
+/// An absolute path of two or more segments (`/first/rest…`) starting a token, other than
+/// LMS's own web paths. Linear in the length of `s` (review M3: it was quadratic, rescanning
+/// to the end of the word from every slash, and every string of every LMS answer passes
+/// through here): the end of the word is found once per word, and each slash looks at no
+/// more than the next few segments after it.
 fn has_abs_path(s: &str) -> bool {
     let b = s.as_bytes();
+    // The end of the whitespace-delimited word holding the current slash.
+    let mut word_end = 0;
     s.match_indices('/').any(|(i, _)| {
         if !starts_token(i.checked_sub(1).map(|j| b[j])) {
             return false;
         }
-        let token = &s[i + 1..];
-        let token = &token[..token.find(char::is_whitespace).unwrap_or(token.len())];
+        if word_end <= i {
+            // No whitespace lies between an earlier slash and `word_end`, so it is also the
+            // end of this slash's word until the slash passes it.
+            word_end = s[i..].find(char::is_whitespace).map_or(s.len(), |e| i + e);
+        }
+        let token = &s[i + 1..word_end];
         // `/first/rest…`: a first segment, a slash, then at least one more character.
-        let Some((first, rest)) = token.split_once('/') else {
+        let Some(j) = token.find('/') else {
             return false;
         };
-        !first.is_empty() && !rest.is_empty() && !lms_web_path(token)
+        j > 0 && j + 1 < token.len() && !lms_web_path(token)
     })
 }
 
-/// Paths of LMS's own web server (artwork and icons), which are not filesystem paths.
+/// Paths of LMS's own web server (artwork and icons), which are not filesystem paths. Only
+/// the first four segments decide, so no more of `p` is looked at than those (and the
+/// separator after them): see [`has_abs_path`].
 fn lms_web_path(p: &str) -> bool {
-    let p = p.split(['?', '#']).next().unwrap_or("");
-    let seg: Vec<&str> = p.split('/').collect();
-    match seg.as_slice() {
+    let mut seg = [""; 4];
+    let mut n = 0;
+    for part in p.split('/') {
+        // A query or fragment ends the path.
+        let cut = part.find(['?', '#']);
+        seg[n] = cut.map_or(part, |q| &part[..q]);
+        n += 1;
+        if cut.is_some() || n == seg.len() {
+            break;
+        }
+    }
+    match &seg[..n] {
         ["imageproxy", ..] | ["html", ..] => true,
         ["plugins", "cache", "icons", ..] | ["plugins", _, "html", ..] => true,
         ["music", id, _] => {
@@ -2638,15 +2669,253 @@ mod tests {
             "favorites",
             "rescan",
             MINE,
+            // Admin-only and never-allowed words, so the admin role is explored too.
+            "new",
+            "rename",
+            "delete",
+            "full",
+            "playlist_id:1",
+            "title:x",
+            "pref",
+            "readdirectory",
+            "restartserver",
+            "anywhere",
+            "playerpref",
+            "digitalVolumeControl",
+            "1",
+            "menu",
+            "direct:1",
+            "serverstatus",
+            "players",
+            "file:///srv/x",
+            "search:http://10.0.0.1/x",
+            "term:/srv/music",
         ];
-        for _ in 0..20_000 {
+        // Never runnable, whoever asks.
+        let never = [
+            "pref",
+            "readdirectory",
+            "restartserver",
+            "stopserver",
+            "wipecache",
+            "anywhere",
+            "client",
+            "listen",
+            "subscribe",
+        ];
+        for _ in 0..40_000 {
             let n = (next() % 8) as usize;
             let raw: Vec<Value> = (0..n)
                 .map(|_| json!(words[(next() % words.len() as u64) as usize]))
                 .collect();
             let player = [MINE, OTHER, "", "zz"][(next() % 4) as usize];
-            let _ = check(&Who(Role::Listener), player, &raw, &apps());
+            for role in [Role::Listener, Role::Admin] {
+                let Ok(c) = check(&Who(role), player, &raw, &apps()) else {
+                    continue;
+                };
+                // Whatever passes keeps the policy's promises, for either role.
+                assert!(!never.contains(&c.cmd[0].as_str()), "{role:?} {raw:?}");
+                assert!(
+                    !c.cmd.iter().any(|a| sensitive_value(a)),
+                    "{role:?} {raw:?}"
+                );
+                assert!(c.cmd.len() <= MAX_ARGS, "{role:?} {raw:?}");
+                if !c.player.is_empty() {
+                    assert!(is_player_id(&c.player), "{role:?} {raw:?}");
+                    assert!(Who(role).may_control(&c.player), "{role:?} {raw:?}");
+                }
+                if role == Role::Listener {
+                    assert!(
+                        !matches!(c.cmd[0].as_str(), "rescan")
+                            && !(c.cmd[0] == "playlists"
+                                && matches!(
+                                    c.cmd.get(1).map(String::as_str),
+                                    Some("new" | "rename" | "delete" | "edit")
+                                )),
+                        "an admin-only command passed for a listener: {raw:?}"
+                    );
+                }
+            }
         }
+    }
+
+    /// Each allow-listed command's answer is filtered as its command word says, which is
+    /// also how a learned menu action's answer is filtered (review low).
+    #[test]
+    fn answers_are_filtered_by_their_command_word_whichever_way_it_came() {
+        for (cmd, player, kind) in [
+            (json!(["serverstatus", 0, 10]), "", Kind::PlayerList),
+            (json!(["players", 0, 10]), "", Kind::PlayerList),
+            (json!(["apps", 0, 10]), "", Kind::AppMenu),
+            (json!(["radios", 0, 10]), "", Kind::AppMenu),
+            (json!(["menu", 0, 10]), MINE, Kind::HomeMenu),
+            (json!(["albums", 0, 10]), "", Kind::Plain),
+            (json!(["status", 0, 10]), MINE, Kind::Plain),
+            (json!(["syncgroups", "?"]), "", Kind::Plain),
+        ] {
+            let c = ok(player, cmd.clone());
+            assert_eq!(c.kind, kind, "{cmd}");
+            assert_eq!(response_kind(&c.cmd[0]), kind, "{cmd}");
+        }
+        assert_eq!(response_kind("someplugin"), Kind::Plain);
+    }
+
+    /// The scanners as they were before review M3 (quadratic, but correct): the reference
+    /// the linear ones must agree with.
+    fn reference_has_abs_path(s: &str) -> bool {
+        fn web_path(p: &str) -> bool {
+            let p = p.split(['?', '#']).next().unwrap_or("");
+            let seg: Vec<&str> = p.split('/').collect();
+            match seg.as_slice() {
+                ["imageproxy", ..] | ["html", ..] => true,
+                ["plugins", "cache", "icons", ..] | ["plugins", _, "html", ..] => true,
+                ["music", id, _] => {
+                    *id == "current"
+                        || (!id.is_empty()
+                            && id.len() <= 16
+                            && id.bytes().all(|b| b.is_ascii_hexdigit()))
+                }
+                _ => false,
+            }
+        }
+        let b = s.as_bytes();
+        s.match_indices('/').any(|(i, _)| {
+            if !starts_token(i.checked_sub(1).map(|j| b[j])) {
+                return false;
+            }
+            let token = &s[i + 1..];
+            let token = &token[..token.find(char::is_whitespace).unwrap_or(token.len())];
+            let Some((first, rest)) = token.split_once('/') else {
+                return false;
+            };
+            !first.is_empty() && !rest.is_empty() && !web_path(token)
+        })
+    }
+
+    /// The linear path scanner (review M3) gives exactly the answers the old one gave, on
+    /// arbitrary text made of the pieces that matter to it.
+    #[test]
+    fn the_linear_path_scanner_agrees_with_the_old_one() {
+        let mut x: u64 = 0x0bad_5eed_1234_5678;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let atoms = [
+            "/",
+            "//",
+            "=",
+            "(",
+            " ",
+            "\t",
+            "\u{a0}",
+            "a",
+            "AC",
+            "music",
+            "current",
+            "1f",
+            "12345678901234567",
+            "imageproxy",
+            "html",
+            "plugins",
+            "cache",
+            "icons",
+            "?",
+            "#",
+            ":",
+            ",",
+            "é",
+            "srv",
+            "x.flac",
+            "\u{2003}",
+        ];
+        for _ in 0..100_000 {
+            let n = (next() % 14) as usize;
+            let s: String = (0..n)
+                .map(|_| atoms[(next() % atoms.len() as u64) as usize])
+                .collect();
+            assert_eq!(has_abs_path(&s), reference_has_abs_path(&s), "{s:?}");
+        }
+        for s in [
+            "/srv/music",
+            "Location: /srv/music/a.flac",
+            "/music/2109213/cover_150x150_o",
+            "/music/current/cover.jpg?player=aa:bb:cc:dd:ee:ff",
+            "/music/1/2/3",
+            "/plugins/X/html/a.png",
+            "/imageproxy/x/image.png",
+            "a /b/c d /e/f",
+            "/a?b/c",
+        ] {
+            assert_eq!(has_abs_path(s), reference_has_abs_path(s), "{s:?}");
+        }
+    }
+
+    /// Run `f` on another thread and fail if it takes longer than `budget` (without waiting
+    /// for a runaway to finish).
+    fn within(budget: std::time::Duration, what: &str, f: impl FnOnce() + Send + 'static) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            f();
+            let _ = tx.send(());
+        });
+        assert!(
+            rx.recv_timeout(budget).is_ok(),
+            "{what} took longer than {budget:?}"
+        );
+    }
+
+    /// Regression (review M3): a megabyte of text shaped to make a scanner revisit what it
+    /// has seen (`=/` repeated with no whitespace took minutes) is judged quickly, alone and
+    /// as part of a response. Every string of every LMS answer passes through these, inline
+    /// on an async worker, and comments, descriptions and biographies run to hundreds of KiB.
+    #[test]
+    fn hostile_megabyte_strings_are_judged_in_linear_time() {
+        const MIB: usize = 1024 * 1024;
+        let shapes: Vec<String> = vec![
+            "=/".repeat(MIB / 2),
+            "=/a".repeat(MIB / 3),
+            "=/music/1".repeat(MIB / 9),
+            "(/x/".repeat(MIB / 4),
+            "/".repeat(MIB),
+            "=/a?".repeat(MIB / 4),
+            "a://".repeat(MIB / 4),
+            "http://a".repeat(MIB / 8),
+            format!("{}://", "a".repeat(MIB)),
+            "imageproxy/".repeat(MIB / 11),
+            format!("imageproxy/{}", "%41".repeat(MIB / 3)),
+            "1.".repeat(MIB / 2),
+            ":1".repeat(MIB / 2),
+            "g:1".repeat(MIB / 3),
+            "file:".repeat(MIB / 5),
+            "\\\\a".repeat(MIB / 3),
+            "a:\\".repeat(MIB / 3),
+        ];
+        // Linear, all of this takes a second or two in a debug build on an idle machine; the
+        // budget leaves room for a heavily loaded one. Quadratic, the first shape alone took
+        // hours.
+        within(
+            std::time::Duration::from_secs(120),
+            "the scanners",
+            move || {
+                for s in &shapes {
+                    let _ = sensitive_value(s);
+                    let _ = text_ok(s);
+                }
+                // The same text where LMS puts it: under several keys and in a menu.
+                let mut items = Vec::new();
+                for s in shapes.into_iter().take(4) {
+                    items.push(json!({"text": s.clone(), "comment": s.clone(),
+                                  "actions": {"go": {"cmd": ["x"], "params": {"p": s}}}}));
+                }
+                let v = filter_response(Kind::Plain, json!({ "item_loop": items }), &|_| true);
+                assert!(v.is_object());
+            },
+        );
+        assert!(sensitive_value(&"=/a".repeat(1000)), "still a path");
+        assert!(!sensitive_value(&"AC/DC ".repeat(1000)), "still not a path");
     }
 
     /// Regression: only http/https/ws/wss/rtsp/mms URLs were checked, so a share or feed on

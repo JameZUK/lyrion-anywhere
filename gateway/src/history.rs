@@ -917,12 +917,17 @@ pub async fn delete(State(gw): State<AppState>, headers: HeaderMap) -> Response 
         Ok(n) => {
             gw.station_served.forget_user(p.user_id);
             gw.stats.forget_user(p.user_id);
-            gw.accounts().audit(
-                "history.cleared",
-                Some(&p.username),
-                Some(p.device_id),
-                &format!("{n} plays"),
-            );
+            // On the blocking pool, as the deletion itself (review M16).
+            let (username, device) = (p.username.clone(), p.device_id);
+            gw.db(move |a| {
+                a.audit(
+                    "history.cleared",
+                    Some(&username),
+                    Some(device),
+                    &format!("{n} plays"),
+                )
+            })
+            .await;
             ok(json!({ "removed": n }))
         }
         Err(_) => internal(),

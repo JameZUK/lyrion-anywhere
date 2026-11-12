@@ -132,8 +132,16 @@ pub async fn edit(
     let (index, track) = match edit {
         Edit::Remove { index, track } | Edit::Move { index, track, .. } => (index, track),
     };
+    // LMS is blocked: say so at once, as `/v1/rpc` does, rather than queue the edit inside
+    // it (review low), before waiting for the queue's lock and again after.
+    if gw.lms_health().is_busy() {
+        return crate::rpc::busy();
+    }
     let lock = lock_for(&player);
     let _held = lock.lock().await;
+    if gw.lms_health().is_busy() {
+        return crate::rpc::busy();
+    }
     let lms = |cmd: Vec<String>| {
         let gw = gw.clone();
         let player = player.clone();

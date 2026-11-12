@@ -477,8 +477,9 @@ impl crate::Gateway {
         })
     }
 
-    /// Audit a download, at most once per track and device per hour.
-    fn audit_download(&self, p: &Principal, id: u64, format: Format) {
+    /// Audit a download, at most once per track and device per hour. The write runs on the
+    /// blocking pool (review M16).
+    async fn audit_download(&self, p: &Principal, id: u64, format: Format) {
         let now = Instant::now();
         {
             let mut seen = self.download_audit.lock().unwrap();
@@ -496,12 +497,16 @@ impl crate::Gateway {
             }
             seen.insert((p.device_id, id), now);
         }
-        self.accounts.audit(
-            "download",
-            Some(&p.username),
-            Some(p.device_id),
-            &format!("track {id} {}", format.as_str()),
-        );
+        let (username, device) = (p.username.clone(), p.device_id);
+        self.db(move |a| {
+            a.audit(
+                "download",
+                Some(&username),
+                Some(device),
+                &format!("track {id} {}", format.as_str()),
+            )
+        })
+        .await;
     }
 }
 
@@ -646,7 +651,7 @@ pub async fn track(
     };
     match result {
         Ok(r) => {
-            gw.audit_download(&principal, id, format);
+            gw.audit_download(&principal, id, format).await;
             r
         }
         Err(e) => e.response(),
@@ -981,13 +986,12 @@ async fn transcode_file(
     let demuxer = transcode::demuxer(&track.kind).ok_or(Refusal::FormatUnavailable)?;
     let codec = tc.ffmpeg.codec(format).ok_or(Refusal::FormatUnavailable)?;
     let name = transcode::cache_name(key, format, track.size, &track.mtime);
-    let open = |p: &Path| std::fs::File::open(p).ok();
-    if let Some(f) = tc.cache.lookup(&name).as_deref().and_then(open) {
+    if let Some(f) = cached_transcode(gw, &name).await {
         return Ok(f);
     }
     let lock = tc.lock_for(&name);
     let _one = lock.lock().await;
-    if let Some(f) = tc.cache.lookup(&name).as_deref().and_then(open) {
+    if let Some(f) = cached_transcode(gw, &name).await {
         return Ok(f);
     }
     let input = TempFile(tc.cache.temp_path("src"));
@@ -1026,8 +1030,36 @@ async fn transcode_file(
             return Err(Refusal::TranscodeFailed);
         }
     }
-    drop(input);
+    // The file work from here on runs on the blocking pool (review low): a disk that stalls
+    // holds up this download, not the async workers.
+    let _ = tokio::task::spawn_blocking(move || drop(input)).await;
     drop(room);
+    let gw = gw.clone();
+    tokio::task::spawn_blocking(move || keep_transcode(&gw, output, &name, max))
+        .await
+        .map_err(|_| Refusal::TranscodeFailed)?
+}
+
+/// A cached transcode, opened, if there is one (blocking file work, on the blocking pool).
+async fn cached_transcode(gw: &AppState, name: &str) -> Option<std::fs::File> {
+    let (gw, name) = (gw.clone(), name.to_string());
+    tokio::task::spawn_blocking(move || {
+        let path = gw.transcoder.as_ref()?.cache.lookup(&name)?;
+        std::fs::File::open(path).ok()
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// Move a finished transcode into the cache as `name` and open it (blocking file work).
+fn keep_transcode(
+    gw: &crate::Gateway,
+    output: TempFile,
+    name: &str,
+    max: u64,
+) -> Result<std::fs::File, Refusal> {
+    let tc = gw.transcoder.as_ref().ok_or(Refusal::TranscodeFailed)?;
     let size = std::fs::metadata(&output.0)
         .map(|m| m.len())
         .map_err(|_| Refusal::TranscodeFailed)?;
@@ -1035,10 +1067,10 @@ async fn transcode_file(
     if size == 0 || size >= max {
         return Err(Refusal::TranscodeFailed);
     }
-    let path = tc.cache.dir().join(&name);
+    let path = tc.cache.dir().join(name);
     std::fs::rename(&output.0, &path).map_err(|_| Refusal::TranscodeFailed)?;
     let file = std::fs::File::open(&path).map_err(|_| Refusal::TranscodeFailed)?;
-    tc.cache.insert(&name, size);
+    tc.cache.insert(name, size);
     Ok(file)
 }
 
