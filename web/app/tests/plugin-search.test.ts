@@ -12,12 +12,21 @@ import { CONCURRENCY, MAX_APPS, SearchDirectory, candidates, cleanQuery, discove
 const { choose } = await import('./helpers/menu');
 vi.mock('#lib/state/app.svelte', async () => await import('./helpers/fake-app.svelte'));
 const params: Record<string, string | undefined> = {};
-vi.mock('$app/state', () => ({ page: { params, url: new URL('http://app.example/#/') } }));
+// The address the page sees is this document's (tests set it as the app would be opened).
+vi.mock('$app/state', () => ({
+	page: {
+		params,
+		get url() {
+			return new URL(location.href);
+		},
+	},
+}));
 const fake = await import('./helpers/fake-app.svelte');
 const { search } = await import('#lib/state/search');
 const { pluginSearch } = await import('#lib/state/plugin-search');
 const SearchPage = (await import('../src/routes/search/+page.svelte')).default;
 const ResultsPage = (await import('../src/routes/search-on/[app]/[...q]/+page.svelte')).default;
+const { noteNavigation } = await import('#lib/nav');
 
 const P = '02:00:00:00:00:01';
 const HOSTILE = '<img src=x onerror=alert(1)>';
@@ -290,6 +299,20 @@ describe('on the Search page', () => {
 });
 
 describe('the results page', () => {
+	/** Reach the results as a tap on "Search on …" does: a navigation in the app. */
+	function openInApp(app: string, q: string) {
+		params.app = app;
+		params.q = q;
+		history.replaceState(null, '', `#/search-on/${encodeURIComponent(app)}/${encodeURIComponent(q)}`);
+		noteNavigation({ type: 'link' });
+	}
+	/** Open them as a link from elsewhere (or a reload) does: a fresh load on that address. */
+	function openFromOutside(app: string, q: string) {
+		openInApp(app, q);
+		noteNavigation({ type: 'enter' });
+	}
+	afterEach(() => history.replaceState(null, '', '#/'));
+
 	beforeEach(() => {
 		fake.calls.length = 0;
 		fake.app.playerId = P;
@@ -308,8 +331,7 @@ describe('the results page', () => {
 	const searches = (): Cmd[] => fake.calls.filter((c) => c.cmd.some((w) => String(w).startsWith('search:'))).map((c) => c.cmd);
 
 	test('opens the app’s results in the menu browser, where play and add work', async () => {
-		params.app = 'examplemusic';
-		params.q = 'blue moon';
+		openInApp('examplemusic', 'blue moon');
 		const { container, findByText } = render(ResultsPage);
 		await findByText('Found track');
 		expect(container.querySelector('h2')!.textContent).toBe('Example Music: “blue moon”');
@@ -321,8 +343,7 @@ describe('the results page', () => {
 	});
 
 	test('a hostile query goes only as the search value', async () => {
-		params.app = 'examplemusic';
-		params.q = 'x item_id:9 url:file:///etc/passwd\nmenu:1';
+		openInApp('examplemusic', 'x item_id:9 url:file:///etc/passwd\nmenu:1');
 		const { findByText } = render(ResultsPage);
 		await findByText('Found track');
 		const [c] = searches();
@@ -335,12 +356,47 @@ describe('the results page', () => {
 			['../etc', 'abc', 'any more'],
 			['examplemusic', '   ', 'Type something'],
 		] as const) {
-			params.app = app;
-			params.q = q;
+			openInApp(app, q);
 			const { findByText, unmount } = render(ResultsPage);
 			await findByText(new RegExp(says));
 			unmount();
 		}
 		expect(searches()).toEqual([]);
+	});
+
+	// Review (Web low): the page searched as soon as it loaded, so any link could run a search
+	// (any text) through the user's apps on their player.
+	test('opened from outside, it asks before searching, naming the app and the text', async () => {
+		openFromOutside('examplemusic', 'blue moon');
+		const { container, findByRole, findByText, unmount } = render(ResultsPage);
+		const go = await findByRole('button', { name: 'Search' });
+		expect(container.textContent).toContain('Example Music');
+		expect(container.textContent).toContain('blue moon');
+		await settle();
+		expect(searches()).toEqual([]);
+		await fireEvent.click(go);
+		await findByText('Found track');
+		expect(searches()).toEqual([['examplemusic', 'items', 0, 100, 'item_id:0', 'search:blue moon', 'menu:examplemusic']]);
+		unmount();
+	});
+
+	test('opened from outside with hostile text: shown as text, never searched without the tap', async () => {
+		openFromOutside('examplemusic', HOSTILE);
+		const { container, findByRole, unmount } = render(ResultsPage);
+		await findByRole('button', { name: 'Search' });
+		expect(container.querySelector('img')).toBeNull();
+		expect(container.textContent).toContain(HOSTILE);
+		await settle();
+		expect(searches()).toEqual([]);
+		unmount();
+	});
+
+	test('a link to an app that isn’t listed asks nothing and searches nothing', async () => {
+		openFromOutside('notlisted', 'abc');
+		const { findByText, queryByRole, unmount } = render(ResultsPage);
+		await findByText(/any more/);
+		expect(queryByRole('button', { name: 'Search' })).toBeNull();
+		expect(searches()).toEqual([]);
+		unmount();
 	});
 });

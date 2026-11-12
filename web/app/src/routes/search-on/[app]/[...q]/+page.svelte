@@ -2,9 +2,14 @@
 	// An app's own results for a search ("Search on …" on the Search page), in the plugin menu
 	// browser. The app's top menu is read again first, so the search runs through the search
 	// box LMS offers now, with the text as its `search:` value and nothing else.
+	//
+	// Anyone can link here: opened from outside the app (a link elsewhere, a reload), the page
+	// says what it would search for, and where, and searches only after a tap. A tap on "Search
+	// on …" in the app searches at once.
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { app } from '#lib/state/app.svelte';
+	import { openedFromOutside } from '#lib/nav';
 	import { pluginSearch } from '#lib/state/plugin-search';
 	import { cleanQuery, searchCommand, type SearchablePlugin } from '#lib/search/plugins';
 	import BackButton from '#lib/components/BackButton.svelte';
@@ -13,9 +18,13 @@
 	let found = $state<SearchablePlugin | null>(null);
 	let status = $state<'loading' | 'ready' | 'missing' | 'error'>('loading');
 	let error = $state('');
+	/** The search a page opened from outside was confirmed for (app and text). */
+	let confirmedFor = $state('');
 
 	const appName = $derived(page.params.app ?? '');
 	const query = $derived(cleanQuery(page.params.q ?? ''));
+	const key = $derived(`${appName}|${query}`);
+	const ask = $derived(confirmedFor !== key && openedFromOutside(page.url.hash));
 
 	async function load(player: string, cmd: string) {
 		status = 'loading';
@@ -55,6 +64,9 @@
 		<p class="error" role="alert">{error}</p>
 	{:else if status === 'missing' || !found || !start}
 		<p class="muted">This app doesn’t offer a search here any more.</p>
+	{:else if ask}
+		<p data-search-on-ask>Search <strong>{found.name}</strong> for “{query}”?</p>
+		<button class="btn primary" type="button" onclick={() => (confirmedFor = key)} data-search-on-confirm>Search</button>
 	{:else}
 		{#key `${found.cmd}|${query}`}
 			<MenuView {start} title={`${found.name}: “${query}”`} />
