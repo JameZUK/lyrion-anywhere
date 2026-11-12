@@ -25,7 +25,7 @@ sub name { 'PLUGIN_LYRIONANYWHERE' }
 sub page { 'plugins/LyrionAnywhere/settings/basic.html' }
 
 sub prefs {
-	return ($prefs, qw(enabled listen public_url trusted_proxies trusted_networks client_ip_header gateway_path transcode ffmpeg_path download_cache_mb analysis));
+	return ($prefs, qw(enabled listen public_url trusted_proxies trusted_networks client_ip_header admin_port gateway_path transcode ffmpeg_path download_cache_mb analysis));
 }
 
 # The page's checkboxes: a browser sends nothing for one that is not ticked.
@@ -54,7 +54,7 @@ sub _trim {
 sub clean {
 	my ($params) = @_;
 	my (%out, @errors, @notices, %keep);
-	for my $k (qw(listen public_url trusted_proxies trusted_networks client_ip_header gateway_path ffmpeg_path download_cache_mb)) {
+	for my $k (qw(listen public_url trusted_proxies trusted_networks client_ip_header admin_port gateway_path ffmpeg_path download_cache_mb)) {
 		my $name = "pref_$k";
 		next unless exists $params->{$name};
 		my $v = _trim($params->{$name});
@@ -115,6 +115,14 @@ sub clean {
 				push @errors, 'Client address header must be a header name such as CF-Connecting-IP (or empty)';
 				next;
 			}
+		}
+		elsif ($k eq 'admin_port') {
+			$v = Plugins::LyrionAnywhere::Gateway::ADMIN_PORT() if $v eq '';
+			unless (Plugins::LyrionAnywhere::Gateway::valid_port($v)) {
+				push @errors, 'Admin port must be a port number from 1 to 65535 (or empty for ' . Plugins::LyrionAnywhere::Gateway::ADMIN_PORT() . ')';
+				next;
+			}
+			$v += 0;
 		}
 		elsif ($k eq 'gateway_path') {
 			unless (Plugins::LyrionAnywhere::Gateway::valid_gateway_path($v)) {
@@ -207,8 +215,9 @@ sub handler {
 	# URLs with the files' modification time makes browsers fetch them again after an update.
 	$params->{anywhere_assets} = assets_stamp();
 	# Gateway settings changed outside this page (LMS's `pref` command) are put back before
-	# the page shows them, so it never displays, or saves again, a value it did not set.
-	Plugins::LyrionAnywhere::Gateway::authorised_values();
+	# the page shows them, so it never displays, or saves again, a value it did not set. If
+	# the page's record of them cannot be used, the page says so: saving records them again.
+	my (undef, $record_problem) = Plugins::LyrionAnywhere::Gateway::authorised_values();
 	# The address the apps use, for pairing QR codes (the page checks it again).
 	$params->{anywhere_public_url} = $prefs->get('public_url') // '';
 	$params->{anywhere_gateway_path_allowed} =
@@ -247,7 +256,10 @@ sub handler {
 		$params->{warning} = join('<br>', map { escape_html($_) } @lines) if @lines;
 		my $result = $class->SUPER::handler($client, $params);
 		# This page is the one authorised writer: what it saved is what the gateway runs with.
-		Plugins::LyrionAnywhere::Gateway::settings_saved();
+		unless (Plugins::LyrionAnywhere::Gateway::settings_saved()) {
+			$params->{warning} = join '<br>', grep { length } $params->{warning} // '',
+				escape_html('The settings could not be recorded for the gateway (see the server log), so it keeps running with the ones saved before.');
+		}
 		my $changed = grep { ($before{$_} // '') ne ($prefs->get($_) // '') } keys %before;
 		if ($changed) {
 			if ($prefs->get('enabled')) { Plugins::LyrionAnywhere::Gateway->restart }
@@ -255,6 +267,7 @@ sub handler {
 		}
 		return $result;
 	}
+	$params->{warning} = escape_html(ucfirst $record_problem) if $record_problem && !$params->{warning};
 	return $class->SUPER::handler($client, $params);
 }
 

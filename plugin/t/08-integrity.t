@@ -46,6 +46,8 @@ my $prefs = preferences('plugin.lyrionanywhere');
 $prefs->set(gateway_path => '');
 $prefs->set(listen => '127.0.0.1:9443');
 $prefs->set(admin_port => 9445);
+$prefs->set(enabled => 1);
+Plugins::LyrionAnywhere::Gateway::settings_saved();   # as the settings page saves them
 preferences('server')->set(httpport => 9000);
 Plugins::LyrionAnywhere::Gateway->set_basedir($base);
 my $plat = Plugins::LyrionAnywhere::Gateway::platform();

@@ -57,6 +57,7 @@ my $launched_admin;        # the admin address the running gateway was started w
 my @dying;                 # gateways sent SIGTERM and not yet reaped: { proc, pid, kill_at, killed }
 my $orphan_tries = 0;      # signals sent to a gateway left behind by an earlier LMS
 my $settings_notice = '';  # prefs changed outside the settings page and put back, for the status
+my $notice_is_problem = 0; # ... or the page's record of them cannot be used
 
 # Where process information comes from (Linux). Tests point it at a fake tree.
 our $PROC_ROOT = '/proc';
@@ -565,10 +566,11 @@ sub data_dir {
 	return catdir(Slim::Utils::Prefs::dir(), 'lyrion-anywhere');
 }
 
-# The admin API address to start the gateway with. Only a plain port number is ever used.
-# The admin secret is never sent to this directly: see admin_target().
+# The admin API address to start the gateway with: the given port (the settings page's
+# recorded one), else the pref. Only a plain port number is ever used. The admin secret is
+# never sent to this directly: see admin_target().
 sub admin_listen {
-	my $port = $prefs->get('admin_port');
+	my $port = @_ ? shift : $prefs->get('admin_port');
 	if (defined $port && $port ne '' && !valid_port($port)) {
 		$log->warn('ignoring invalid admin_port pref; using ' . ADMIN_PORT);
 		$port = undef;
@@ -667,6 +669,7 @@ sub stderr_tail {
 # Validators for every pref, so changes through LMS's `pref` command get the same checks
 # as the settings page.
 my %VALIDATE = (
+	enabled         => sub { my $v = shift // ''; !ref $v && $v =~ /^[01]?\z/ },
 	listen          => \&valid_hostport,
 	public_url      => sub { my $v = shift // ''; $v eq '' || valid_origin($v) },
 	trusted_proxies => \&valid_proxy_list,
@@ -701,7 +704,11 @@ sub register_validators {
 # syntax check only. So the page, the one authorised writer, also keeps a copy of them in
 # the data directory (0700, file 0600), which `pref` cannot reach. The gateway always runs
 # with the copy's values; a pref that differs is put back, logged and shown in the status.
-my @GUARDED = qw(listen public_url trusted_proxies trusted_networks client_ip_header gateway_path ffmpeg_path download_cache_mb);
+# Enabled is one of them: whether the gateway (and a registered tunnel) runs at all is the
+# page's decision, so a forged `pref …:enabled 1` and `restartserver` never bring it back
+# after an admin turned remote access off (review 2026-11-12, M12).
+my @GUARDED = qw(enabled listen public_url trusted_proxies trusted_networks client_ip_header admin_port gateway_path
+	transcode ffmpeg_path download_cache_mb analysis);
 
 sub guarded_prefs { @GUARDED }
 sub settings_file { catfile(data_dir(), SETTINGS_FILE) }
@@ -723,14 +730,26 @@ sub _decode_value {
 	return $v;
 }
 
-# The copy as { name => value }, or undef if there is none (or it is not one of ours).
+# The copy as { name => value }. In list context (values, problem): (undef, undef) when there
+# is no copy at all, (undef, why) when there is something there that cannot be used (not a
+# plain file, unreadable, or not one of ours). In scalar context, the values or undef.
 sub read_authorised {
 	my $file = shift // settings_file();
-	return undef if -l $file;
-	open my $fh, '<:raw', $file or return undef;
+	my ($v, $why) = _read_authorised($file);
+	return wantarray ? ($v, $why) : $v;
+}
+
+sub _read_authorised {
+	my $file = shift;
+	unless (lstat $file) {
+		return (undef, undef) if $!{ENOENT};
+		return (undef, "cannot be read ($!)");
+	}
+	return (undef, 'is not a plain file') if -l _ || !-f _;
+	open my $fh, '<:raw', $file or return (undef, "cannot be read ($!)");
 	my $head = <$fh> // '';
 	$head =~ s/\r?\n\z//;
-	if ($head ne SETTINGS_MAGIC) { close $fh; return undef }
+	if ($head ne SETTINGS_MAGIC) { close $fh; return (undef, 'is not a record this plugin wrote') }
 	my %known = map { $_ => 1 } @GUARDED;
 	my %v;
 	while (my $line = <$fh>) {
@@ -739,7 +758,7 @@ sub read_authorised {
 		$v{$1} = _decode_value($2);
 	}
 	close $fh;
-	return \%v;
+	return (\%v, undef);
 }
 
 # Write the copy: the given values, or the current prefs. Returns 1 on success.
@@ -771,19 +790,34 @@ sub record_authorised {
 	return 1;
 }
 
-# The settings page saved: its values are now the authorised ones.
+# The settings page saved: its values are now the authorised ones. Returns 1 if they were
+# recorded.
 sub settings_saved {
-	record_authorised();
-	$settings_notice = '';
+	my $ok = record_authorised();
+	($settings_notice, $notice_is_problem) = ('', 0) if $ok;
+	return $ok;
 }
 
 # The values to run with: the copy's, with any pref changed outside the page put back.
-# First run (no copy yet): the current values are accepted and recorded.
+# First run (no copy at all): the current values are accepted and recorded. A copy that is
+# there but cannot be used (unreadable, not a plain file, not ours) is not a first run: the
+# prefs may have been changed behind the page's back, so nothing is accepted from them.
+# Returns (\%values), or (undef, message) in that case: the gateway is not started until the
+# settings page is saved again (which records what it shows) or the file is put right.
 sub authorised_values {
 	my %live = map { $_ => $prefs->get($_) } @GUARDED;
-	my $copy = read_authorised();
+	my ($copy, $why) = read_authorised();
+	if (!$copy && $why) {
+		my $msg = 'the settings page\'s saved values cannot be used: ' . settings_file() . " $why. "
+			. 'The gateway is not started until they can. Check the settings on the Lyrion Anywhere settings page and '
+			. 'save them, which records them again.';
+		$log->error($msg) unless $settings_notice eq $msg;
+		$settings_notice = $msg;
+		$notice_is_problem = 1;
+		return (undef, $msg);
+	}
+	if ($notice_is_problem) { $settings_notice = ''; $notice_is_problem = 0 }
 	unless ($copy) {
-		$log->info('recording the current gateway settings as the settings page\'s') if -e settings_file();
 		record_authorised(\%live);
 		$settings_notice = '';
 		return \%live;
@@ -815,7 +849,9 @@ sub authorised_values {
 sub _options {
 	my $server = preferences('server');
 	my $cli    = preferences('plugin.cli');
-	my $auth   = authorised_values();
+	my ($auth, $unusable) = authorised_values();
+	# A record that cannot be used: the prefs are shown in the status, never run with.
+	$auth ||= { map { $_ => $prefs->get($_) } @GUARDED };
 	my $public = $auth->{public_url} || '';
 	$public = '' unless valid_origin($public);
 	# Stored values are checked again: one that is no longer valid (e.g. ffmpeg removed) is
@@ -824,12 +860,14 @@ sub _options {
 	$ffmpeg = '' unless valid_ffmpeg_path($ffmpeg);
 	my $cache = $auth->{download_cache_mb} // '';
 	$cache = '' unless valid_cache_mb($cache);
-	my $transcode = $prefs->get('transcode');
-	my $analysis = $prefs->get('analysis');
+	my $transcode = $auth->{transcode};
+	my $analysis = $auth->{analysis};
 	my $ip_header = $auth->{client_ip_header} // '';
 	$ip_header = '' unless valid_client_ip_header($ip_header);
 	my $override = gateway_override($auth->{gateway_path});
 	return (
+		settings_error    => $unusable,
+		enabled           => $auth->{enabled} ? 1 : 0,
 		dev_binary        => $override ? 1 : 0,
 		client_ip_header  => $ip_header,
 		ffmpeg            => $ffmpeg,
@@ -838,7 +876,7 @@ sub _options {
 		download_cache_mb => $cache,
 		binary          => binary_path(basedir => $basedir, override => $override),
 		listen          => $auth->{listen} || '127.0.0.1:9443',
-		admin_listen    => admin_listen(),
+		admin_listen    => admin_listen($auth->{admin_port}),
 		data_dir        => data_dir(),
 		http_port       => $server->get('httpport') || 9000,
 		cli_port        => ($cli && $cli->get('cliport')) || 9090,
@@ -858,10 +896,17 @@ sub set_basedir {
 	$basedir = $dir;
 }
 
+# LMS has started: run the gateway if the settings page last saved it turned on. The pref
+# alone never decides it (see @GUARDED).
 sub init {
 	my ($class, $dir) = @_;
 	$class->set_basedir($dir);
-	$class->start if $prefs->get('enabled');
+	my ($auth, $why) = authorised_values();
+	if (!$auth) {
+		$last_error = $why;
+		return;
+	}
+	$class->start if $auth->{enabled};
 }
 
 sub start {
@@ -906,13 +951,19 @@ sub stop_for_shutdown {
 	Slim::Utils::Timers::killTimers(undef, \&_reap);
 }
 
-# Restart, but only if remote access is turned on: a disabled gateway is stopped and stays
-# stopped. Returns 1 if the gateway was started, 0 if not.
+# Restart, but only if the settings page last saved remote access turned on: a disabled
+# gateway is stopped and stays stopped. Returns 1 if the gateway was started; (0, why) if
+# not, with why set when the page's saved values cannot be used.
 sub restart {
 	my $class = shift;
 	$class->stop;
 	$attempt = 0;
-	unless ($prefs->get('enabled')) {
+	my ($auth, $why) = authorised_values();
+	if (!$auth) {
+		$last_error = $why;
+		return (0, $why);
+	}
+	unless ($auth->{enabled}) {
 		$log->info('not restarting the gateway: remote access is turned off');
 		return 0;
 	}
@@ -992,14 +1043,14 @@ sub _stop_orphan {
 sub state {
 	my %o = _options();
 	return {
-		enabled   => $prefs->get('enabled') ? 1 : 0,
+		enabled   => $o{enabled},
 		running   => ($proc && eval { $proc->alive }) ? 1 : 0,
 		pid       => $proc ? eval { $proc->pid } : undef,
 		binary    => $o{binary},
 		binary_ok => ($o{binary} && -x $o{binary}) ? 1 : 0,
 		data_dir  => $o{data_dir},
 		listen    => $o{listen},
-		error     => $last_error,
+		error     => $o{settings_error} || $last_error,
 		uptime    => ($proc && $started_at) ? _now() - $started_at : 0,
 		settings_notice => $settings_notice,
 	};
@@ -1019,6 +1070,17 @@ sub _launch {
 	}
 	$orphan_tries = 0;
 	my %o = _options();
+	if ($o{settings_error}) {
+		# Logged by authorised_values(); retried by _check, so a fixed record is picked up.
+		$last_error = $o{settings_error};
+		return;
+	}
+	unless ($o{enabled}) {
+		# Turned off on the settings page (whatever the pref says now): never started.
+		$log->info('not starting the gateway: remote access is turned off');
+		$wanted = 0;
+		return;
+	}
 	my ($argv, $err) = command_line(%o);
 	if (!$argv) {
 		$last_error = $err;

@@ -55,11 +55,14 @@
 	<p id="aw-tunnel-override-header" class="aw-note aw-warning" hidden></p>
 [% END %]
 
-<details class="aw-advanced"[% IF prefs.pref_gateway_path %] open[% END %]>
-	<summary>Advanced (for developers)</summary>
+<details class="aw-advanced"[% IF prefs.pref_gateway_path OR (prefs.pref_admin_port AND prefs.pref_admin_port != 9445) %] open[% END %]>
+	<summary>Advanced</summary>
 [% WRAPPER setting title="Gateway path" desc="Development only: an absolute path to a gateway binary. Used only when LMS was started with ANYWHERE_ALLOW_GATEWAY_PATH=1 in its environment; otherwise the bundled, checked binary runs. Leave empty to use the bundled one." %]
 	<input type="text" class="stdedit" name="pref_gateway_path" value="[% prefs.pref_gateway_path | html %]">
 	[% IF prefs.pref_gateway_path AND NOT anywhere_gateway_path_allowed %]<br><span class="aw-note">Ignored: ANYWHERE_ALLOW_GATEWAY_PATH=1 is not set.</span>[% END %]
+[% END %]
+[% WRAPPER setting title="Admin port" desc="The port on 127.0.0.1 where this plugin manages the gateway (never reachable from other machines). Change it only if another program on this server uses 9445. Leave empty for 9445." %]
+	<input type="number" class="stdedit" name="pref_admin_port" value="[% prefs.pref_admin_port | html %]" min="1" max="65535" step="1" placeholder="9445">
 [% END %]
 </details>
 

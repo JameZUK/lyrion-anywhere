@@ -353,13 +353,14 @@ SKIP: {
 		                    [0, 15, 1048577, '2048 ', "2048\n", '-1', '1e3', '2048MB', 'abc']],
 		transcode       => [['', 0, 1, '0', '1'], ['2', 'yes', "1\n", ['1']]],
 		analysis        => [['', 0, 1, '0', '1'], ['2', 'no', "0\n", '--no-analysis', ['0'], {}]],
+		enabled         => [['', 0, 1, '0', '1', undef], ['2', 'on', "1\n", ['1'], {}]],
 	);
 	for my $name (sort keys %cases) {
 		my ($good, $bad) = @{ $cases{$name} };
 		ok($v->($name, $_),  "pref $name accepts " . show($_)) for @$good;
 		ok(!$v->($name, $_), "pref $name refuses " . show($_)) for @$bad;
 	}
-	ok($v->('enabled', 1), 'prefs without a rule are accepted');
+	ok($v->('not_a_pref_of_ours', 'x'), 'prefs without a rule are accepted');
 }
 
 done_testing;

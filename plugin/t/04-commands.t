@@ -225,6 +225,7 @@ for my $op (sort keys %read_only_args) {
 {
 	my $prefs = preferences('plugin.lyrionanywhere');
 	$prefs->set(enabled => 0);
+	Plugins::LyrionAnywhere::Gateway::settings_saved();   # turned off on the settings page
 	my $n = @Proc::Background::STARTED;
 	my $req = Slim::Control::Request->new(['anywhere', 'restart'], { csrf => $token });
 	Plugins::LyrionAnywhere::Commands::restart($req);
@@ -235,7 +236,18 @@ for my $op (sort keys %read_only_args) {
 	is(Plugins::LyrionAnywhere::Gateway->state->{running}, 0, 'the running gateway was stopped');
 	ok(!grep({ $_->[1] == \&Plugins::LyrionAnywhere::Gateway::_launch || $_->[1] == \&Plugins::LyrionAnywhere::Gateway::_check } @Slim::Utils::Timers::TIMERS),
 		'and no start or restart is pending');
+	# Regression (review 2026-11-12, M12): `pref plugin.lyrionanywhere:enabled 1`, which any
+	# web page can blind-POST to LMS, turned it back on at the next restart.
 	$prefs->set(enabled => 1);
+	is($prefs->get('enabled'), 1, 'the pref command turned Enabled on (the attack)');
+	$req = Slim::Control::Request->new(['anywhere', 'restart'], { csrf => $token });
+	Plugins::LyrionAnywhere::Commands::restart($req);
+	is($req->{results}{started}, 0, 'Enabled set outside the settings page: not started');
+	like($req->{results}{message}, qr/turned off/, 'the reply says remote access is off');
+	is(scalar @Proc::Background::STARTED, $n, 'nothing was launched');
+	is($prefs->get('enabled'), 0, 'and the pref is put back');
+	$prefs->set(enabled => 1);
+	Plugins::LyrionAnywhere::Gateway::settings_saved();   # turned on on the settings page
 	$req = Slim::Control::Request->new(['anywhere', 'restart'], { csrf => $token });
 	Plugins::LyrionAnywhere::Commands::restart($req);
 	is($req->{results}{started}, 1, 'turned on: restarted');
