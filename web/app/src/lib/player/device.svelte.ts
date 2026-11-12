@@ -60,6 +60,12 @@ const CLOCK_EVERY_MS = 250;
 const POSITION_EVERY_MS = 100;
 /** A smoothed play head is never put further ahead of the element's own than this (s). */
 const SMOOTH_MAX_LEAD_S = 0.03;
+/**
+ * A start that has not reached the worker connecting (its `started`, or any word of the
+ * connection) in this long is given up on, so this device is never "starting" for ever.
+ * Generous: it covers loading the WebAssembly core over a slow link.
+ */
+export const START_WATCHDOG_MS = 60_000;
 
 export type DeviceState = 'off' | 'starting' | 'connected' | 'reconnecting' | 'stopped' | 'error';
 
@@ -180,6 +186,8 @@ class DevicePlayer {
 	/** Media mode: the next timeline position from the worker follows a flush. */
 	#seekAfterFlush = false;
 	#restartTimer: ReturnType<typeof setInterval> | undefined;
+	/** Gives up on a start that never gets as far as connecting (see START_WATCHDOG_MS). */
+	#startWatch: ReturnType<typeof setTimeout> | undefined;
 	/** Web Audio: posts the output clock to the worker. */
 	#clockTimer: ReturnType<typeof setInterval> | undefined;
 	/** Media element: a synced start waiting for its time. */
@@ -740,6 +748,12 @@ class DevicePlayer {
 		this.state = 'starting';
 		this.wasActive = false;
 		this.#watchLifecycle();
+		clearTimeout(this.#startWatch);
+		this.#startWatch = setTimeout(() => {
+			if (!live() || this.state !== 'starting') return;
+			this.#note(`the player did not start within ${START_WATCHDOG_MS / 1000} s; stopped`);
+			this.stop('error');
+		}, START_WATCHDOG_MS);
 		try {
 			const { choice, variant } = this.#decide();
 			this.choice = choice;
@@ -935,6 +949,7 @@ class DevicePlayer {
 		clearInterval(this.#restartTimer);
 		clearInterval(this.#clockTimer);
 		clearTimeout(this.#startTimer);
+		clearTimeout(this.#startWatch);
 		this.#cancelPendingSeek();
 		this.#gatewayLevel = null;
 		this.#smoother.reset();
@@ -1183,6 +1198,15 @@ class DevicePlayer {
 			return;
 		}
 		if (typeof m.log === 'string') this.#note(m.log, typeof m.kind === 'string' ? m.kind : undefined);
+		if (typeof m.fatal === 'string') {
+			// The worker could not start (its core didn't load, say): release everything, so
+			// "Play on this device" can start afresh. The log keeps the reason.
+			this.#note(`the player could not start: ${m.fatal.slice(0, 300)}`);
+			this.stop('error');
+			return;
+		}
+		// The worker is connecting, or says how its connection is: the start got that far.
+		if (m.started === true || typeof m.connection === 'string') clearTimeout(this.#startWatch);
 		if (Array.isArray(m.volume)) {
 			this.#lmsGains = cleanGains(m.volume);
 			this.gain = Math.max(...this.#lmsGains);

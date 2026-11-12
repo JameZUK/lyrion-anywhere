@@ -96,7 +96,7 @@ HTMLMediaElement.prototype.play = async () => {};
 HTMLMediaElement.prototype.pause = () => {};
 HTMLMediaElement.prototype.load = () => {};
 
-const { device } = await import('#lib/player/device.svelte');
+const { device, START_WATCHDOG_MS } = await import('#lib/player/device.svelte');
 
 const settle = async () => {
 	for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
@@ -214,6 +214,92 @@ test('a worker error shows the error and lets the device start again', async () 
 	expect(w.terminated).toBe(true);
 	await device.start();
 	expect(FakeWorker.all).toHaveLength(2);
+});
+
+// Regression (review M19): the worker's start failing (its core not loading, say) reached the
+// page as nothing at all, and the device stayed "starting" until a reload.
+test('a worker that cannot start says so: an error, everything released, and it can start again', async () => {
+	await device.start();
+	const w = FakeWorker.all.at(-1)!;
+	expect(device.state).toBe('starting');
+	w.say({ fatal: 'the core would not load' });
+	expect(device.state).toBe('error');
+	expect(w.terminated).toBe(true);
+	expect(open()).toHaveLength(0);
+	expect(device.log.some((l) => l.includes('could not start') && l.includes('the core would not load'))).toBe(true);
+	await device.start();
+	expect(FakeWorker.all).toHaveLength(2);
+});
+
+test('a fatal message is shown as text only, and bounded', async () => {
+	await device.start();
+	const w = FakeWorker.all.at(-1)!;
+	w.say({ fatal: `<img src=x onerror=alert(1)>${'x'.repeat(5000)}` });
+	expect(device.state).toBe('error');
+	const line = device.log.find((l) => l.includes('could not start'))!;
+	expect(line.length).toBeLessThan(400);
+	// Anything but a string is not a fatal message.
+	await device.start();
+	const w2 = FakeWorker.all.at(-1)!;
+	w2.say({ fatal: { message: 'x' } });
+	w2.say({ fatal: 1 });
+	expect(device.state).toBe('starting');
+});
+
+describe('the start watchdog', () => {
+	afterEach(() => vi.useRealTimers());
+
+	test('a worker that never says anything is given up on: never "starting" for ever', async () => {
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		await device.start();
+		const w = FakeWorker.all.at(-1)!;
+		expect(device.state).toBe('starting');
+		await vi.advanceTimersByTimeAsync(START_WATCHDOG_MS - 1);
+		expect(device.state).toBe('starting');
+		await vi.advanceTimersByTimeAsync(2);
+		expect(device.state).toBe('error');
+		expect(w.terminated).toBe(true);
+		expect(device.log.some((l) => l.includes('did not start'))).toBe(true);
+	});
+
+	test('a worker that has started (connecting) or reports its connection is left alone', async () => {
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		await device.start();
+		FakeWorker.all.at(-1)!.say({ started: true });
+		await vi.advanceTimersByTimeAsync(START_WATCHDOG_MS * 2);
+		expect(device.state).toBe('starting');
+		device.stop();
+		await device.start();
+		FakeWorker.all.at(-1)!.say({ connection: 'restarting' });
+		await vi.advanceTimersByTimeAsync(START_WATCHDOG_MS * 2);
+		expect(device.state).toBe('reconnecting');
+	});
+
+	test('a start that hangs before the worker is made is given up on too, and makes nothing later', async () => {
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		let release!: () => void;
+		addModuleGate = new Promise((r) => (release = r));
+		const starting = device.start();
+		await vi.advanceTimersByTimeAsync(START_WATCHDOG_MS + 1);
+		expect(device.state).toBe('error');
+		release();
+		await starting;
+		await vi.advanceTimersByTimeAsync(10);
+		expect(FakeWorker.all).toHaveLength(0);
+		expect(open()).toHaveLength(0);
+	});
+
+	test('a stop, or a start that connected, cancels it', async () => {
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		await device.start();
+		device.stop();
+		await vi.advanceTimersByTimeAsync(START_WATCHDOG_MS * 2);
+		expect(device.state).toBe('stopped');
+		await device.start();
+		FakeWorker.all.at(-1)!.say({ connection: 'connected', player: { mac: '02:4c:41:00:00:01', name: 'Test' } });
+		await vi.advanceTimersByTimeAsync(START_WATCHDOG_MS * 2);
+		expect(device.state).toBe('connected');
+	});
 });
 
 // Regression: pressing Stop while "Starting…" let the start carry on and create a worker.

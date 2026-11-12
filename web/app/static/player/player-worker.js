@@ -11,6 +11,22 @@ const V = new URL(self.location.href).searchParams.get('v');
 // Messages that arrive while the helpers load wait here, then go to the real handler.
 const early = [];
 onmessage = (e) => early.push(e);
+// Anything that goes wrong while this worker starts is fatal, and the page is told, so this
+// device never stays "starting". The message handler is async: a rejection in it never
+// reaches the page's Worker.onerror, only this. Once started, one is only logged.
+let started = false;
+let failed = false;
+const why = (err) => String((err && err.message) || err || 'unknown error').slice(0, 300);
+function fatal(err) {
+  if (failed) return;
+  failed = true;
+  postMessage({ fatal: why(err) });
+}
+self.onunhandledrejection = (e) => {
+  e.preventDefault?.();
+  if (!started) fatal(e.reason);
+  else postMessage({ log: `unexpected error: ${why(e.reason)}` });
+};
 const VQ = V && /^[\w.-]{1,64}$/.test(V) ? `?v=${V}` : '';
 const { AuthWait, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, StreamInfo, backoffMs, factsSeq, closeAction, describeSeek, downloadStream, loadCore, qualityMessage, routeMessage, sanitiseQuality, signInMessage, socketSilent } =
   await import(`./reconnect.js${VQ}`);
@@ -220,18 +236,25 @@ function reportVolume() {
 onmessage = async (e) => {
   const msg = e.data;
   if (msg.cmd === 'start') {
-    token = msg.token;
-    quality = sanitiseQuality(msg.quality);
-    outputMode = msg.mode === 'media' ? 'media' : 'worklet';
-    mediaVariant = Number.isInteger(msg.variant) ? msg.variant : 0;
-    if (msg.port) attachSink(msg.port);
-    // The build version in the URLs: a browser can't pair an old cached copy with a new app.
-    core = await loadCore(self.location.href, (u) => import(u));
-    wasmMemory = core.wasm.memory ?? null;
-    // Learn the gateway's features first (briefly), so even the first sign-in can ask for
-    // keepalives; if that fails, it is asked again after the greeting.
-    await learnFeatures(3000);
-    connect(false);
+    try {
+      token = msg.token;
+      quality = sanitiseQuality(msg.quality);
+      outputMode = msg.mode === 'media' ? 'media' : 'worklet';
+      mediaVariant = Number.isInteger(msg.variant) ? msg.variant : 0;
+      if (msg.port) attachSink(msg.port);
+      // The build version in the URLs: a browser can't pair an old cached copy with a new app.
+      core = await loadCore(self.location.href, (u) => import(u));
+      wasmMemory = core.wasm.memory ?? null;
+      // Learn the gateway's features first (briefly), so even the first sign-in can ask for
+      // keepalives; if that fails, it is asked again after the greeting.
+      await learnFeatures(3000);
+      connect(false);
+      // Connecting: from here the connection reports itself (the page's start watchdog stops).
+      started = true;
+      postMessage({ started: true });
+    } catch (err) {
+      fatal(err);
+    }
   } else if (msg.cmd === 'visual') {
     // The page shows the visualiser (or stopped showing it).
     visual.setOn(msg.on === true);
