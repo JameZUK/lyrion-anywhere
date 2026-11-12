@@ -14,11 +14,13 @@ export type SessionStatus = 'unknown' | 'offline' | 'signed-out' | 'signed-in';
 export const RETRY_MS = [2_000, 5_000, 15_000, 30_000, 60_000];
 
 /**
- * Did the server refuse the sign-in? Only then is the user signed out. Anything else (no
- * network, a phone waking up, the gateway restarting behind the proxy) is retried, so a
- * moment offline never costs the user their sign-in.
+ * Did the gateway itself refuse the sign-in? That is a 401 carrying its JSON `error`
+ * (docs/PROTOCOL.md), and only then is the user signed out. Anything else is retried: no
+ * network, a phone waking up, the gateway restarting behind the proxy, and a proxy's, CDN's
+ * or firewall's own page of any status (a challenge page, a 404 from a misrouted path). A
+ * moment like that never costs the user their sign-in, their profile or their downloads.
  */
-export const refused = (e: unknown) => e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 429;
+export const refused = (e: unknown) => e instanceof ApiError && e.status === 401 && typeof e.body.error === 'string';
 type Listener = (s: Session | null, status: SessionStatus) => void;
 
 /** Set while a sign-out has not reached the server yet: the next page load must not restore. */

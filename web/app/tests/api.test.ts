@@ -1,5 +1,5 @@
 // Session renewal, the RPC/artwork client and the events stream, against fakes.
-import { RETRY_MS, SIGNED_OUT_KEY, SessionManager, refused, type AuthApi } from '#lib/api/session';
+import { PROFILE_KEY, RETRY_MS, SIGNED_OUT_KEY, SessionManager, refused, type AuthApi } from '#lib/api/session';
 import { Api, artUrl } from '#lib/api/rpc';
 import { ApiError, callJson, CLIENT_HEADER } from '#lib/api/http';
 import { EventsClient, eventsBackoff, parseEventMessage } from '#lib/api/events';
@@ -13,6 +13,9 @@ const sess = (token: string): Session => ({
 	device: { id: 3, name: 'Firefox on Linux' },
 });
 
+/** The gateway's own refusal of a refresh: a 401 carrying its JSON `error` (docs/PROTOCOL.md). */
+const gatewayRefusal = (message = 'invalid credentials') => new ApiError(401, message, false, undefined, { error: message });
+
 function fakeAuth(tokens: string[]): AuthApi & { refreshes: number } {
 	const api = {
 		refreshes: 0,
@@ -20,7 +23,7 @@ function fakeAuth(tokens: string[]): AuthApi & { refreshes: number } {
 		refresh: vi.fn(async () => {
 			api.refreshes++;
 			const t = tokens.shift();
-			if (!t) throw new ApiError(401, 'expired');
+			if (!t) throw gatewayRefusal('expired');
 			return sess(t);
 		}),
 		logout: vi.fn(async () => {}),
@@ -191,11 +194,84 @@ describe('session', () => {
 		expect(states).not.toContain('signed-out');
 	});
 
-	test('only refusals sign out', () => {
-		for (const st of [400, 401, 403]) expect(refused(new ApiError(st, 'x'))).toBe(true);
-		for (const st of [408, 429, 500, 502, 503, 504]) expect(refused(new ApiError(st, 'x'))).toBe(false);
+	// Regression (review M9): any 4xx on refresh signed the user out, so a firewall's challenge
+	// (403 HTML) or a proxy's 400 or 404 page wiped the sign-in, the stored profile and the
+	// offline owner. Only the gateway's own refusal ends a sign-in (docs/PROTOCOL.md).
+	test('only the gateway’s own refusal signs out: a 401 carrying its JSON error', () => {
+		expect(refused(gatewayRefusal())).toBe(true);
+		expect(refused(gatewayRefusal('expired'))).toBe(true);
+		// A 401 without the gateway's error (a proxy's own sign-in page, say) is not one.
+		expect(refused(new ApiError(401, 'HTTP 401'))).toBe(false);
+		expect(refused(new ApiError(401, 'x', false, undefined, { error: 42 }))).toBe(false);
+		expect(refused(new ApiError(401, 'x', false, undefined, { message: 'nope' }))).toBe(false);
+		// Any other status, whatever its body says, is something in the way: retried.
+		for (const st of [400, 403, 404, 405, 407, 408, 410, 418, 429, 451, 500, 502, 503, 504]) {
+			expect(refused(new ApiError(st, 'x')), `${st}`).toBe(false);
+			expect(refused(new ApiError(st, 'x', false, undefined, { error: 'x' })), `${st} with an error`).toBe(false);
+		}
 		expect(refused(new TypeError('Failed to fetch'))).toBe(false);
 		expect(refused(new DOMException('aborted', 'AbortError'))).toBe(false);
+		for (const junk of [null, undefined, 401, 'refused', { status: 401, body: { error: 'x' } }]) expect(refused(junk)).toBe(false);
+	});
+
+	test('a proxy’s or CDN’s page of any status, as fetched, never signs out', async () => {
+		const page = (status: number) => new Response('<!doctype html><title>Checking your browser</title>', { status, headers: { 'content-type': 'text/html' } });
+		for (const status of [400, 401, 403, 404, 429, 502]) {
+			vi.stubGlobal('fetch', async () => page(status));
+			const e = await callJson('/v1/auth/refresh', { method: 'POST' }).catch((x) => x);
+			expect(e, `${status}`).toBeInstanceOf(ApiError);
+			expect(refused(e), `${status}`).toBe(false);
+		}
+		// The gateway's own answer does.
+		vi.stubGlobal('fetch', async () => json(401, { error: 'invalid credentials' }));
+		expect(refused(await callJson('/v1/auth/refresh', { method: 'POST' }).catch((x) => x))).toBe(true);
+		// A JSON 403 is not a refusal of the sign-in either.
+		vi.stubGlobal('fetch', async () => json(403, { error: 'forbidden' }));
+		expect(refused(await callJson('/v1/auth/refresh', { method: 'POST' }).catch((x) => x))).toBe(false);
+	});
+
+	test('a renewal answered by a firewall’s challenge page keeps the sign-in and retries with backoff', async () => {
+		vi.useFakeTimers();
+		const outcomes: (string | Error)[] = ['t1', new ApiError(403, 'HTTP 403'), new ApiError(404, 'HTTP 404'), 't2'];
+		const auth = fakeAuth([]);
+		auth.refresh = vi.fn(async () => {
+			const o = outcomes.shift();
+			if (o instanceof Error) throw o;
+			if (!o) throw gatewayRefusal();
+			return sess(o);
+		});
+		const flags = new Map<string, string>();
+		const store = { getItem: (k: string) => flags.get(k) ?? null, setItem: (k: string, v: string) => void flags.set(k, v), removeItem: (k: string) => void flags.delete(k) };
+		const s = new SessionManager(auth, store);
+		await s.restore();
+		expect(await s.renew()).toBe(false);
+		expect(s.status).toBe('signed-in');
+		expect(s.token).toBe('t1');
+		// The profile kept for offline mode is still there.
+		expect(flags.get(PROFILE_KEY)).toContain('alice');
+		await vi.advanceTimersByTimeAsync(RETRY_MS[0]!); // 404 now
+		expect(s.status).toBe('signed-in');
+		await vi.advanceTimersByTimeAsync(RETRY_MS[1]!);
+		expect(s.token).toBe('t2');
+		expect(auth.refresh).toHaveBeenCalledTimes(4);
+	});
+
+	test('a restore answered by a proxy’s page waits and retries instead of showing the sign-in form', async () => {
+		vi.useFakeTimers();
+		const outcomes: (string | Error)[] = [new ApiError(400, 'HTTP 400'), 't1'];
+		const auth = fakeAuth([]);
+		auth.refresh = vi.fn(async () => {
+			const o = outcomes.shift();
+			if (o instanceof Error) throw o;
+			return sess(o!);
+		});
+		const s = new SessionManager(auth, undefined);
+		const states: string[] = [];
+		s.subscribe((_, st) => states.push(st));
+		expect(await s.restore()).toBe(false);
+		await vi.advanceTimersByTimeAsync(RETRY_MS[0]!);
+		expect(s.status).toBe('signed-in');
+		expect(states).not.toContain('signed-out');
 	});
 
 	test('sign-out stops pending retries', async () => {
