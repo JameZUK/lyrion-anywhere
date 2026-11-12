@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Reclaim build space for this checkout without touching sources or current artefacts.
 #
-#   tools/disk-gc.sh [--days N] [--dry-run]
+#   tools/disk-gc.sh [--days N] [--dry-run] [--no-docker]
 #
 # Removes, under this repository:
 #   - Rust build artefacts in target/ not used for N days (default 3), with cargo-sweep;
@@ -10,7 +10,9 @@
 #     must build into the shared target/ instead;
 #   - Android module build/ output older than N days;
 # and, on the host:
-#   - Docker build cache and dangling images older than N days;
+#   - Docker's build cache unused for N days and every dangling image. Docker keeps one
+#     cache for the whole host and can't tell which project made what, so this is every
+#     project's, not only this one's (the run says so); --no-docker leaves Docker alone;
 #   - leftovers in the system temp folder older than N days: this project's test scratch
 #     directories (anywhere-*), Robolectric's extracted runtimes, abandoned Playwright
 #     downloads, and Vitest module caches made from this checkout (nothing else there).
@@ -22,11 +24,13 @@ set -euo pipefail
 
 days=3
 dry=
+docker_too=1
 while [ $# -gt 0 ]; do
 	case $1 in
 		--days) days=${2:?}; shift 2 ;;
 		--dry-run) dry=1; shift ;;
-		-h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+		--no-docker) docker_too=; shift ;;
+		-h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
 		*) echo "unknown option: $1" >&2; exit 2 ;;
 	esac
 done
@@ -45,6 +49,13 @@ if pgrep -x cargo >/dev/null || pgrep -x rustc >/dev/null \
 	|| pgrep -f '[G]radleWrapperMain' >/dev/null || pgrep -f '[d]ocker build' >/dev/null; then
 	echo "disk-gc: a build is running; not now" >&2
 	exit 3
+fi
+# The shared build lock, when there is one: held for the whole run, so a build that takes it
+# waits for this (and this never starts while a build holds it).
+if [ -n "${LYRION_BUILD_LOCK:-}" ]; then
+	command -v flock >/dev/null 2>&1 || { echo "disk-gc: LYRION_BUILD_LOCK is set but flock is not installed" >&2; exit 2; }
+	exec 9>>"$LYRION_BUILD_LOCK"
+	flock -n 9 || { echo "disk-gc: the build lock ($LYRION_BUILD_LOCK) is held; not now" >&2; exit 3; }
 fi
 
 before=$(df -P "$root" | awk 'NR==2{print $4}')
@@ -81,10 +92,20 @@ for d in "$root"/apps/android/*/build; do
 	[ -d "$d" ] && [ -n "$(find "$d" -maxdepth 0 -mtime +"$days" 2>/dev/null)" ] && run rm -rf "$d"
 done
 
-# 5. Docker build cache and dangling images.
-if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-	run docker builder prune -f --filter "until=$((days * 24))h" >/dev/null 2>&1 || true
-	run docker image prune -f >/dev/null 2>&1 || true
+# 5. Docker's build cache and dangling images: the whole host's, every project's (Docker
+#    can't tell which project made what), so the run says so, and --no-docker skips it. A
+#    dry run prints the commands; a real one keeps their output out of the log.
+if [ -z "$docker_too" ]; then
+	echo "disk-gc: Docker left alone (--no-docker)"
+elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+	echo "disk-gc: pruning Docker for the whole host (every project, not only this one): build cache unused for $days days, and dangling images; --no-docker skips this"
+	if [ -n "$dry" ]; then
+		run docker builder prune -f --filter "until=$((days * 24))h"
+		run docker image prune -f
+	else
+		docker builder prune -f --filter "until=$((days * 24))h" >/dev/null 2>&1 || echo "disk-gc: docker builder prune failed" >&2
+		docker image prune -f >/dev/null 2>&1 || echo "disk-gc: docker image prune failed" >&2
+	fi
 fi
 
 # 6. The system temp folder. Only names this project makes (its tests' anywhere-* scratch
