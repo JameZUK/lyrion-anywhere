@@ -1958,7 +1958,7 @@ internal fun openBatteryOptimisationSettings(context: Context) {
 /** Start the media session service (allowed while the app is in the foreground). */
 private fun startPlaybackService(context: Context) {
     try {
-        context.startService(Intent(context, PlaybackService::class.java))
+        context.startService(PlaybackService.startIntent(context))
     } catch (_: IllegalStateException) {
         // Not in the foreground after all; it starts the next time the app opens.
     }
