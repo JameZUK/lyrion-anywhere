@@ -29,6 +29,7 @@
 	import InsecureNotice from '#lib/components/InsecureNotice.svelte';
 	import Snackbar from '#lib/components/Snackbar.svelte';
 	import { forgetOwner, rememberOwner } from '#lib/offline/settings';
+	import { switchedUser } from '#lib/state/per-user';
 	import { library } from '#lib/state/library.svelte';
 	import { controls, local } from '#lib/player/controls.svelte';
 	// Keeps a playing station topped up wherever the user goes.
@@ -109,11 +110,25 @@
 	// Downloads belong to the signed-in user. Remember who that is, so offline mode can offer
 	// their downloads when the server can't be reached; forget it once signed out.
 	let lastStatus = '';
+	/** The user last seen signed in here (null once signed out). */
+	let lastUser: string | null = null;
 	$effect(() => {
 		const user = app.session?.user.username ?? null;
 		const was = lastStatus;
 		lastStatus = app.status;
 		if (app.status === 'offline') handoff.wentOffline();
+		if (switchedUser(lastUser, app.status, user)) {
+			// Signed in as someone else with no sign-out seen here (the cookie came back as
+			// another user: see SessionManager). End the last user's things first, as at a
+			// sign-out asked for; nothing of theirs carries over.
+			untrack(() => handoff.reset());
+			offlinePlayer.stop();
+			library.stop();
+			forgetOwner();
+			void downloads.setUser(null);
+			void plays.setUser(null);
+		}
+		lastUser = app.status === 'signed-in' ? user : app.status === 'signed-out' ? null : lastUser;
 		if (app.status === 'signed-in' && user) {
 			rememberOwner(user);
 			// Downloads carry on once the server has confirmed the sign-in.
@@ -123,9 +138,9 @@
 			// Back from offline with downloads queued: offer "Continue on <player>" (SPEC §8.4).
 			if (navigator.onLine !== false) untrack(() => handoff.backOnline(user, snapshotOf(offlinePlayer)));
 		} else if (app.status === 'signed-out') {
-			// The sign-in ended while offline (not signed out on purpose): keep the queue to
-			// offer once the same user signs in again.
-			if (was === 'offline' || !session.signOutPending) untrack(() => handoff.keep(snapshotOf(offlinePlayer)));
+			// The sign-in ended while offline (not signed out on purpose, here or in another
+			// tab): keep the queue to offer once the same user signs in again.
+			if (was === 'offline' || !session.endedOnPurpose) untrack(() => handoff.keep(snapshotOf(offlinePlayer)));
 			else handoff.reset();
 			offlinePlayer.stop();
 			library.stop();
