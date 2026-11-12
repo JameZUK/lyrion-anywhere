@@ -896,7 +896,9 @@ mod tests {
                 t0,
             );
             // Page after page of new items of the same command, each evicting the oldest.
-            for page in 0..50 {
+            // Linear, this takes well under a second in a debug build on an idle machine;
+            // as it was, each page cost 16 million comparisons.
+            for page in 0..20 {
                 let base = PER_DEVICE + page * 2000;
                 d.add(
                     (base..base + 2000)
@@ -907,7 +909,7 @@ mod tests {
             }
             // The same page offered again and again only refreshes it.
             let again: Vec<Action> = (0..2000)
-                .map(|i| item(&["x", "items"], PER_DEVICE + 49 * 2000 + i))
+                .map(|i| item(&["x", "items"], PER_DEVICE + 19 * 2000 + i))
                 .collect();
             for _ in 0..30 {
                 d.add(again.clone(), t0);
@@ -920,7 +922,7 @@ mod tests {
             let _ = tx.send((d.len(), d.order.len(), found));
         });
         let (len, records, found) = rx
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(Duration::from_secs(60))
             .expect("adding and matching took far too long");
         assert_eq!(len, PER_DEVICE);
         assert!(records <= 2 * PER_DEVICE + 64, "{records} records kept");

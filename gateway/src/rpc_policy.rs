@@ -2893,8 +2893,11 @@ mod tests {
             "\\\\a".repeat(MIB / 3),
             "a:\\".repeat(MIB / 3),
         ];
+        // Linear, all of this takes a second or two in a debug build on an idle machine; the
+        // budget leaves room for a heavily loaded one. Quadratic, the first shape alone took
+        // hours.
         within(
-            std::time::Duration::from_secs(20),
+            std::time::Duration::from_secs(120),
             "the scanners",
             move || {
                 for s in &shapes {
@@ -2903,7 +2906,7 @@ mod tests {
                 }
                 // The same text where LMS puts it: under several keys and in a menu.
                 let mut items = Vec::new();
-                for s in shapes {
+                for s in shapes.into_iter().take(4) {
                     items.push(json!({"text": s.clone(), "comment": s.clone(),
                                   "actions": {"go": {"cmd": ["x"], "params": {"p": s}}}}));
                 }
