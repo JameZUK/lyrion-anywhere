@@ -194,7 +194,7 @@ fun ChangePasswordEditor(
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("password-code")
-                    .semantics { contentType = ContentType.SmsOtpCode },
+                    .semantics { contentType = io.github.jamezuk.lyrionanywhere.ui.components.TwoStepCodeContentType },
             )
         }
         Row(

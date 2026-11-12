@@ -130,6 +130,17 @@ class ChangePasswordScreenTests {
     }
 
     @Test
+    fun theTwoStepCodeIsOfferedToAuthenticatorAppsNotTextMessages() {
+        val form = Form(SettingsUiState(username = "alice", account = account(twoStep = true)))
+        show(form)
+        compose.onNodeWithTag("change-password").performClick()
+        compose.onNodeWithTag("password-code").assertExists()
+        val types = contentTypes(compose)
+        assertTrue("$types", io.github.jamezuk.lyrionanywhere.ui.components.TwoStepCodeContentType in types)
+        assertTrue("$types", androidx.compose.ui.autofill.ContentType.SmsOtpCode !in types)
+    }
+
+    @Test
     fun theFormSendsTheNewPasswordOnce() {
         val form = Form(SettingsUiState(username = "alice", account = account()))
         show(form)
