@@ -566,6 +566,8 @@ pub struct StreamDecoder {
     rate: Option<u32>,
     /// Frames the reader failed to parse in a row.
     demux_errors: u32,
+    /// Packets the decoder failed to decode in a row.
+    bad_packets: u32,
     /// The demuxer's position once the headers were probed ([`StreamDecoder::audio_from`]).
     audio_from: u64,
 }
@@ -600,6 +602,7 @@ impl StreamDecoder {
             synthesised: None,
             rate: None,
             demux_errors: 0,
+            bad_packets: 0,
             audio_from: 0,
         }
     }
@@ -764,6 +767,7 @@ impl StreamDecoder {
                         self.state = State::Failed(format!("decode: {e}"));
                         continue;
                     }
+                    self.bad_packets = 0;
                     let channels = buf.spec().channels().count().max(1);
                     self.tmp.clear();
                     buf.copy_to_vec_interleaved(&mut self.tmp);
@@ -771,7 +775,14 @@ impl StreamDecoder {
                     sink(rate, &self.stereo);
                 }
                 // A corrupt packet: skip it, as players do, rather than stopping playback.
-                Err(SymError::DecodeError(_)) => {}
+                // A long run of them is a corrupt stream, not damage: fail it, rather than
+                // "finish" a track that never played.
+                Err(SymError::DecodeError(_)) => {
+                    self.bad_packets += 1;
+                    if self.bad_packets >= MAX_BAD_PACKETS {
+                        self.state = State::Failed("decode: too many corrupt packets".into());
+                    }
+                }
                 Err(e) => self.state = State::Failed(format!("decode: {e}")),
             }
         }
