@@ -18,6 +18,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::dsp::signal_path::{SignalPath, fmt_db};
+use crate::names::invisible;
 
 /// The longest text taken from an input string (names, labels), in characters.
 const MAX_NAME: usize = 40;
@@ -504,47 +505,10 @@ fn channels_of(v: Option<i64>) -> Option<u32> {
     in_range(v, 1, 64)
 }
 
-/// The characters [`clean`] drops: controls (`Cc`), the line and paragraph separators, every
-/// format character (`Cf`, Unicode 16: soft hyphen, zero-width and bidirectional controls,
-/// the Arabic and Syriac marks, the tag characters, …) and the other characters that draw
-/// nothing (the combining grapheme joiner, the Hangul fillers, the variation selectors), any
-/// of which could make a name read as something else.
-pub fn is_invisible(c: char) -> bool {
-    c.is_control()
-        || matches!(
-            c,
-            '\u{00ad}'
-                | '\u{034f}'
-                | '\u{0600}'..='\u{0605}'
-                | '\u{061c}'
-                | '\u{06dd}'
-                | '\u{070f}'
-                | '\u{0890}'..='\u{0891}'
-                | '\u{08e2}'
-                | '\u{115f}'..='\u{1160}'
-                | '\u{180e}'
-                | '\u{200b}'..='\u{200f}'
-                | '\u{2028}'..='\u{202e}'
-                | '\u{2060}'..='\u{206f}'
-                | '\u{3164}'
-                | '\u{fe00}'..='\u{fe0f}'
-                | '\u{feff}'
-                | '\u{ffa0}'
-                | '\u{fff9}'..='\u{fffb}'
-                | '\u{110bd}'
-                | '\u{110cd}'
-                | '\u{13430}'..='\u{1343f}'
-                | '\u{1bca0}'..='\u{1bca3}'
-                | '\u{1d173}'..='\u{1d17a}'
-                | '\u{e0000}'..='\u{e007f}'
-                | '\u{e0100}'..='\u{e01ef}'
-        )
-}
-
-/// Text from an input: the [`is_invisible`] characters dropped, trimmed, at most `max`
+/// Text from an input: the [`invisible`] characters dropped, trimmed, at most `max`
 /// characters.
 fn clean(s: &str, max: usize) -> String {
-    let t: String = s.chars().filter(|&c| !is_invisible(c)).collect();
+    let t: String = s.chars().filter(|&c| !invisible(c)).collect();
     t.trim()
         .chars()
         .take(max)
@@ -1488,7 +1452,7 @@ mod tests {
             '\u{e01ef}',
         ];
         for c in hidden {
-            assert!(is_invisible(c), "{:04x}", c as u32);
+            assert!(invisible(c), "{:04x}", c as u32);
             let i = QualityInputs {
                 player: Player::Remote {
                     name: format!("{c}Kit{c}chen{c}"),
@@ -1515,7 +1479,7 @@ mod tests {
             '\u{fffd}',
             '\u{ac00}',
         ] {
-            assert!(!is_invisible(c), "{:04x}", c as u32);
+            assert!(!invisible(c), "{:04x}", c as u32);
         }
     }
 
