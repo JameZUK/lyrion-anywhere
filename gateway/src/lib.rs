@@ -328,6 +328,9 @@ pub struct Gateway {
     /// "Your devices" requests per asking device ([`DEVICE_REQUESTS_PER_WINDOW`] per
     /// [`DEVICE_REQUEST_WINDOW`]).
     device_requests: plays::Window,
+    /// `POST /v1/devices/pair` requests per asking device ([`PAIRING_REQUESTS_PER_WINDOW`]
+    /// per [`PAIRING_REQUEST_WINDOW`]).
+    pairing_requests: plays::Window,
     /// Requests to `/v1/me/…` per user a minute.
     me_requests: plays::Window,
     /// Users with an offline ratings batch in flight (one at a time each).
@@ -365,6 +368,11 @@ pub const RENAME_WINDOW: Duration = Duration::from_secs(60);
 /// [`DEVICE_REQUEST_WINDOW`], across all their devices.
 pub const DEVICE_REQUESTS_PER_WINDOW: usize = 30;
 pub const DEVICE_REQUEST_WINDOW: Duration = Duration::from_secs(60);
+/// Requests for a pairing code (`POST /v1/devices/pair`) one device may make per
+/// [`PAIRING_REQUEST_WINDOW`], whatever their outcome; beyond that, 429 before the database
+/// is touched. A user may make only 5 codes an hour anyway.
+pub const PAIRING_REQUESTS_PER_WINDOW: usize = 10;
+pub const PAIRING_REQUEST_WINDOW: Duration = Duration::from_secs(60);
 
 pub type AppState = Arc<Gateway>;
 
@@ -421,6 +429,10 @@ impl Gateway {
             plays: plays::PlayLimits::new(cfg.plays_requests_per_minute, cfg.plays_per_hour),
             renames: plays::Window::new(RENAMES_PER_WINDOW, RENAME_WINDOW),
             device_requests: plays::Window::new(DEVICE_REQUESTS_PER_WINDOW, DEVICE_REQUEST_WINDOW),
+            pairing_requests: plays::Window::new(
+                PAIRING_REQUESTS_PER_WINDOW,
+                PAIRING_REQUEST_WINDOW,
+            ),
             me_requests: plays::Window::new(
                 history::ME_REQUESTS_PER_MINUTE,
                 Duration::from_secs(60),

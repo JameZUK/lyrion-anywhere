@@ -11,13 +11,23 @@
 //! - Failed logins and pairing attempts are rate-limited with escalating lockouts:
 //!   - per client address, a hard lock. A success clears only the failures of the user
 //!     who signed in, so an attacker with an account of their own can't reset the lock;
-//!   - per username (and for pairing, across all clients), a soft one: once it trips, the
-//!     clients that failed are refused, and the others share a small budget of
-//!     [`THROTTLED_ATTEMPTS`] a minute. So an attacker can't lock a user out from
-//!     elsewhere, and spreading guesses over many addresses doesn't buy more of them.
+//!   - per username, a soft one: once it trips, the clients that failed are refused, and
+//!     strangers share a small budget of [`THROTTLED_ATTEMPTS`] a minute, so spreading
+//!     guesses over many addresses doesn't buy more of them. The owner never draws on
+//!     that budget from a device of her own: a password change is made from a signed-in
+//!     device, and a sign-in that names one of her devices together with a refresh token
+//!     it was issued (expired or not) is held to that device's own lock instead. So a
+//!     stranger can't keep a user out by spending the budget (review M5);
+//!   - pairing codes (about 50 bits, ten minutes, single use) only per client address:
+//!     a budget shared by everyone would let anyone stop every pairing.
 //!
 //!   An attempt is counted before its password is checked, so parallel guesses can't get
 //!   past the limit, and at most [`HASH_PERMITS`] password checks run at once.
+//! - Each user has a credential generation, moved on by every password change and by
+//!   disabling the user. A sign-in or pairing records the generation it was checked
+//!   against and is refused if it moved before its tokens (or device, or pairing code)
+//!   were made, under the writer's lock: a reset evicts whoever holds the old password,
+//!   even mid-sign-in (review M6).
 //! - Each user has at most [`MAX_DEVICES_PER_USER`] devices; signing in another revokes the
 //!   least recently seen. At most [`NEW_DEVICES_PER_HOUR`] new devices a user an hour (a
 //!   browser signing in again reuses its device). Revoked devices' LMS players are
@@ -93,6 +103,9 @@ pub const AUDIT_MAX_ROWS: i64 = 100_000;
 const AUDIT_PRUNE_EVERY: i64 = 1000;
 /// Revoked devices are kept this long (for the audit trail), then deleted.
 pub const REVOKED_DEVICE_RETENTION: Duration = Duration::from_secs(30 * 24 * 3600);
+/// A refresh token that has run out is kept this long after it expired, so a renewal with
+/// it is refused as `expired` (the device keeps its downloads) rather than as unknown.
+pub const EXPIRED_REFRESH_KEPT: Duration = Duration::from_secs(365 * 24 * 3600);
 /// Siblings one refresh token may have (lost responses and concurrent refreshes).
 const MAX_REFRESH_RETRIES: i64 = 8;
 /// Renewals one device may make per [`REFRESH_WINDOW`]. A client renews every few minutes
@@ -356,6 +369,23 @@ pub struct OwnDevice {
     pub protocol: Option<i64>,
 }
 
+/// A sign-in with a password ([`Accounts::sign_in`]).
+#[derive(Clone, Copy)]
+pub struct SignIn<'a> {
+    pub username: &'a str,
+    pub password: &'a str,
+    /// The two-step code, for users who have it turned on.
+    pub totp: Option<&'a str>,
+    pub device_name: &'a str,
+    /// Reuse this (own) device, e.g. a browser signing in again.
+    pub device_id: Option<i64>,
+    /// The refresh token the client holds for `device_id` (a browser's cookie, an app's
+    /// stored one), which proves the device is the user's own.
+    pub refresh_token: Option<&'a str>,
+    /// The client's address key (as for the lockouts).
+    pub client: &'a str,
+}
+
 /// A signed-in user's request to change their own password
 /// ([`Accounts::change_own_password`]).
 pub struct OwnPasswordChange<'a> {
@@ -369,6 +399,15 @@ pub struct OwnPasswordChange<'a> {
     pub code: Option<&'a str>,
     /// Also sign out the user's other devices.
     pub sign_out_others: bool,
+}
+
+/// What a player attach must write ([`Accounts::claim_attach`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttachWrite {
+    /// The device's last address and time.
+    pub seen: bool,
+    /// The protocol it attached with (it changed).
+    pub protocol: bool,
 }
 
 /// What [`Accounts::change_own_password`] did.
@@ -404,6 +443,9 @@ pub enum PlayClaim {
 pub enum AuthError {
     /// Wrong credentials (deliberately unspecific).
     Invalid,
+    /// A refresh token this gateway issued, unused, whose sign-in lifetime ran out: the
+    /// device was not signed out, it must sign in again (review M18).
+    Expired,
     /// Too many failures; retry after this long.
     Locked(Duration),
     /// A used refresh token was replayed; this device has been revoked.
@@ -531,6 +573,45 @@ impl Drop for HashPermit<'_> {
     }
 }
 
+/// A soft key for an attempt (see [`Accounts::begin_attempt`]).
+struct Soft {
+    /// The key (`user:<name>`).
+    key: String,
+    /// Who is attempting: an address (`client:<addr>`), or a device of the user's that has
+    /// shown it holds a token issued to it (`device:<id>`). Refused while the key is
+    /// throttled if it failed for it.
+    client: String,
+    /// Whether this client draws on the key's shared budget while it is throttled. A
+    /// stranger does; the owner's own device doesn't (its hard key `device:<id>`, or the
+    /// account-change lock, is its allowance), so strangers can't use the budget up on her.
+    shared: bool,
+}
+
+impl Soft {
+    /// A client at an address, which shares the budget.
+    fn stranger(key: String, client: String) -> Soft {
+        Soft {
+            key,
+            client,
+            shared: true,
+        }
+    }
+
+    /// One of the user's own devices, held to a limit of its own instead of the budget.
+    fn own_device(key: String, device: i64) -> Soft {
+        Soft {
+            key,
+            client: device_key(device),
+            shared: false,
+        }
+    }
+}
+
+/// The rate-limit key for one of a user's devices.
+fn device_key(device: i64) -> String {
+    format!("device:{device}")
+}
+
 /// A login (or similar) attempt, counted against its rate-limit keys from the start. It
 /// must end as [`Attempt::failed`] or [`Attempt::succeeded`]; dropped otherwise (bad input,
 /// busy, storage error), it counts as neither.
@@ -539,7 +620,7 @@ struct Attempt<'a> {
     /// Hard keys: refused outright once locked.
     keys: Vec<String>,
     /// A soft key and the client making the attempt (see [`Accounts::begin_attempt`]).
-    soft: Option<(String, String)>,
+    soft: Option<Soft>,
     /// The username the attempt was for, if it names one that can exist: its failures on
     /// the hard keys are its own, cleared by its own success (see [`Attempt::by`]).
     who: Option<String>,
@@ -548,7 +629,7 @@ struct Attempt<'a> {
 
 impl Attempt<'_> {
     fn all_keys(&self) -> impl Iterator<Item = &String> {
-        self.keys.iter().chain(self.soft.as_ref().map(|(k, _)| k))
+        self.keys.iter().chain(self.soft.as_ref().map(|s| &s.key))
     }
 
     /// Attribute the attempt to `username`.
@@ -590,12 +671,12 @@ impl Attempt<'_> {
         if !soft_too {
             return;
         }
-        if let Some((k, client)) = &self.soft {
-            record_failure_in(&mut limits, k, None, now);
-            if let Some(l) = limits.get_mut(k)
+        if let Some(s) = &self.soft {
+            record_failure_in(&mut limits, &s.key, None, now);
+            if let Some(l) = limits.get_mut(&s.key)
                 && l.failed_clients.len() < FAILED_CLIENTS_CAP
             {
-                l.failed_clients.insert(client.clone());
+                l.failed_clients.insert(s.client.clone());
             }
         }
     }
@@ -619,10 +700,10 @@ impl Attempt<'_> {
                 l.failures = l.failures.saturating_sub(own);
             }
         }
-        if let Some((k, client)) = &self.soft
-            && let Some(l) = limits.get_mut(k)
+        if let Some(s) = &self.soft
+            && let Some(l) = limits.get_mut(&s.key)
         {
-            l.failed_clients.remove(client);
+            l.failed_clients.remove(&s.client);
             if !l.locked(Instant::now()) {
                 l.failures = 0;
             }
@@ -721,6 +802,16 @@ pub struct Accounts {
     seen: Mutex<HashMap<i64, Instant>>,
     /// Renewals per device in the current window: (window start, count).
     refreshes: Mutex<HashMap<i64, (Instant, u32)>>,
+    /// Users whose refused pairing-code requests were audited lately, until when (one
+    /// `pairing.rate_limited` row per user per limited window, review M7).
+    pairing_limit_noted: Mutex<HashMap<i64, Instant>>,
+    /// The player protocol last recorded per device by this process, so an attach writes it
+    /// only when it changed.
+    protocols: Mutex<HashMap<i64, u64>>,
+    /// Audit rows that could not be written (each is logged too).
+    audit_failures: AtomicU64,
+    /// Player attaches that wrote to the database (see [`Accounts::claim_attach`]).
+    attach_writes: AtomicU64,
     /// Tests only: how long each device-bookkeeping and renewal write stalls (ms), as on a
     /// disk that has stopped answering. 0 in production.
     write_stall_ms: AtomicU64,
@@ -945,6 +1036,10 @@ impl Accounts {
             forget: Mutex::new(Default::default()),
             seen: Mutex::new(HashMap::new()),
             refreshes: Mutex::new(HashMap::new()),
+            pairing_limit_noted: Mutex::new(HashMap::new()),
+            protocols: Mutex::new(HashMap::new()),
+            audit_failures: AtomicU64::new(0),
+            attach_writes: AtomicU64::new(0),
             write_stall_ms: AtomicU64::new(0),
         })
     }
@@ -988,22 +1083,44 @@ impl Accounts {
     }
 
     /// Set a user's password (admin). Their devices are revoked: whoever knew the old
-    /// password may have signed in with it. Returns the revoked device ids.
+    /// password may have signed in with it. Their outstanding pairing codes go too (whoever
+    /// saw one could still sign in with it), and the credential generation moves on, so a
+    /// sign-in checked against the old password while this ran gets no tokens (review M6).
+    /// Returns the revoked device ids.
     pub fn set_password(&self, username: &str, password: &str) -> Result<Vec<i64>, AuthError> {
         check_password(password)?;
         let hash = hash_password(password)?;
-        let n = self.db.lock().unwrap().execute(
-            "UPDATE users SET password_hash = ?1 WHERE username = ?2",
-            params![hash, username],
-        )?;
-        if n == 0 {
+        if !self.reset_credentials(username, Some(&hash))? {
             return Err(AuthError::BadInput("no such user"));
         }
         self.audit("user.password_changed", Some(username), None, "");
         self.revoke_user_devices(username)
     }
 
-    /// Disable or enable a user. Disabling revokes all their devices.
+    /// One transaction: (with `hash`) set the password, move the credential generation on
+    /// and delete the user's pairing codes. False if there is no such user.
+    fn reset_credentials(&self, username: &str, hash: Option<&str>) -> Result<bool, AuthError> {
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
+        let n = tx.execute(
+            "UPDATE users SET password_hash = COALESCE(?1, password_hash),
+               credential_gen = credential_gen + 1
+             WHERE username = ?2",
+            params![hash, username],
+        )?;
+        if n == 0 {
+            return Ok(false);
+        }
+        tx.execute(
+            "DELETE FROM pairing_codes WHERE user_id = (SELECT id FROM users WHERE username = ?1)",
+            [username],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Disable or enable a user. Disabling revokes all their devices, deletes their pairing
+    /// codes and moves the credential generation on (as [`Self::set_password`] does).
     pub fn set_disabled(&self, username: &str, disabled: bool) -> Result<Vec<i64>, AuthError> {
         let n = self.db.lock().unwrap().execute(
             "UPDATE users SET disabled = ?1 WHERE username = ?2",
@@ -1011,6 +1128,9 @@ impl Accounts {
         )?;
         if n == 0 {
             return Err(AuthError::BadInput("no such user"));
+        }
+        if disabled {
+            self.reset_credentials(username, None)?;
         }
         self.audit(
             if disabled {
@@ -1097,26 +1217,70 @@ impl Accounts {
         device_id: Option<i64>,
         client: &str,
     ) -> Result<Tokens, AuthError> {
+        self.sign_in(&SignIn {
+            username,
+            password,
+            totp,
+            device_name,
+            device_id,
+            refresh_token: None,
+            client,
+        })
+    }
+
+    /// [`Self::login`], with the refresh token the client holds for `device_id`, if any. A
+    /// device of the user's that shows a token it was issued (unused, expired or not: the
+    /// usual reason to sign in again on a device is a sign-in that ran out) is a *proven*
+    /// client. While strangers' failures throttle the username, it doesn't take from their
+    /// shared budget; its own lock (`device:<id>`, as hard as an address's) limits it
+    /// instead, so nobody can keep the owner out of her own device by spending the budget
+    /// (review M5). Anything that doesn't prove a device (no token, another device's or user's,
+    /// a used or unknown one, a revoked device) is a stranger, as before.
+    pub fn sign_in(&self, req: &SignIn<'_>) -> Result<Tokens, AuthError> {
+        let SignIn {
+            username,
+            password,
+            totp,
+            device_name,
+            device_id,
+            refresh_token,
+            client,
+        } = *req;
         // A name that can't exist gets no rate-limit entry of its own (it would only grow
         // the table), but still counts against the client.
         let known_form = valid_username(username);
         let client_key = format!("client:{client}");
-        let soft = known_form.then(|| (format!("user:{username}"), client_key.clone()));
-        let attempt = self.begin_attempt(vec![client_key], soft)?;
+        let user_key = format!("user:{username}");
+        let proven = match (known_form, device_id, refresh_token) {
+            (true, Some(d), Some(t)) => self.proves_device(username, d, t)?.then_some(d),
+            _ => None,
+        };
+        let (keys, soft) = match proven {
+            Some(d) => (
+                vec![client_key, device_key(d)],
+                Some(Soft::own_device(user_key, d)),
+            ),
+            None => {
+                let soft = known_form.then(|| Soft::stranger(user_key, client_key.clone()));
+                (vec![client_key], soft)
+            }
+        };
+        let attempt = self.begin_attempt(keys, soft)?;
         if !known_form {
             // Nobody's failure: no success clears it.
             attempt.failed();
             self.audit("login.failed", None, None, client);
             return Err(AuthError::Invalid);
         }
-        let row: Option<(i64, String, String, i64)> = self
+        let row: Option<(i64, String, String, i64, i64)> = self
             .db
             .lock()
             .unwrap()
             .query_row(
-                "SELECT id, password_hash, role, disabled FROM users WHERE username = ?1",
+                "SELECT id, password_hash, role, disabled, credential_gen
+                 FROM users WHERE username = ?1",
                 [username],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .optional()?;
         let attempt = attempt.by(username);
@@ -1125,10 +1289,13 @@ impl Accounts {
             .as_ref()
             .map_or(self.dummy_hash.as_str(), |r| r.1.as_str());
         let ok = self.check_password_hash(password, hash)?;
-        let user = match row {
-            Some((id, _, role, disabled)) if ok && disabled == 0 => {
-                (id, Role::parse(&role).unwrap_or(Role::Listener))
-            }
+        // The generation the password was checked against: if a reset moves it on before
+        // the tokens are made, they are not made.
+        let (user, generation) = match row {
+            Some((id, _, role, disabled, generation)) if ok && disabled == 0 => (
+                (id, Role::parse(&role).unwrap_or(Role::Listener)),
+                generation,
+            ),
             _ => {
                 attempt.failed();
                 self.audit("login.failed", Some(username), None, client);
@@ -1153,28 +1320,50 @@ impl Accounts {
         let (device, evicted) = match device_id.map(|id| self.own_device(user.0, id)) {
             Some(Err(e)) => return Err(e),
             Some(Ok(Some(d))) => (d, vec![]),
-            _ => self.create_device(user.0, device_name)?,
+            _ => self.create_device(user.0, device_name, generation)?,
         };
+        let mut t = self.issue(device, Some(generation))?;
         self.audit("login.ok", Some(username), Some(device), client);
-        let mut t = self.issue(device)?;
         t.evicted = evicted;
         Ok(t)
     }
 
+    /// Whether `token` is a refresh token issued to `device`, one of `username`'s signed-in
+    /// devices, and not yet used (it may have expired). Read on the read connection.
+    fn proves_device(&self, username: &str, device: i64, token: &str) -> Result<bool, AuthError> {
+        if token.is_empty() || token.len() > 256 {
+            return Ok(false);
+        }
+        Ok(self
+            .read_db(|db| {
+                db.query_row(
+                    "SELECT 1 FROM refresh_tokens r
+                     JOIN devices d ON d.id = r.device_id
+                     JOIN users u ON u.id = d.user_id
+                     WHERE r.token_hash = ?1 AND r.device_id = ?2 AND r.used = 0
+                       AND d.revoked = 0 AND u.username = ?3",
+                    params![sha256(token).to_vec(), device, username],
+                    |_| Ok(()),
+                )
+                .optional()
+            })?
+            .is_some())
+    }
+
     /// Create a one-time pairing code for a user's new app (admin).
     pub fn create_pairing_code(&self, username: &str) -> Result<String, AuthError> {
-        let user: Option<i64> = self
+        let user: Option<(i64, i64)> = self
             .db
             .lock()
             .unwrap()
             .query_row(
-                "SELECT id FROM users WHERE username = ?1 AND disabled = 0",
+                "SELECT id, credential_gen FROM users WHERE username = ?1 AND disabled = 0",
                 [username],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
-        let user = user.ok_or(AuthError::BadInput("no such enabled user"))?;
-        let code = self.insert_pairing_code(user)?;
+        let (user, generation) = user.ok_or(AuthError::BadInput("no such enabled user"))?;
+        let code = self.insert_pairing_code(user, generation, false)?;
         // The code itself is never written anywhere but its hash.
         self.audit("pairing.created", Some(username), None, "admin");
         Ok(code)
@@ -1188,7 +1377,9 @@ impl Accounts {
     ///   the per-user lock that guards other account changes ([`Self::totp_begin`]).
     /// - At most [`SELF_PAIRING_PER_HOUR`] an hour per user, and none while the user is at
     ///   the [`NEW_DEVICES_PER_HOUR`] limit (the code could not be redeemed anyway). Both
-    ///   are checked before the password, so a refused request costs no password check.
+    ///   are checked before the password, on the read connection, so a refused request costs
+    ///   no password check and no write; it is audited once per user per limited window, not
+    ///   once per request (review M7).
     pub fn create_own_pairing_code(
         &self,
         user: i64,
@@ -1197,63 +1388,77 @@ impl Accounts {
         password: &str,
     ) -> Result<String, AuthError> {
         let now = now_secs();
-        {
-            let db = self.db.lock().unwrap();
-            db.execute("DELETE FROM pairing_requests WHERE at <= ?1", [now - 3600])?;
-            let (made, oldest): (i64, Option<i64>) = db.query_row(
-                "SELECT COUNT(*), MIN(at) FROM pairing_requests WHERE user_id = ?1",
-                [user],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )?;
-            let (devices, oldest_device): (i64, Option<i64>) = db.query_row(
-                "SELECT COUNT(*), MIN(created_at) FROM devices
-                 WHERE user_id = ?1 AND created_at > ?2",
-                params![user, now - 3600],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )?;
-            let limited_since = if made >= SELF_PAIRING_PER_HOUR {
-                Some(oldest)
-            } else if devices >= NEW_DEVICES_PER_HOUR {
-                Some(oldest_device)
-            } else {
-                None
-            };
-            if let Some(since) = limited_since {
-                drop(db);
-                let wait = since.map_or(3600, |t| (t + 3600 - now).clamp(1, 3600));
+        if let Some(wait) = self.read_db(|db| own_pairing_limit(db, user, now))? {
+            if self.note_pairing_limit(user, wait, Instant::now()) {
                 self.audit("pairing.rate_limited", Some(username), Some(device), "");
-                return Err(AuthError::Locked(Duration::from_secs(wait as u64)));
             }
+            return Err(AuthError::Locked(wait));
         }
-        match self.confirm_password(user, username, device, password) {
-            Ok(attempt) => drop(attempt),
+        let generation = match self.confirm_password(user, username, device, password) {
+            Ok((attempt, generation)) => {
+                drop(attempt);
+                generation
+            }
             Err(e) => {
                 if e == AuthError::Invalid {
                     self.audit("pairing.self_failed", Some(username), Some(device), "");
                 }
                 return Err(e);
             }
-        }
-        self.db.lock().unwrap().execute(
-            "INSERT INTO pairing_requests (user_id, at) VALUES (?1, ?2)",
-            params![user, now],
-        )?;
-        let code = self.insert_pairing_code(user)?;
+        };
+        let code = self.insert_pairing_code(user, generation, true)?;
         self.audit("pairing.created", Some(username), Some(device), "self");
         Ok(code)
     }
 
-    /// Store a new code (only its hash) for a user, first dropping expired ones.
-    fn insert_pairing_code(&self, user: i64) -> Result<String, AuthError> {
+    /// Whether to audit a refused pairing-code request of `user`'s, limited for `wait`
+    /// from `now`: only the first in each limited window.
+    fn note_pairing_limit(&self, user: i64, wait: Duration, now: Instant) -> bool {
+        let mut noted = self.pairing_limit_noted.lock().unwrap();
+        if noted.get(&user).is_some_and(|until| *until > now) {
+            return false;
+        }
+        if noted.len() >= LIMITS_CAP {
+            noted.retain(|_, until| *until > now);
+        }
+        noted.insert(user, now + wait);
+        true
+    }
+
+    /// Store a new code (only its hash) for a user, first dropping expired ones, in one
+    /// transaction under the writer's lock, and only if the user is still enabled at
+    /// credential generation `generation` (a reset since the password was checked refuses
+    /// it, review M6). `own`: a code the user made (`POST /v1/devices/pair`), which counts
+    /// towards their hourly allowance and is refused if that ran out meanwhile.
+    fn insert_pairing_code(
+        &self,
+        user: i64,
+        generation: i64,
+        own: bool,
+    ) -> Result<String, AuthError> {
         let raw = random_bytes::<10>();
         let code: String = raw
             .iter()
             .map(|b| PAIRING_ALPHABET[(*b as usize) % 32] as char)
             .collect();
         let now = now_secs();
-        let db = self.db.lock().unwrap();
-        db.execute("DELETE FROM pairing_codes WHERE expires_at <= ?1", [now])?;
-        db.execute(
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
+        if !credentials_current(&tx, user, generation)? {
+            return Err(AuthError::Invalid);
+        }
+        if own {
+            if let Some(wait) = own_pairing_limit(&tx, user, now)? {
+                return Err(AuthError::Locked(wait));
+            }
+            tx.execute("DELETE FROM pairing_requests WHERE at <= ?1", [now - 3600])?;
+            tx.execute(
+                "INSERT INTO pairing_requests (user_id, at) VALUES (?1, ?2)",
+                params![user, now],
+            )?;
+        }
+        tx.execute("DELETE FROM pairing_codes WHERE expires_at <= ?1", [now])?;
+        tx.execute(
             "INSERT INTO pairing_codes (code_hash, user_id, expires_at) VALUES (?1, ?2, ?3)",
             params![
                 sha256(&code).to_vec(),
@@ -1261,57 +1466,71 @@ impl Accounts {
                 now + PAIRING_TTL.as_secs() as i64
             ],
         )?;
+        tx.commit()?;
         Ok(code)
     }
 
     /// Redeem a pairing code (single use) for a new device's tokens.
-    /// Pairing is rate-limited per client (hard) and across all clients (soft), since codes
-    /// aren't tied to a username an attacker would have to name.
+    ///
+    /// Rate-limited per client address (a hard lock) only. Changed deliberately (review
+    /// M5): a soft limit across all clients let anyone, with five wrong codes from five
+    /// addresses, hold every user's pairing to two attempts a minute. A code is ten
+    /// characters from 32 (more than 10^15 codes) and lives [`PAIRING_TTL`]; an address
+    /// gets five guesses per lockout (escalating), about forty a day, so a million
+    /// addresses guessing all day make some 4×10^7 guesses: about one chance in thirty
+    /// million per live code.
     pub fn pair(&self, code: &str, device_name: &str, client: &str) -> Result<Tokens, AuthError> {
-        let client_key = format!("client:{client}");
-        let soft = Some(("pairing".to_string(), client_key.clone()));
-        let attempt = self.begin_attempt(vec![client_key], soft)?;
+        let attempt = self.begin_attempt(vec![format!("client:{client}")], None)?;
         let normalised: String = code
             .chars()
             .filter(|c| !c.is_whitespace() && *c != '-')
             .collect::<String>()
             .to_uppercase();
-        let found: Option<(i64, i64)> = {
-            let db = self.db.lock().unwrap();
-            let row = db
+        let hash = sha256(&normalised).to_vec();
+        let now = now_secs();
+        let found = {
+            let mut db = self.db.lock().unwrap();
+            let tx = db.transaction()?;
+            let row: Option<(i64, i64, i64, i64)> = tx
                 .query_row(
-                    "SELECT user_id, expires_at FROM pairing_codes WHERE code_hash = ?1",
-                    [sha256(&normalised).to_vec()],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    "SELECT p.user_id, p.expires_at, u.disabled, u.credential_gen
+                     FROM pairing_codes p JOIN users u ON u.id = p.user_id
+                     WHERE p.code_hash = ?1",
+                    [&hash],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
                 .optional()?;
-            // Single use, whatever the outcome.
-            db.execute(
-                "DELETE FROM pairing_codes WHERE code_hash = ?1",
-                [sha256(&normalised).to_vec()],
-            )?;
-            row
+            let found = match row {
+                Some((user, expires, 0, generation)) if expires > now => {
+                    match new_device_limit(&tx, user, now)? {
+                        Some(wait) => Redeem::Limited(wait),
+                        None => Redeem::Ok(user, generation),
+                    }
+                }
+                _ => Redeem::Refused,
+            };
+            // Single use, whatever the outcome, except that a right code refused only for
+            // the new-device limit is kept until it expires (review low: it was used up).
+            if !matches!(found, Redeem::Limited(_)) {
+                tx.execute("DELETE FROM pairing_codes WHERE code_hash = ?1", [&hash])?;
+            }
+            tx.commit()?;
+            found
         };
-        let user = match found {
-            Some((user, expires)) if expires > now_secs() => user,
-            _ => {
+        let (user, generation) = match found {
+            Redeem::Ok(user, generation) => (user, generation),
+            // The right code: neither a failure nor a success for the lockouts.
+            Redeem::Limited(wait) => return Err(AuthError::Locked(wait)),
+            Redeem::Refused => {
                 attempt.failed();
                 self.audit("pairing.failed", None, None, client);
                 return Err(AuthError::Invalid);
             }
         };
         attempt.succeeded();
-        let disabled: i64 = self.db.lock().unwrap().query_row(
-            "SELECT disabled FROM users WHERE id = ?1",
-            [user],
-            |r| r.get(0),
-        )?;
-        if disabled != 0 {
-            return Err(AuthError::Invalid);
-        }
-        let (device, evicted) = self.create_device(user, device_name)?;
+        let (device, evicted) = self.create_device(user, device_name, generation)?;
+        let mut t = self.issue(device, Some(generation))?;
         self.audit("pairing.ok", None, Some(device), client);
-        let mut t = self.issue(device)?;
         t.evicted = evicted;
         Ok(t)
     }
@@ -1340,9 +1559,38 @@ impl Accounts {
     /// One transaction under one lock: look up, mark used, supersede siblings, mint the
     /// replacement and record its parent. A concurrent refresh of the same token therefore
     /// always sees either an unused token or a used one with its replacement recorded.
+    ///
+    /// Looked up first on the read connection: a token the gateway doesn't know, or one
+    /// that has simply run out, is refused without waiting for (or taking) the writer, so
+    /// made-up tokens cost the database nothing (review low). A token found unused and past
+    /// its lifetime is [`AuthError::Expired`]: such a row stays until rotation (or a
+    /// renewal, or a sign-in on the same device) replaces it, or for
+    /// [`EXPIRED_REFRESH_KEPT`] after it expired, while revoking a device deletes its rows at
+    /// once. So "expired" is said only of a sign-in that ran out and was never revoked;
+    /// anything the gateway no longer knows is plainly invalid (review M18).
     fn refresh_at(&self, refresh_token: &str, now: i64) -> Result<Tokens, AuthError> {
         let h = sha256(refresh_token).to_vec();
         let presented = fingerprint_of_hash(&h);
+        let known: Option<(i64, i64, i64)> = self.read_db(|db| {
+            db.query_row(
+                "SELECT device_id, expires_at, used FROM refresh_tokens WHERE token_hash = ?1",
+                [&h],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+        })?;
+        match known {
+            None => {
+                tracing::debug!(target: "anywhere_gateway::refresh", token = %presented, outcome = "unknown", "refresh outcome");
+                return Err(AuthError::Invalid);
+            }
+            // Unused tokens are never rotated once expired, so this answer is final.
+            Some((device, expires, 0)) if expires <= now => {
+                tracing::info!(target: "anywhere_gateway::refresh", device, token = %presented, outcome = "expired", "refresh outcome");
+                return Err(AuthError::Expired);
+            }
+            Some(_) => {}
+        }
         type Row = (i64, i64, i64, Option<i64>, Option<Vec<u8>>);
         let mut db = self.db.lock().unwrap();
         self.stall_write();
@@ -1356,7 +1604,8 @@ impl Accounts {
             )
             .optional()?;
         let Some((device, expires, used, used_at, parent)) = row else {
-            tracing::info!(target: "anywhere_gateway::refresh", token = %presented, outcome = "unknown", "refresh outcome");
+            // Gone since the read (a revocation in between).
+            tracing::debug!(target: "anywhere_gateway::refresh", token = %presented, outcome = "unknown", "refresh outcome");
             return Err(AuthError::Invalid);
         };
         // Refused before anything changes, so the client can try the same token later.
@@ -1372,7 +1621,7 @@ impl Accounts {
                 if children >= MAX_REFRESH_RETRIES {
                     return Err(AuthError::Invalid);
                 }
-                let minted = mint(&tx, device, now)?;
+                let minted = mint(&tx, device, now, None)?;
                 tx.execute(
                     "UPDATE refresh_tokens SET parent = ?1 WHERE token_hash = ?2",
                     params![h, sha256(&minted.refresh).to_vec()],
@@ -1418,7 +1667,7 @@ impl Accounts {
         }
         if expires <= now {
             tracing::info!(target: "anywhere_gateway::refresh", device, token = %presented, outcome = "expired", "refresh outcome");
-            return Err(AuthError::Invalid);
+            return Err(AuthError::Expired);
         }
         let n = tx.execute(
             "UPDATE refresh_tokens SET used = 1, used_at = ?2 WHERE token_hash = ?1 AND used = 0",
@@ -1444,7 +1693,7 @@ impl Accounts {
                 params![p, h, now],
             )?;
         }
-        let minted = mint(&tx, device, now)?;
+        let minted = mint(&tx, device, now, None)?;
         tx.execute(
             "UPDATE refresh_tokens SET parent = ?1 WHERE token_hash = ?2",
             params![h, sha256(&minted.refresh).to_vec()],
@@ -1706,24 +1955,25 @@ impl Accounts {
     /// devices, rate-limited per user and device with a lock of its own: sign-in failures
     /// (which anyone can cause) don't block it, and nor do wrong guesses made with another
     /// of the user's devices (keyed per user, a stolen access token could lock the owner
-    /// out of account changes everywhere for up to a day).
+    /// out of account changes everywhere for up to a day). On success, also the credential
+    /// generation the password was checked against.
     fn confirm_password(
         &self,
         user: i64,
         username: &str,
         device: i64,
         password: &str,
-    ) -> Result<Attempt<'_>, AuthError> {
+    ) -> Result<(Attempt<'_>, i64), AuthError> {
         let attempt = self
             .begin_attempt(vec![confirm_key(user, device)], None)?
             .by(username);
-        let hash: String = self.db.lock().unwrap().query_row(
-            "SELECT password_hash FROM users WHERE id = ?1",
+        let (hash, generation): (String, i64) = self.db.lock().unwrap().query_row(
+            "SELECT password_hash, credential_gen FROM users WHERE id = ?1",
             [user],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
         if self.check_password_hash(password, &hash)? {
-            Ok(attempt)
+            Ok((attempt, generation))
         } else {
             attempt.failed();
             Err(AuthError::Invalid)
@@ -1742,7 +1992,7 @@ impl Accounts {
         password: &str,
     ) -> Result<TotpSetup, AuthError> {
         match self.confirm_password(user, username, device, password) {
-            Ok(attempt) => drop(attempt),
+            Ok((attempt, _)) => drop(attempt),
             Err(e) => {
                 if e == AuthError::Invalid {
                     self.audit("totp.setup_failed", Some(username), None, "");
@@ -1798,7 +2048,7 @@ impl Accounts {
         code: &str,
     ) -> Result<(), AuthError> {
         let attempt = match self.confirm_password(user, username, device, password) {
-            Ok(a) => a,
+            Ok((a, _)) => a,
             Err(e) => {
                 if e == AuthError::Invalid {
                     self.audit("totp.disable_failed", Some(username), None, "");
@@ -1866,9 +2116,16 @@ impl Accounts {
     ///   setup and pairing codes), the client's address (a hard lock that also stops its
     ///   sign-ins) and the username's sign-in lock (soft, as at sign-in). So a stolen access
     ///   token buys no more guesses here than at the sign-in form.
+    /// - It never draws on the username's shared budget: the request comes from one of the
+    ///   user's own signed-in devices, whose account-change lock is its allowance. Before
+    ///   (review M5), a stranger spending that budget from fresh addresses kept the owner
+    ///   from changing the password she wanted to change because of him. Refused only if
+    ///   this device itself failed while the username is throttled.
     /// - Outstanding pairing codes the user made are dropped (whoever saw one could still
-    ///   sign in with it). The user's other devices stay signed in unless `sign_out_others`:
-    ///   each holds its own tokens, not the password. The caller's own device always stays.
+    ///   sign in with it), and the credential generation moves on, so a sign-in checked
+    ///   against the old password meanwhile gets no tokens. The user's other devices stay
+    ///   signed in unless `sign_out_others`: each holds its own tokens, not the password.
+    ///   The caller's own device always stays.
     pub fn change_own_password(
         &self,
         req: &OwnPasswordChange<'_>,
@@ -1881,11 +2138,13 @@ impl Accounts {
             ));
         }
         let username = req.username;
-        let client_key = format!("client:{client}");
         let attempt = self
             .begin_attempt(
-                vec![confirm_key(req.user, req.device), client_key.clone()],
-                Some((format!("user:{username}"), client_key)),
+                vec![
+                    confirm_key(req.user, req.device),
+                    format!("client:{client}"),
+                ],
+                Some(Soft::own_device(format!("user:{username}"), req.device)),
             )?
             .by(username);
         // Disabled (or deleted) since the token was issued: refused like a wrong token.
@@ -1937,17 +2196,20 @@ impl Accounts {
         attempt.succeeded();
         let new_hash = hash_password(req.new)?;
         {
-            let db = self.db.lock().unwrap();
+            let mut db = self.db.lock().unwrap();
+            let tx = db.transaction()?;
             // Only over the hash that was checked: of two changes racing with the same
             // current password, one wins and the other is told the password is wrong.
-            let n = db.execute(
-                "UPDATE users SET password_hash = ?1 WHERE id = ?2 AND password_hash = ?3",
+            let n = tx.execute(
+                "UPDATE users SET password_hash = ?1, credential_gen = credential_gen + 1
+                 WHERE id = ?2 AND password_hash = ?3",
                 params![new_hash, req.user, hash],
             )?;
             if n == 0 {
                 return Err(AuthError::Invalid);
             }
-            db.execute("DELETE FROM pairing_codes WHERE user_id = ?1", [req.user])?;
+            tx.execute("DELETE FROM pairing_codes WHERE user_id = ?1", [req.user])?;
+            tx.commit()?;
         }
         // The same event as an admin's reset; the detail says who. Never the password.
         self.audit(
@@ -2348,6 +2610,7 @@ impl Accounts {
             .unwrap()
             .retain(|_, e| e.principal.device_id != device_id);
         self.seen.lock().unwrap().remove(&device_id);
+        self.protocols.lock().unwrap().remove(&device_id);
         match owner {
             // Signed out by its own user, from one of their devices (or itself): which one.
             Some((_, username, from)) => self.audit(
@@ -2583,6 +2846,33 @@ impl Accounts {
             .execute("UPDATE pairing_codes SET expires_at = 0", []);
     }
 
+    /// Make every refresh token's sign-in lifetime run out (tests only).
+    #[doc(hidden)]
+    pub fn expire_refresh_tokens_for_test(&self) {
+        let _ = self.db.lock().unwrap().execute(
+            "UPDATE refresh_tokens SET expires_at = ?1",
+            [now_secs() - 1],
+        );
+    }
+
+    /// Take every password-check permit until the guard is dropped, so password checks wait
+    /// [`HASH_WAIT`] and are then refused as busy, as on a server that is checking as many as
+    /// it may (tests only).
+    #[doc(hidden)]
+    pub fn hold_password_checks_for_test(&self) -> impl Drop + '_ {
+        struct Held<'a>(Vec<HashPermit<'a>>);
+        impl Drop for Held<'_> {
+            fn drop(&mut self) {
+                self.0.clear();
+            }
+        }
+        Held(
+            (0..HASH_PERMITS)
+                .filter_map(|_| self.hash_gate.acquire())
+                .collect(),
+        )
+    }
+
     /// The stored last address of a device, revoked or not (tests only).
     #[doc(hidden)]
     pub fn stored_address_for_test(&self, device_id: i64) -> Option<String> {
@@ -2621,15 +2911,81 @@ impl Accounts {
         );
     }
 
-    /// Record the player protocol the device attached with (at every attach). A number
-    /// beyond SQLite's integer range is stored as its largest.
+    /// Record the player protocol a device signed in with (a refused, too-old one). A
+    /// number beyond SQLite's integer range is stored as its largest.
     pub fn record_protocol(&self, device_id: i64, protocol: u64) {
         let db = self.db.lock().unwrap();
         self.stall_write();
-        let _ = db.execute(
-            "UPDATE devices SET protocol = ?1 WHERE id = ?2",
-            params![i64::try_from(protocol).unwrap_or(i64::MAX), device_id],
+        if db
+            .execute(
+                "UPDATE devices SET protocol = ?1 WHERE id = ?2",
+                params![i64::try_from(protocol).unwrap_or(i64::MAX), device_id],
+            )
+            .is_ok()
+        {
+            self.remember_protocol(device_id, protocol);
+        }
+    }
+
+    fn remember_protocol(&self, device_id: i64, protocol: u64) {
+        let mut m = self.protocols.lock().unwrap();
+        if m.len() >= SEEN_CAP && !m.contains_key(&device_id) {
+            m.clear();
+        }
+        m.insert(device_id, protocol);
+    }
+
+    /// The in-memory half of a player attach's bookkeeping: what it must write, if anything
+    /// (review low: every attach made two writes, however often a device reconnected). The
+    /// last address and time are due at most once per [`SEEN_WRITE_INTERVAL`], as for any
+    /// request ([`Self::claim_seen`]); the protocol only when it differs from what this
+    /// gateway last recorded for the device. Cheap, so an async worker calls it inline and
+    /// runs [`Self::write_attach`] off the workers only when something is due.
+    pub fn claim_attach(&self, device_id: i64, protocol: u64) -> AttachWrite {
+        let seen = self.claim_seen(device_id);
+        let protocol = self.protocols.lock().unwrap().get(&device_id) != Some(&protocol);
+        AttachWrite { seen, protocol }
+    }
+
+    /// The database half of an attach (see [`Self::claim_attach`]): one write of what is
+    /// due, the last address `addr` among it when the last-seen write is due.
+    pub fn write_attach(
+        &self,
+        device_id: i64,
+        protocol: u64,
+        addr: std::net::IpAddr,
+        due: AttachWrite,
+    ) {
+        if !due.seen && !due.protocol {
+            return;
+        }
+        let db = self.db.lock().unwrap();
+        self.stall_write();
+        let written = db.execute(
+            "UPDATE devices SET
+               protocol = CASE WHEN ?1 THEN ?2 ELSE protocol END,
+               last_seen = CASE WHEN ?3 THEN ?4 ELSE last_seen END,
+               last_addr = CASE WHEN ?3 THEN ?5 ELSE last_addr END
+             WHERE id = ?6 AND revoked = 0",
+            params![
+                due.protocol,
+                i64::try_from(protocol).unwrap_or(i64::MAX),
+                due.seen,
+                now_secs(),
+                addr.to_string(),
+                device_id
+            ],
         );
+        drop(db);
+        self.attach_writes.fetch_add(1, Ordering::Relaxed);
+        if written.is_ok() && due.protocol {
+            self.remember_protocol(device_id, protocol);
+        }
+    }
+
+    /// Attach writes made (tests and diagnostics).
+    pub fn attach_writes(&self) -> u64 {
+        self.attach_writes.load(Ordering::Relaxed)
     }
 
     pub fn touch_device(&self, device_id: i64) {
@@ -2655,27 +3011,31 @@ impl Accounts {
     /// Create a device for a user, first revoking the least recently seen ones beyond
     /// [`MAX_DEVICES_PER_USER`]. Returns the new id and the revoked ones. Refused (as
     /// `Locked`) beyond [`NEW_DEVICES_PER_HOUR`]: each device becomes an LMS player, so
-    /// signing in over and over must not be able to flood LMS with them.
-    fn create_device(&self, user: i64, name: &str) -> Result<(i64, Vec<i64>), AuthError> {
+    /// signing in over and over must not be able to flood LMS with them. Refused (as
+    /// `Invalid`) if the user's credential generation is no longer `generation`, the one the
+    /// password or pairing code was checked against: checked before anything is revoked,
+    /// and again, under the same lock, as the device is inserted (review M6).
+    fn create_device(
+        &self,
+        user: i64,
+        name: &str,
+        generation: i64,
+    ) -> Result<(i64, Vec<i64>), AuthError> {
         let now = now_secs();
         let active: Vec<i64> = {
             let db = self.db.lock().unwrap();
+            if !credentials_current(&db, user, generation)? {
+                return Err(AuthError::Invalid);
+            }
             // Revoked devices are kept a while for the audit trail, then deleted.
             db.execute(
                 "DELETE FROM devices WHERE revoked = 1 AND revoked_at < ?1",
                 [now - REVOKED_DEVICE_RETENTION.as_secs() as i64],
             )?;
-            let (recent, oldest): (i64, Option<i64>) = db.query_row(
-                "SELECT COUNT(*), MIN(created_at) FROM devices
-                 WHERE user_id = ?1 AND created_at > ?2",
-                params![user, now - 3600],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )?;
-            if recent >= NEW_DEVICES_PER_HOUR {
+            if let Some(wait) = new_device_limit(&db, user, now)? {
                 drop(db);
-                let wait = oldest.map_or(3600, |t| (t + 3600 - now).clamp(1, 3600));
                 self.audit("device.rate_limited", None, None, &format!("user {user}"));
-                return Err(AuthError::Locked(Duration::from_secs(wait as u64)));
+                return Err(AuthError::Locked(wait));
             }
             let mut st = db.prepare(
                 "SELECT id FROM devices WHERE user_id = ?1 AND revoked = 0
@@ -2690,11 +3050,14 @@ impl Accounts {
             self.revoke_device(*id)?;
             self.audit("device.evicted", None, Some(*id), "device limit reached");
         }
-        Ok((self.insert_device(user, name)?, evicted))
+        Ok((self.insert_device(user, name, generation)?, evicted))
     }
 
-    fn insert_device(&self, user: i64, name: &str) -> Result<i64, AuthError> {
+    fn insert_device(&self, user: i64, name: &str, generation: i64) -> Result<i64, AuthError> {
         let db = self.db.lock().unwrap();
+        if !credentials_current(&db, user, generation)? {
+            return Err(AuthError::Invalid);
+        }
         for _ in 0..16 {
             let r = random_bytes::<3>();
             let mac = format_mac(&[0x02, 0x4c, 0x41, r[0], r[1], r[2]]);
@@ -2718,9 +3081,11 @@ impl Accounts {
     /// device's unused refresh tokens beyond the newest [`KEEP_UNUSED_REFRESH`] go, with
     /// their access tokens: they belong to sign-ins the client has replaced, and only
     /// expiry removed them, so signing in over and over grew the table without bound.
-    fn issue(&self, device: i64) -> Result<Tokens, AuthError> {
+    /// `generation`: the credential generation the sign-in was checked against (see
+    /// [`mint`]).
+    fn issue(&self, device: i64, generation: Option<i64>) -> Result<Tokens, AuthError> {
         let db = self.db.lock().unwrap();
-        let minted = mint(&db, device, now_secs())?;
+        let minted = mint(&db, device, now_secs(), generation)?;
         let stale: Vec<Vec<u8>> = {
             let mut st = db.prepare(
                 "SELECT token_hash FROM refresh_tokens WHERE device_id = ?1 AND used = 0
@@ -2802,14 +3167,14 @@ impl Accounts {
 
     /// Start an attempt. Each hard key refuses it once locked, or once its failures plus the
     /// attempts already in flight reach the limit (so parallel guesses can't all be
-    /// checked). The soft key `(key, client)`, once throttled the same way, refuses only
-    /// clients that failed for it; other clients share [`THROTTLED_ATTEMPTS`] per
-    /// [`THROTTLE_WINDOW`], so someone else's failures can't lock a user out, and many
-    /// addresses don't buy many guesses.
+    /// checked). The soft key, once throttled the same way, refuses only clients that failed
+    /// for it; strangers share [`THROTTLED_ATTEMPTS`] per [`THROTTLE_WINDOW`], so many
+    /// addresses don't buy many guesses, and the owner's own device takes nothing from that
+    /// budget (its hard key limits it), so strangers can't use it up to keep her out.
     fn begin_attempt(
         &self,
         keys: Vec<String>,
-        soft: Option<(String, String)>,
+        soft: Option<Soft>,
     ) -> Result<Attempt<'_>, AuthError> {
         let mut limits = self.limits.lock().unwrap();
         let now = Instant::now();
@@ -2821,26 +3186,31 @@ impl Accounts {
                 }
             }
         }
-        if let Some((k, client)) = &soft
-            && let Some(l) = limits.get_mut(k)
+        if let Some(s) = &soft
+            && let Some(l) = limits.get_mut(&s.key)
         {
             l.roll_window(now);
             if l.throttled(now) {
-                if l.failed_clients.contains(client) {
+                if l.failed_clients.contains(&s.client) {
                     return Err(AuthError::Locked(l.retry_after(now)));
                 }
-                if now.duration_since(l.budget_start) >= THROTTLE_WINDOW {
-                    l.budget_start = now;
-                    l.budget_used = 0;
+                // The owner's own device takes nothing from the budget: its own lock is its
+                // allowance.
+                if s.shared {
+                    if now.duration_since(l.budget_start) >= THROTTLE_WINDOW {
+                        l.budget_start = now;
+                        l.budget_used = 0;
+                    }
+                    if l.budget_used >= THROTTLED_ATTEMPTS {
+                        let wait =
+                            (l.budget_start + THROTTLE_WINDOW).saturating_duration_since(now);
+                        return Err(AuthError::Locked(wait.max(Duration::from_secs(1))));
+                    }
+                    l.budget_used += 1;
                 }
-                if l.budget_used >= THROTTLED_ATTEMPTS {
-                    let wait = (l.budget_start + THROTTLE_WINDOW).saturating_duration_since(now);
-                    return Err(AuthError::Locked(wait.max(Duration::from_secs(1))));
-                }
-                l.budget_used += 1;
             }
         }
-        for k in keys.iter().chain(soft.as_ref().map(|(k, _)| k)) {
+        for k in keys.iter().chain(soft.as_ref().map(|s| &s.key)) {
             if !limits.contains_key(k) {
                 make_room(&mut limits, now);
             }
@@ -2880,24 +3250,42 @@ impl Accounts {
         self.password_checks.load(Ordering::Relaxed)
     }
 
+    /// Write an audit row. A row that can't be written is logged (with the event name only)
+    /// and counted ([`Self::audit_failures`]): the caller carries on, but the loss shows
+    /// (review low: it was dropped silently).
     pub fn audit(&self, event: &str, username: Option<&str>, device: Option<i64>, detail: &str) {
         let db = self.db.lock().unwrap();
-        let ok = db
-            .execute(
-                "INSERT INTO audit (at, event, username, device_id, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![now_secs(), event, username, device, detail],
-            )
-            .is_ok();
-        // Kept bounded: every AUDIT_PRUNE_EVERY entries, the old and the surplus go.
-        if ok && db.last_insert_rowid() % AUDIT_PRUNE_EVERY == 0 {
-            let oldest = now_secs() - AUDIT_RETENTION.as_secs() as i64;
-            let _ = prune_audit_on(&db, AUDIT_MAX_ROWS, oldest);
-            // Expired refresh tokens of devices that never renewed again.
-            let _ = db.execute(
-                "DELETE FROM refresh_tokens WHERE expires_at <= ?1",
-                [now_secs()],
-            );
+        let inserted = db.execute(
+            "INSERT INTO audit (at, event, username, device_id, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![now_secs(), event, username, device, detail],
+        );
+        if let Err(e) = inserted {
+            drop(db);
+            self.audit_failures.fetch_add(1, Ordering::Relaxed);
+            tracing::error!(event, error = %e, "could not write an audit log entry");
+            return;
         }
+        // Kept bounded: every AUDIT_PRUNE_EVERY entries, the old and the surplus go.
+        if db.last_insert_rowid() % AUDIT_PRUNE_EVERY == 0 {
+            let now = now_secs();
+            let oldest = now - AUDIT_RETENTION.as_secs() as i64;
+            if let Err(e) = prune_audit_on(&db, AUDIT_MAX_ROWS, oldest) {
+                tracing::warn!(error = %e, "could not prune the audit log");
+            }
+            // Refresh tokens of devices that never renewed again, a while after they ran out
+            // (until then, a renewal with one is told it expired).
+            if let Err(e) = db.execute(
+                "DELETE FROM refresh_tokens WHERE expires_at <= ?1",
+                [now - EXPIRED_REFRESH_KEPT.as_secs() as i64],
+            ) {
+                tracing::warn!(error = %e, "could not prune expired refresh tokens");
+            }
+        }
+    }
+
+    /// Audit rows that could not be written since the gateway started.
+    pub fn audit_failures(&self) -> u64 {
+        self.audit_failures.load(Ordering::Relaxed)
     }
 
     /// Remove audit entries older than `oldest` (Unix seconds), and all but the newest
@@ -2953,6 +3341,57 @@ fn confirm_key(user: i64, device: i64) -> String {
     format!("confirm:{user}:{device}")
 }
 
+/// What a pairing code turned out to be ([`Accounts::pair`]).
+enum Redeem {
+    /// Valid: the user and the credential generation it was made under.
+    Ok(i64, i64),
+    /// Valid, but the user may have no new device for this long (the code is kept).
+    Limited(Duration),
+    /// Unknown, expired, or its user disabled.
+    Refused,
+}
+
+/// How long until the oldest of an hour's events (`oldest`, Unix seconds) leaves the hour.
+fn hour_wait(oldest: Option<i64>, now: i64) -> Duration {
+    Duration::from_secs(oldest.map_or(3600, |t| (t + 3600 - now).clamp(1, 3600)) as u64)
+}
+
+/// `Some(wait)` while `user` is at the [`NEW_DEVICES_PER_HOUR`] limit.
+fn new_device_limit(db: &Connection, user: i64, now: i64) -> rusqlite::Result<Option<Duration>> {
+    let (recent, oldest): (i64, Option<i64>) = db.query_row(
+        "SELECT COUNT(*), MIN(created_at) FROM devices WHERE user_id = ?1 AND created_at > ?2",
+        params![user, now - 3600],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    Ok((recent >= NEW_DEVICES_PER_HOUR).then(|| hour_wait(oldest, now)))
+}
+
+/// `Some(wait)` while `user` may make no pairing code of their own: they made
+/// [`SELF_PAIRING_PER_HOUR`] this hour, or are at the new-device limit.
+fn own_pairing_limit(db: &Connection, user: i64, now: i64) -> rusqlite::Result<Option<Duration>> {
+    let (made, oldest): (i64, Option<i64>) = db.query_row(
+        "SELECT COUNT(*), MIN(at) FROM pairing_requests WHERE user_id = ?1 AND at > ?2",
+        params![user, now - 3600],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    if made >= SELF_PAIRING_PER_HOUR {
+        return Ok(Some(hour_wait(oldest, now)));
+    }
+    new_device_limit(db, user, now)
+}
+
+/// The user is enabled and still at credential generation `generation`.
+fn credentials_current(db: &Connection, user: i64, generation: i64) -> rusqlite::Result<bool> {
+    Ok(db
+        .query_row(
+            "SELECT 1 FROM users WHERE id = ?1 AND disabled = 0 AND credential_gen = ?2",
+            params![user, generation],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
 fn session_days_on(db: &Connection) -> u32 {
     db.query_row(
         "SELECT value FROM settings WHERE key = 'session_days'",
@@ -2983,10 +3422,22 @@ fn prune_refresh_on(db: &Connection, device: i64, now: i64) -> rusqlite::Result<
     Ok(())
 }
 
-fn mint(db: &Connection, device: i64, now: i64) -> Result<Minted, AuthError> {
-    type Row = (i64, String, String, i64, String, String, i64, i64);
+///
+/// Refused (`Invalid`) for a revoked device or a disabled user, and, with `generation` (a
+/// sign-in or pairing: the credential generation its password or code was checked
+/// against), if the user's generation has moved on since: a password reset or a disable
+/// landed while it was being checked (review M6). The caller holds the writer's lock, so
+/// nothing can move it between this check and the insert.
+fn mint(
+    db: &Connection,
+    device: i64,
+    now: i64,
+    generation: Option<i64>,
+) -> Result<Minted, AuthError> {
+    type Row = (i64, String, String, i64, String, String, i64, i64, i64);
     let row: Row = db.query_row(
-        "SELECT u.id, u.username, u.role, d.id, d.name, d.mac, d.revoked, u.disabled
+        "SELECT u.id, u.username, u.role, d.id, d.name, d.mac, d.revoked, u.disabled,
+                u.credential_gen
          FROM devices d JOIN users u ON u.id = d.user_id WHERE d.id = ?1",
         [device],
         |r| {
@@ -2999,10 +3450,11 @@ fn mint(db: &Connection, device: i64, now: i64) -> Result<Minted, AuthError> {
                 r.get(5)?,
                 r.get(6)?,
                 r.get(7)?,
+                r.get(8)?,
             ))
         },
     )?;
-    if row.6 != 0 || row.7 != 0 {
+    if row.6 != 0 || row.7 != 0 || generation.is_some_and(|g| g != row.8) {
         return Err(AuthError::Invalid);
     }
     let mac = anywhere_core::proto::parse_mac(&row.5)
@@ -3349,11 +3801,28 @@ fn migrate_steps(db: &Connection) -> Result<(), AuthError> {
         }
         db.execute_batch("PRAGMA user_version = 15;")?;
     }
+    if version < 16 {
+        // Each user's credential generation (review M6): moved on by every password change
+        // and by disabling the user, and checked under the writer's lock when a sign-in or
+        // pairing makes its device and tokens. Everyone starts at 0. Safe to run again.
+        let (table, has): (i64, i64) = db.query_row(
+            "SELECT (SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'users'),
+                    (SELECT count(*) FROM pragma_table_info('users') WHERE name = 'credential_gen')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if table == 1 && has == 0 {
+            db.execute_batch(
+                "ALTER TABLE users ADD COLUMN credential_gen INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+        db.execute_batch("PRAGMA user_version = 16;")?;
+    }
     Ok(())
 }
 
 /// The schema version [`migrate`] brings a database to.
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 16;
 
 fn unix_now() -> u64 {
     SystemTime::now()
@@ -3563,20 +4032,230 @@ mod tests {
             l.budget_start -= THROTTLE_WINDOW;
         }
         assert!(a.login("alice", PW, None, "x", None, "fresh").is_ok());
-        // Pairing: the same shared budget across all addresses.
+    }
+
+    /// Changed deliberately (review M5): pairing had a soft limit shared by every client,
+    /// so five wrong codes from anywhere held everyone's pairing to two tries a minute, and
+    /// a stranger could keep it there. Now each address has its own lock and nothing else:
+    /// a code is 50 bits and lives ten minutes.
+    #[test]
+    fn nobody_can_hold_up_everyone_elses_pairing() {
+        let a = store();
         let before = a.password_checks();
-        let mut invalid = 0;
         for i in 0..200 {
-            if a.pair("AAAAAAAAAA", "x", &format!("pbot{i}")) == Err(AuthError::Invalid) {
-                invalid += 1;
-            }
+            assert_eq!(
+                a.pair("AAAAAAAAAA", "x", &format!("pbot{i}")),
+                Err(AuthError::Invalid),
+                "pbot{i}"
+            );
         }
-        assert_eq!(invalid, budget as usize);
         assert_eq!(
             a.password_checks(),
             before,
             "pairing never hashes passwords"
         );
+        // A real code from an address that hasn't failed still pairs, at once.
+        let code = a.create_pairing_code("alice").unwrap();
+        assert!(a.pair(&code, "Tablet", "203.0.113.20").is_ok());
+        // Each address is still held to its own lock.
+        for _ in 1..MAX_FAILURES {
+            let _ = a.pair("AAAAAAAAAA", "x", "pbot0");
+        }
+        let code = a.create_pairing_code("alice").unwrap();
+        assert!(matches!(
+            a.pair(&code, "x", "pbot0"),
+            Err(AuthError::Locked(_))
+        ));
+        assert!(!a.limits.lock().unwrap().contains_key("pairing"));
+    }
+
+    /// Throttle alice's username from many addresses and spend the strangers' budget for
+    /// this minute.
+    fn throttle_alice_and_spend_the_budget(a: &Accounts) {
+        for i in 0..MAX_FAILURES + THROTTLED_ATTEMPTS {
+            let _ = a.login(
+                "alice",
+                "wrong password!",
+                None,
+                "x",
+                None,
+                &format!("stranger{i}"),
+            );
+        }
+        assert!(matches!(
+            a.login("alice", PW, None, "x", None, "fresh"),
+            Err(AuthError::Locked(_))
+        ));
+    }
+
+    /// Regression (review M5): once a stranger had throttled her username and spent the
+    /// shared budget (from fresh addresses, every minute), the owner could not even change
+    /// her own password from her signed-in device.
+    #[test]
+    fn a_stranger_cannot_stop_the_owner_changing_her_password() {
+        let a = store();
+        let (alice, laptop) = signed_in(&a, "alice");
+        throttle_alice_and_spend_the_budget(&a);
+        let changed = a.change_own_password(
+            &OwnPasswordChange {
+                user: alice,
+                username: "alice",
+                device: laptop,
+                current: PW,
+                new: "a brand new password",
+                code: None,
+                sign_out_others: false,
+            },
+            "203.0.113.30",
+        );
+        assert!(changed.is_ok(), "{changed:?}");
+    }
+
+    /// The device's own lock still limits guesses made through it, and its failures still
+    /// throttle the username for strangers.
+    #[test]
+    fn a_password_change_is_held_to_its_devices_own_lock() {
+        let a = store();
+        let (alice, laptop) = signed_in(&a, "alice");
+        let change = |current: &str| {
+            a.change_own_password(
+                &OwnPasswordChange {
+                    user: alice,
+                    username: "alice",
+                    device: laptop,
+                    current,
+                    new: "a brand new password",
+                    code: None,
+                    sign_out_others: false,
+                },
+                "203.0.113.30",
+            )
+        };
+        for _ in 0..MAX_FAILURES {
+            assert_eq!(
+                change("wrong password!").map(|_| ()),
+                Err(AuthError::Invalid)
+            );
+        }
+        assert!(matches!(change(PW), Err(AuthError::Locked(_))));
+        // Those were guesses at alice's password: strangers now share the small budget.
+        let l = a.limits.lock().unwrap();
+        assert!(l["user:alice"].throttled(Instant::now()));
+        assert!(l["user:alice"].failed_clients.contains(&device_key(laptop)));
+    }
+
+    fn sign_in_with<'a>(
+        device: Option<i64>,
+        token: Option<&'a str>,
+        password: &'a str,
+        client: &'a str,
+    ) -> SignIn<'a> {
+        SignIn {
+            username: "alice",
+            password,
+            totp: None,
+            device_name: "Phone",
+            device_id: device,
+            refresh_token: token,
+            client,
+        }
+    }
+
+    /// Regression (review M5): the owner signing in again on her own device (its sign-in
+    /// ran out, say) competed with the stranger for two attempts a minute. A device that
+    /// shows a refresh token it was issued is held to its own lock instead.
+    #[test]
+    fn a_proven_device_signs_in_while_strangers_spend_the_budget() {
+        let a = store();
+        a.set_session_days(1).unwrap();
+        let phone = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        let id = phone.principal.device_id;
+        // The sign-in runs out (it stays known for a while: see M18).
+        a.db.lock()
+            .unwrap()
+            .execute("UPDATE refresh_tokens SET expires_at = 1", [])
+            .unwrap();
+        throttle_alice_and_spend_the_budget(&a);
+        let t = a.sign_in(&sign_in_with(
+            Some(id),
+            Some(&phone.refresh),
+            PW,
+            "203.0.113.40",
+        ));
+        let t = t.expect("the owner's device signs in");
+        assert_eq!(t.principal.device_id, id, "the same device and player");
+    }
+
+    #[test]
+    fn only_a_real_token_for_that_device_proves_it() {
+        let a = store();
+        a.create_user("bob", PW, Role::Listener).unwrap();
+        let phone = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        let id = phone.principal.device_id;
+        let laptop = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
+        let bobs = a.login("bob", PW, None, "Bob's", None, "c").unwrap();
+        let used = a.login("alice", PW, None, "Old", None, "c").unwrap();
+        let used_id = used.principal.device_id;
+        a.refresh(&used.refresh).unwrap();
+        let revoked = a.login("alice", PW, None, "Gone", None, "c").unwrap();
+        a.revoke_device(revoked.principal.device_id).unwrap();
+        throttle_alice_and_spend_the_budget(&a);
+        let refused = |device: Option<i64>, token: Option<&str>| {
+            let r = a.sign_in(&sign_in_with(device, token, PW, "203.0.113.41"));
+            assert!(matches!(r, Err(AuthError::Locked(_))), "{device:?} {r:?}");
+        };
+        refused(Some(id), None);
+        refused(None, Some(&phone.refresh));
+        refused(Some(id), Some("made-up"));
+        refused(Some(id), Some(&laptop.refresh));
+        refused(Some(id), Some(&bobs.refresh));
+        refused(Some(bobs.principal.device_id), Some(&bobs.refresh));
+        refused(Some(used_id), Some(&used.refresh));
+        refused(Some(revoked.principal.device_id), Some(&revoked.refresh));
+        refused(Some(id), Some(&"x".repeat(5000)));
+        // Nothing was revoked by any of it, and the real one works.
+        assert!(a.device_active(id));
+        assert!(
+            a.sign_in(&sign_in_with(
+                Some(id),
+                Some(&phone.refresh),
+                PW,
+                "203.0.113.41"
+            ))
+            .is_ok()
+        );
+    }
+
+    /// A proven device has an allowance of its own, not an unlimited one: wrong passwords
+    /// through it lock it, and count against the username like anyone's.
+    #[test]
+    fn a_proven_device_is_held_to_its_own_lock() {
+        let a = store();
+        let phone = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        let id = phone.principal.device_id;
+        let before = a.password_checks();
+        for i in 0..3 * MAX_FAILURES {
+            let r = a.sign_in(&sign_in_with(
+                Some(id),
+                Some(&phone.refresh),
+                "wrong password!",
+                &format!("hop{i}"),
+            ));
+            assert!(
+                matches!(r, Err(AuthError::Invalid | AuthError::Locked(_))),
+                "{r:?}"
+            );
+        }
+        assert_eq!(
+            a.password_checks() - before,
+            u64::from(MAX_FAILURES),
+            "five guesses through the device, whatever the address"
+        );
+        assert!(matches!(
+            a.sign_in(&sign_in_with(Some(id), Some(&phone.refresh), PW, "hop-new")),
+            Err(AuthError::Locked(_))
+        ));
+        assert!(a.limits.lock().unwrap()["user:alice"].throttled(Instant::now()));
     }
 
     #[test]
@@ -4007,15 +4686,69 @@ mod tests {
         assert_eq!(made, 0, "the half-done step was rolled back");
     }
 
+    /// Changed deliberately (review M18): an expired sign-in was refused exactly like a
+    /// revoked one, so the apps deleted their downloads when a phone kept offline past the
+    /// lifetime came back. Now a token the gateway issued, unused and past its lifetime, is
+    /// `Expired`; one it no longer knows (revoked, made up, or pruned long after it ran out)
+    /// is still plainly `Invalid`, and nothing ever revives an expired one.
     #[test]
-    fn expired_refresh_tokens_are_refused() {
+    fn expired_refresh_tokens_are_refused_as_expired() {
         let a = store();
         a.set_session_days(1).unwrap();
+        let later = now_secs() + 86_400 + 1;
         let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
-        assert_eq!(
-            a.refresh_at(&t.refresh, now_secs() + 86_400 + 1),
-            Err(AuthError::Invalid)
-        );
+        assert_eq!(a.refresh_at(&t.refresh, later), Err(AuthError::Expired));
+        // Asked again, the same answer: refused without being used up or counted as reuse.
+        assert_eq!(a.refresh_at(&t.refresh, later), Err(AuthError::Expired));
+        assert!(a.device_active(t.principal.device_id));
+        // Revoked: its rows are gone, so it is unknown, never "expired".
+        let r = a.login("alice", PW, None, "Tablet", None, "c").unwrap();
+        a.revoke_device(r.principal.device_id).unwrap();
+        assert_eq!(a.refresh_at(&r.refresh, later), Err(AuthError::Invalid));
+        // So is a disabled user's, and one that never existed.
+        let d = a.login("admin", PW, None, "Desk", None, "c").unwrap();
+        a.set_disabled("admin", true).unwrap();
+        assert_eq!(a.refresh_at(&d.refresh, later), Err(AuthError::Invalid));
+        assert_eq!(a.refresh_at("made-up", later), Err(AuthError::Invalid));
+        // A used token past its lifetime is still reuse, not an expiry.
+        let u = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
+        a.refresh(&u.refresh).unwrap();
+        assert!(matches!(
+            a.refresh_at(&u.refresh, later),
+            Err(AuthError::Reused(_))
+        ));
+    }
+
+    #[test]
+    fn expired_refresh_tokens_are_kept_a_while_then_pruned() {
+        let a = store();
+        let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        let expire = |by: i64| {
+            a.db.lock()
+                .unwrap()
+                .execute(
+                    "UPDATE refresh_tokens SET expires_at = ?1",
+                    [now_secs() - by],
+                )
+                .unwrap();
+        };
+        let sweep = || {
+            // The sweep runs with every AUDIT_PRUNE_EVERY-th audit row.
+            let next: i64 =
+                a.db.lock()
+                    .unwrap()
+                    .query_row("SELECT COALESCE(MAX(id), 0) FROM audit", [], |r| r.get(0))
+                    .unwrap();
+            for _ in 0..(AUDIT_PRUNE_EVERY - next % AUDIT_PRUNE_EVERY) {
+                a.audit("test", None, None, "");
+            }
+        };
+        expire(10);
+        sweep();
+        assert_eq!(a.refresh(&t.refresh), Err(AuthError::Expired), "kept");
+        expire(EXPIRED_REFRESH_KEPT.as_secs() as i64 + 10);
+        sweep();
+        assert_eq!(a.refresh(&t.refresh), Err(AuthError::Invalid), "pruned");
     }
 
     #[test]
@@ -4292,6 +5025,58 @@ mod tests {
         );
     }
 
+    /// Regression (review M7): past the hourly limit, every refused request wrote a
+    /// `pairing.rate_limited` row of its own (a write under the writer's lock each), so one
+    /// signed-in device could push the rest of the audit trail out in minutes.
+    #[test]
+    fn refused_pairing_requests_are_audited_once_per_window_and_write_nothing() {
+        let a = store();
+        let (alice, laptop) = signed_in(&a, "alice");
+        for _ in 0..SELF_PAIRING_PER_HOUR {
+            a.create_own_pairing_code(alice, "alice", laptop, PW)
+                .unwrap();
+        }
+        let rows = |a: &Accounts| -> (usize, i64) {
+            let limited = a
+                .audit_log(1000)
+                .unwrap()
+                .iter()
+                .filter(|e| e.event == "pairing.rate_limited")
+                .count();
+            let changes: i64 =
+                a.db.lock()
+                    .unwrap()
+                    .query_row("SELECT total_changes()", [], |r| r.get(0))
+                    .unwrap();
+            (limited, changes)
+        };
+        assert!(matches!(
+            a.create_own_pairing_code(alice, "alice", laptop, PW),
+            Err(AuthError::Locked(_))
+        ));
+        let (limited, changes) = rows(&a);
+        assert_eq!(limited, 1);
+        for _ in 0..200 {
+            assert!(matches!(
+                a.create_own_pairing_code(alice, "alice", laptop, "anything at all"),
+                Err(AuthError::Locked(_))
+            ));
+        }
+        assert_eq!(rows(&a), (1, changes), "no more rows, no writes at all");
+        // Another user is audited on their own.
+        a.create_user("bob", PW, Role::Listener).unwrap();
+        let (bob, phone) = signed_in(&a, "bob");
+        for _ in 0..SELF_PAIRING_PER_HOUR {
+            a.create_own_pairing_code(bob, "bob", phone, PW).unwrap();
+        }
+        let _ = a.create_own_pairing_code(bob, "bob", phone, PW);
+        assert_eq!(rows(&a).0, 2);
+        // Once the window has passed, a new refusal is news again.
+        let later = Instant::now() + Duration::from_secs(3601);
+        assert!(a.note_pairing_limit(alice, Duration::from_secs(60), later));
+        assert!(!a.note_pairing_limit(alice, Duration::from_secs(60), later));
+    }
+
     #[test]
     fn no_own_pairing_codes_while_at_the_new_device_limit() {
         let a = store();
@@ -4317,6 +5102,16 @@ mod tests {
                 .unwrap();
         }
         assert!(matches!(a.pair(&code, "x", "c"), Err(AuthError::Locked(_))));
+        // Regression (review low): the refused code was used up all the same. It is kept, and
+        // works once the limit has passed (within its ten minutes).
+        assert_eq!(pairing_code_count(&a), 1);
+        a.db.lock()
+            .unwrap()
+            .execute("UPDATE devices SET created_at = created_at - 3601", [])
+            .unwrap();
+        let t = a.pair(&code, "Paired", "c").unwrap();
+        assert_eq!(t.principal.username, "alice");
+        assert_eq!(a.pair(&code, "Again", "c"), Err(AuthError::Invalid), "once");
     }
 
     #[test]
@@ -4379,7 +5174,7 @@ mod tests {
                 "Bob's (spare) phone & co., v1.2_x-y",
                 "Bob's (spare) phone & co., v1.2_x-y",
             ),
-            ("James’s iPad", "James’s iPad"),
+            ("Sam’s iPad", "Sam’s iPad"),
             ("Ταμπλέτα 台所 Küche", "Ταμπλέτα 台所 Küche"),
             ("Cafe\u{301}", "Cafe\u{301}"),
             ("\u{301}x", "x"),
@@ -5309,6 +6104,159 @@ mod tests {
         );
     }
 
+    /// Regression (review M6b): an admin's password reset, and disabling a user, left the
+    /// user's outstanding pairing codes redeemable (only a change of one's own dropped them).
+    #[test]
+    fn admin_resets_and_disabling_drop_pairing_codes() {
+        let a = store();
+        let (alice, laptop) = signed_in(&a, "alice");
+        let own = a
+            .create_own_pairing_code(alice, "alice", laptop, PW)
+            .unwrap();
+        let admins = a.create_pairing_code("alice").unwrap();
+        a.set_password("alice", "a brand new password").unwrap();
+        assert_eq!(a.pair(&own, "x", "c"), Err(AuthError::Invalid));
+        assert_eq!(a.pair(&admins, "x", "c"), Err(AuthError::Invalid));
+        // Disabled, then enabled again within the codes' ten minutes: still dead.
+        let code = a.create_pairing_code("alice").unwrap();
+        a.set_disabled("alice", true).unwrap();
+        a.set_disabled("alice", false).unwrap();
+        assert_eq!(a.pair(&code, "x", "c2"), Err(AuthError::Invalid));
+        assert_eq!(pairing_code_count(&a), 0);
+        // Other users' codes are untouched.
+        a.create_user("bob", PW, Role::Listener).unwrap();
+        let bobs = a.create_pairing_code("bob").unwrap();
+        a.set_password("alice", "yet another passphrase").unwrap();
+        assert!(a.pair(&bobs, "x", "c3").is_ok());
+    }
+
+    fn generation(a: &Accounts, user: &str) -> i64 {
+        a.db.lock()
+            .unwrap()
+            .query_row(
+                "SELECT credential_gen FROM users WHERE username = ?1",
+                [user],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn resets_move_the_credential_generation_on() {
+        let a = store();
+        let g0 = generation(&a, "alice");
+        a.set_password("alice", "a brand new password").unwrap();
+        let g1 = generation(&a, "alice");
+        assert!(g1 > g0);
+        a.set_disabled("alice", true).unwrap();
+        let g2 = generation(&a, "alice");
+        assert!(g2 > g1);
+        a.set_disabled("alice", false).unwrap();
+        assert_eq!(generation(&a, "alice"), g2, "enabling changes nothing");
+        let t = a
+            .login("alice", "a brand new password", None, "Laptop", None, "c")
+            .unwrap();
+        a.change_own_password(
+            &OwnPasswordChange {
+                user: t.principal.user_id,
+                username: "alice",
+                device: t.principal.device_id,
+                current: "a brand new password",
+                new: "yet another passphrase",
+                code: None,
+                sign_out_others: false,
+            },
+            "c",
+        )
+        .unwrap();
+        assert!(generation(&a, "alice") > g2);
+        assert_eq!(generation(&a, "admin"), 0, "nobody else's");
+    }
+
+    /// Whatever was checked against an old generation makes nothing: no device, no tokens,
+    /// no pairing code (review M6a, the mechanism).
+    #[test]
+    fn nothing_is_made_under_an_old_generation() {
+        let a = store();
+        let t = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
+        let user = t.principal.user_id;
+        let old = generation(&a, "alice");
+        a.set_password("alice", "a brand new password").unwrap();
+        let count = || -> i64 {
+            a.db.lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM devices", [], |r| r.get(0))
+                .unwrap()
+        };
+        let devices = count();
+        assert_eq!(
+            a.create_device(user, "Stale", old).map(|_| ()),
+            Err(AuthError::Invalid)
+        );
+        assert_eq!(count(), devices, "no device was made");
+        let fresh = a
+            .create_device(user, "Fresh", generation(&a, "alice"))
+            .unwrap()
+            .0;
+        assert_eq!(
+            a.issue(fresh, Some(old)).map(|_| ()),
+            Err(AuthError::Invalid)
+        );
+        assert!(a.issue(fresh, Some(generation(&a, "alice"))).is_ok());
+        assert_eq!(
+            a.insert_pairing_code(user, old, false),
+            Err(AuthError::Invalid)
+        );
+        assert_eq!(pairing_code_count(&a), 0);
+    }
+
+    /// Regression (review M6a): a sign-in whose password check was under way while an admin
+    /// reset the password went on to make a new device (its old one had just been revoked)
+    /// and got tokens: whoever held the old password stayed signed in.
+    #[test]
+    fn a_sign_in_checked_against_the_old_password_gets_nothing_after_a_reset() {
+        let mut a = store();
+        // Every password check waits for the permits held below, however long that is.
+        a.hash_gate.wait = Duration::from_secs(60);
+        let a = a;
+        let laptop = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
+        let laptop_id = laptop.principal.device_id;
+        let held: Vec<_> = (0..HASH_PERMITS)
+            .map(|_| a.hash_gate.acquire().unwrap())
+            .collect();
+        let a = &a;
+        std::thread::scope(|s| {
+            let stale = s.spawn(|| a.login("alice", PW, None, "Laptop", Some(laptop_id), "race"));
+            // The sign-in has started (its attempt counted) and read the old password row...
+            while a
+                .limits
+                .lock()
+                .unwrap()
+                .get("client:race")
+                .is_none_or(|l| l.in_flight == 0)
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            // ...when the admin resets it.
+            a.set_password("alice", "a brand new password").unwrap();
+            drop(held);
+            assert_eq!(stale.join().unwrap().map(|_| ()), Err(AuthError::Invalid));
+        });
+        assert!(!a.device_active(laptop_id));
+        assert!(
+            a.list_devices()
+                .unwrap()
+                .iter()
+                .all(|d| d.username != "alice"),
+            "no device of alice's is signed in"
+        );
+        assert!(
+            a.login("alice", "a brand new password", None, "x", None, "c")
+                .is_ok()
+        );
+    }
+
     #[test]
     fn grants_validate_input() {
         let a = store();
@@ -5512,6 +6460,62 @@ mod tests {
             device_row(&a, id).last_addr.as_deref(),
             Some("198.51.100.1")
         );
+    }
+
+    /// Regression (review low): every player attach wrote twice (last seen, protocol),
+    /// however often a device reconnected. Now an attach writes once at most, and only what
+    /// is due.
+    #[test]
+    fn player_attaches_write_only_what_is_due() {
+        let a = store();
+        let t = a.login("alice", PW, None, "Phone", None, "c").unwrap();
+        let id = t.principal.device_id;
+        let ip: std::net::IpAddr = "198.51.100.1".parse().unwrap();
+        let attach = |protocol: u64| {
+            let due = a.claim_attach(id, protocol);
+            a.write_attach(id, protocol, ip, due);
+            due
+        };
+        let before = a.attach_writes();
+        assert_eq!(
+            attach(2),
+            AttachWrite {
+                seen: true,
+                protocol: true
+            }
+        );
+        assert_eq!(device_row(&a, id).protocol, Some(2));
+        assert_eq!(
+            device_row(&a, id).last_addr.as_deref(),
+            Some("198.51.100.1")
+        );
+        // Reconnecting again and again: nothing to write.
+        for _ in 0..50 {
+            assert_eq!(
+                attach(2),
+                AttachWrite {
+                    seen: false,
+                    protocol: false
+                }
+            );
+        }
+        assert_eq!(a.attach_writes() - before, 1, "one write for 51 attaches");
+        // A new protocol is written at once, alone.
+        assert_eq!(
+            attach(3),
+            AttachWrite {
+                seen: false,
+                protocol: true
+            }
+        );
+        assert_eq!(device_row(&a, id).protocol, Some(3));
+        // A refused, too-old sign-in records its protocol; the next attach puts it right.
+        a.record_protocol(id, 1);
+        assert!(attach(3).protocol);
+        assert_eq!(device_row(&a, id).protocol, Some(3));
+        // A revoked device is forgotten (and its row isn't written).
+        a.revoke_device(id).unwrap();
+        assert!(a.claim_attach(id, 3).protocol);
     }
 
     #[test]
@@ -5798,6 +6802,24 @@ mod tests {
                 .iter()
                 .all(|e| e.event != "ancient")
         );
+    }
+
+    /// Regression (review low): an audit row that couldn't be written vanished without a
+    /// trace. Now it is logged and counted; whatever was being audited carries on.
+    #[test]
+    fn an_audit_row_that_cannot_be_written_is_counted() {
+        let a = store();
+        a.audit("before", None, None, "");
+        assert_eq!(a.audit_failures(), 0);
+        a.db.lock()
+            .unwrap()
+            .execute_batch("DROP TABLE audit;")
+            .unwrap();
+        a.audit("lost", Some("alice"), None, "");
+        assert_eq!(a.audit_failures(), 1);
+        // Signing in (audited) still works.
+        assert!(a.login("alice", PW, None, "x", None, "c").is_ok());
+        assert_eq!(a.audit_failures(), 2);
     }
 
     #[test]
@@ -6335,6 +7357,47 @@ mod tests {
             vec![Some(i64::MAX), None]
         );
         a.record_protocol(new.device_id + 1000, 2);
+        drop(a);
+        for ext in ["db", "db-wal", "db-shm"] {
+            let _ = std::fs::remove_file(path.with_extension(ext));
+        }
+    }
+
+    #[test]
+    fn migration_to_16_adds_the_credential_generation() {
+        let path = std::env::temp_dir().join(format!("anywhere-mig16-{}.db", crate::random_id()));
+        let refresh = {
+            let a = Accounts::open(&path).unwrap();
+            a.create_user("alice", PW, Role::Listener).unwrap();
+            let t = a.login("alice", PW, None, "Laptop", None, "c").unwrap();
+            // As a version-15 gateway left it: no `credential_gen` column.
+            a.with_db(|db| {
+                db.execute_batch(
+                    "ALTER TABLE users DROP COLUMN credential_gen;
+                     PRAGMA user_version = 15;",
+                )
+            })
+            .unwrap();
+            assert_eq!(a.schema_version(), 15);
+            t.refresh
+        };
+        let a = Accounts::open(&path).unwrap();
+        assert_eq!(a.schema_version(), SCHEMA_VERSION);
+        assert_eq!(generation(&a, "alice"), 0);
+        // Signed in before the upgrade: still signed in, and sign-ins work.
+        assert!(a.refresh(&refresh).is_ok());
+        assert!(a.login("alice", PW, None, "Phone", None, "c").is_ok());
+        a.set_password("alice", "a brand new password").unwrap();
+        assert_eq!(generation(&a, "alice"), 1);
+        // Again (as after a half-finished upgrade): safe, and the generation stays.
+        a.with_db(|db| {
+            db.execute_batch("PRAGMA user_version = 15;")?;
+            migrate(db).map_err(|_| rusqlite::Error::InvalidQuery)?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(a.schema_version(), SCHEMA_VERSION);
+        assert_eq!(generation(&a, "alice"), 1);
         drop(a);
         for ext in ["db", "db-wal", "db-shm"] {
             let _ = std::fs::remove_file(path.with_extension(ext));

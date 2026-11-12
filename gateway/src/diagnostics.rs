@@ -130,10 +130,9 @@ pub async fn report(
         // Accepted but not stored: the device reports again later.
         return StatusCode::ACCEPTED.into_response();
     }
-    match gw
-        .accounts()
-        .save_diagnostics(p.device_id, &clean.to_string())
-    {
+    // A write: on the blocking pool, never on an async worker (M16).
+    let (device, report) = (p.device_id, clean.to_string());
+    match gw.db(move |a| a.save_diagnostics(device, &report)).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
     }
