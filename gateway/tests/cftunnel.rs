@@ -715,6 +715,52 @@ async fn install_downloads_and_verifies_and_refuses_a_tampered_asset() {
     assert!(runs(&t.rec).is_empty());
 }
 
+/// Regression (review low): cloudflared's checksum was checked when it was downloaded, not
+/// before it was run, so a copy changed in the data folder afterwards ran with the tunnel's
+/// token. Now a start refuses a copy that doesn't match the pin, runs nothing, and forgets
+/// it, so the next start installs the release afresh.
+#[tokio::test]
+async fn a_cloudflared_changed_after_its_download_is_never_run() {
+    let t = setup().await;
+    t.install().await;
+    let bin = t.dir().join("cloudflared");
+    let marker = t.rec.join("tampered");
+    std::fs::remove_file(&bin).unwrap();
+    std::fs::write(
+        &bin,
+        format!("#!/bin/sh\ntouch '{}'\nexec sleep 600\n", marker.display()),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let (s, v) = t.post("/quick", None).await;
+    assert!(s.is_success(), "{s} {v}");
+    let v = t.wait_state("failed").await;
+    let error = v["error"].as_str().unwrap();
+    assert!(error.contains("checksum differs"), "{v}");
+    assert!(error.contains("could not be started"), "{v}");
+    assert_eq!(v["installed_version"], Value::Null);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!marker.exists(), "the changed program ran");
+    assert!(runs(&t.rec).is_empty());
+
+    // The next start installs the pinned release again, and runs that.
+    let (s, v) = t.post("/quick", None).await;
+    assert!(s.is_success(), "{s} {v}");
+    for _ in 0..300 {
+        if !runs(&t.rec).is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(runs(&t.rec).len(), 1, "the genuine one runs");
+    assert!(!marker.exists());
+    assert_eq!(std::fs::read(&bin).unwrap(), *t.gh.body.lock().unwrap());
+    let _ = t.post("/stop", None).await;
+}
+
 #[tokio::test]
 async fn an_installed_older_version_offers_an_update() {
     let t = setup().await;

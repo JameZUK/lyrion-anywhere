@@ -1134,6 +1134,41 @@ impl Tunnel {
         self.m().installed.is_some() && self.binary().is_file()
     }
 
+    /// Whether the `cloudflared` about to run is still the pinned release: its SHA-256 is
+    /// checked before every start, not only when it was downloaded (review low), so a copy
+    /// changed in the data folder since (by anything that could write there) is never run.
+    /// A system `cloudflared` is the admin's choice and not pinned.
+    async fn binary_is_pinned(&self) -> bool {
+        if self.s.system_binary.is_some() {
+            return true;
+        }
+        let Some((_, want)) = self.asset.clone() else {
+            return false;
+        };
+        let bin = self.binary();
+        match tokio::task::spawn_blocking(move || download::file_sha256(&bin)).await {
+            Ok(Ok(sum)) => sum.eq_ignore_ascii_case(&want),
+            _ => false,
+        }
+    }
+
+    /// Our `cloudflared` is not the pinned release any more: forget it, so the next start
+    /// installs it again.
+    fn refuse_unpinned(&self, id: Option<u64>) {
+        let msg = "cloudflared could not be started: the program in the gateway's data folder \
+                   is not the release it installed (its checksum differs). Start the tunnel \
+                   again to install it afresh."
+            .to_string();
+        tracing::warn!("the cloudflared in the data folder does not match its pinned checksum");
+        self.note(&msg);
+        let mut m = self.m();
+        m.installed = None;
+        match id {
+            Some(id) => m.spawn_failed(id, msg),
+            None => m.error = Some(msg),
+        }
+    }
+
     /// Start a tunnel (the control lock held): install first if needed.
     async fn start_locked(self: &Arc<Self>, control: &mut Option<RunHandle>, mode: Mode) {
         if !self.installed() {
@@ -1236,6 +1271,11 @@ impl Tunnel {
                     break;
                 }
             };
+            if !self.binary_is_pinned().await {
+                self.refuse_unpinned(Some(id));
+                self.overrides.clear();
+                break;
+            }
             let mut cmd = self.command();
             cmd.args(self.args(mode, port))
                 .stdout(Stdio::piped())
@@ -1469,6 +1509,11 @@ impl Tunnel {
                     if download::parse_version_output(&format!("version {v}")).is_some() =>
                 {
                     Some(v.to_string())
+                }
+                // Our own copy is asked its version only if it is still the pinned release.
+                (None, _) if !self.binary_is_pinned().await => {
+                    self.refuse_unpinned(None);
+                    None
                 }
                 _ => self.run_version(&self.binary()).await,
             }
