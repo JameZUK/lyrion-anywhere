@@ -170,7 +170,7 @@ async fn nobody_can_create_a_code_for_another_user() {
             r.status()
         );
     }
-    // Bob's password with alice's token is just a wrong password.
+    // Bob's password with alice's token is just a wrong password (403, review M10).
     let r = create(
         &h,
         Some(&h.tok_a),
@@ -178,7 +178,7 @@ async fn nobody_can_create_a_code_for_another_user() {
         &[CLIENT],
     )
     .await;
-    assert_eq!(r.status(), S::UNAUTHORIZED);
+    assert_eq!(r.status(), S::FORBIDDEN);
     // And a code alice makes never signs in as bob.
     let code = alice_code(&h).await;
     let t: Value = redeem(&h, &code, &[CLIENT]).await.json().await.unwrap();
@@ -238,13 +238,20 @@ async fn codes_are_limited_per_user_and_hour() {
     assert_eq!(r.status(), S::OK);
 }
 
+/// Changed deliberately (review M10): a wrong password is 403 with the password change's
+/// error, not the 401 a client takes for an expired token (it renewed and sent the same
+/// guess again, so each typo counted twice).
 #[tokio::test]
 async fn wrong_passwords_lock_code_creation() {
     let h = harness().await;
     let wrong = json!({ "password": "wrong password!" }).to_string();
     for _ in 0..5 {
         let r = create(&h, Some(&h.tok_a), &wrong, &[CLIENT]).await;
-        assert_eq!(r.status(), S::UNAUTHORIZED);
+        assert_eq!(r.status(), S::FORBIDDEN);
+        assert_eq!(
+            r.json::<Value>().await.unwrap(),
+            json!({ "error": "the current password or two-step code is wrong" })
+        );
     }
     let r = create(
         &h,
@@ -272,6 +279,57 @@ async fn pairing_lockouts_still_apply_to_own_codes() {
     assert_eq!(r.status(), S::TOO_MANY_REQUESTS);
     assert!(r.headers().contains_key("retry-after"));
     // The refused attempt didn't use the code up.
+    assert_eq!(
+        redeem(&h, &code, &via("203.0.113.20")).await.status(),
+        S::OK
+    );
+}
+
+/// Regression (review M7): past the hourly limit, each refused request wrote an audit row
+/// with no limit, so one device could flood the audit trail. Now a device may ask a few
+/// times a minute at most (429 before the database), and the limit is audited once.
+#[tokio::test]
+async fn refused_code_requests_cannot_flood_the_audit_log() {
+    use anywhere_gateway::{PAIRING_REQUEST_WINDOW, PAIRING_REQUESTS_PER_WINDOW};
+    let h = harness().await;
+    let body = json!({ "password": PW }).to_string();
+    let mut statuses = vec![];
+    for _ in 0..60 {
+        statuses.push(create(&h, Some(&h.tok_a), &body, &[CLIENT]).await);
+    }
+    let ok = statuses.iter().filter(|r| r.status() == S::OK).count();
+    assert_eq!(ok, SELF_PAIRING_PER_HOUR as usize);
+    assert!(
+        statuses[PAIRING_REQUESTS_PER_WINDOW..]
+            .iter()
+            .all(|r| r.status() == S::TOO_MANY_REQUESTS
+                && r.headers()["retry-after"] == PAIRING_REQUEST_WINDOW.as_secs().to_string()),
+        "beyond the window, refused before anything else"
+    );
+    let limited = h
+        .accounts
+        .audit_log(1000)
+        .unwrap()
+        .iter()
+        .filter(|e| e.event == "pairing.rate_limited")
+        .count();
+    assert_eq!(limited, 1, "audited once for the window");
+    // Another device has its own window.
+    let r = create(&h, Some(&h.tok_b), &body, &[CLIENT]).await;
+    assert_eq!(r.status(), S::OK);
+}
+
+/// Regression (review M5): five wrong codes from five addresses held every user's pairing
+/// to two attempts a minute, across all clients, and anyone could keep it there. Now each
+/// address is held to its own lock only.
+#[tokio::test]
+async fn strangers_cannot_hold_up_other_peoples_pairing() {
+    let h = harness().await;
+    for i in 0..30 {
+        let r = redeem(&h, "AAAAAAAAAA", &via(&format!("198.51.100.{}", i + 1))).await;
+        assert_eq!(r.status(), S::UNAUTHORIZED, "{i}");
+    }
+    let code = alice_code(&h).await;
     assert_eq!(
         redeem(&h, &code, &via("203.0.113.20")).await.status(),
         S::OK

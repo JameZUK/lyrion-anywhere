@@ -29,8 +29,72 @@ use tokio::sync::{Notify, Semaphore};
 use tower::ServiceExt;
 use tracing::{info, warn};
 
-/// Largest request body read by [`body_deadline`]. Every endpoint takes far less.
+/// Largest request body read by [`body_deadline`] for any path: what no endpoint exceeds.
+/// [`body_limit`] holds most paths to far less.
 pub const MAX_BODY: usize = 1024 * 1024;
+/// The body cap for paths that take small JSON (sign-in, account changes, devices, player
+/// requests) and for any path not listed in [`body_limit`].
+pub const SMALL_BODY: usize = 4096;
+/// The body cap for `/v1/me/…`: the largest of those endpoints is an offline ratings batch.
+pub const ME_BODY: usize = 128 * 1024;
+
+// ---------------------------------------------------------------------------
+// Log lines anyone can cause
+// ---------------------------------------------------------------------------
+
+/// Log lines of one kind written per [`LOG_WINDOW`] at most, when anyone (an
+/// unauthenticated request) can cause them; the rest are counted and the count is written
+/// with the next line let through.
+pub const LOG_BURST: u32 = 10;
+pub const LOG_WINDOW: Duration = Duration::from_secs(60);
+/// The longest request path written to the log, in bytes (review low: a refused request's
+/// whole path, up to the 64 KiB a request head may hold, went to the log).
+pub const LOG_PATH_MAX: usize = 120;
+
+/// A budget for one kind of log line (see [`LOG_BURST`]): `static`, one per call site.
+pub struct LogBudget(Mutex<Option<(std::time::Instant, u32, u64)>>);
+
+impl LogBudget {
+    pub const fn new() -> Self {
+        LogBudget(Mutex::new(None))
+    }
+
+    /// Whether to write the line now, at `now`: `Some(n)` with the lines suppressed since
+    /// the last one written, `None` to drop it (it is counted).
+    pub fn allow(&self, now: std::time::Instant) -> Option<u64> {
+        let mut s = self.0.lock().unwrap();
+        let (start, written, suppressed) = s.get_or_insert((now, 0, 0));
+        if now.saturating_duration_since(*start) >= LOG_WINDOW {
+            *start = now;
+            *written = 0;
+        }
+        if *written >= LOG_BURST {
+            *suppressed += 1;
+            return None;
+        }
+        *written += 1;
+        Some(std::mem::take(suppressed))
+    }
+}
+
+impl Default for LogBudget {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A request path cut to [`LOG_PATH_MAX`] bytes for the log (at a character boundary), with
+/// `…` when it was cut.
+pub fn log_path(path: &str) -> std::borrow::Cow<'_, str> {
+    if path.len() <= LOG_PATH_MAX {
+        return path.into();
+    }
+    let mut end = LOG_PATH_MAX;
+    while !path.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &path[..end]).into()
+}
 
 // ---------------------------------------------------------------------------
 // Concurrency limiter
@@ -150,7 +214,10 @@ pub async fn body_deadline(State(limit): State<Duration>, req: Request, next: Ne
     let (parts, body) = req.into_parts();
     match tokio::time::timeout(limit, axum::body::to_bytes(body, max)).await {
         Err(_) => {
-            warn!(path = %parts.uri.path(), "request body too slow");
+            static SLOW: LogBudget = LogBudget::new();
+            if let Some(suppressed) = SLOW.allow(std::time::Instant::now()) {
+                warn!(path = %log_path(parts.uri.path()), suppressed, "request body too slow");
+            }
             refuse(StatusCode::REQUEST_TIMEOUT, "request body too slow\n")
         }
         Ok(Err(_)) => refuse(StatusCode::PAYLOAD_TOO_LARGE, "request too large\n"),
@@ -161,15 +228,38 @@ pub async fn body_deadline(State(limit): State<Duration>, req: Request, next: Ne
     }
 }
 
-/// The largest body read for a request to `path`: [`MAX_BODY`], or less where the handler
-/// takes less, so an oversize body is refused as soon as it passes that (review low:
-/// `/v1/rpc` read up to [`MAX_BODY`] before refusing anything over its 8 KiB).
+/// The largest body read for a request to `path`, before any handler (or authentication)
+/// runs: what the endpoints there take, so an oversize body is refused as soon as it passes
+/// that (review lows: `/v1/rpc`, then every other path, read up to [`MAX_BODY`] first). A
+/// path not listed (sign-in, account changes, devices, players, and anything unknown)
+/// gets [`SMALL_BODY`].
 pub fn body_limit(path: &str) -> usize {
     match path {
         "/v1/rpc" => crate::rpc::MAX_BODY,
-        _ => MAX_BODY,
+        "/v1/diagnostics" => crate::diagnostics::MAX_BODY,
+        "/v1/plays" => crate::plays::MAX_BODY,
+        p if p.starts_with("/v1/me/") => ME_BODY,
+        _ => SMALL_BODY,
     }
 }
+
+// Every endpoint's own body cap fits under its path's in `body_limit`, and every path's
+// under `MAX_BODY`: checked when the gateway is built, so a handler that comes to take more
+// can't be cut short here unnoticed. (`ratings`' batch cap is private to its module; the
+// test `body_caps_follow_the_endpoints` checks it.)
+const _: () = {
+    assert!(crate::auth::MAX_BODY <= SMALL_BODY);
+    assert!(crate::alarms::MAX_BODY <= SMALL_BODY);
+    assert!(crate::queue_edit::MAX_BODY <= SMALL_BODY);
+    assert!(crate::queue_save::MAX_BODY <= SMALL_BODY);
+    assert!(crate::home::MAX_BYTES <= ME_BODY);
+    assert!(crate::stations::MAX_BODY <= ME_BODY);
+    assert!(crate::filters::MAX_BODY <= ME_BODY);
+    assert!(crate::rpc::MAX_BODY <= MAX_BODY);
+    assert!(crate::diagnostics::MAX_BODY <= MAX_BODY);
+    assert!(crate::plays::MAX_BODY <= MAX_BODY);
+    assert!(ME_BODY <= MAX_BODY);
+};
 
 fn refuse(status: StatusCode, msg: &'static str) -> Response {
     let mut r = (status, msg).into_response();
@@ -324,7 +414,10 @@ pub async fn serve(
             match IpSlot::take(&per_ip, ip, limits.per_ip_connections.max(1)) {
                 Some(s) => Some(s),
                 None => {
-                    warn!(peer = %ip, "too many connections from one address");
+                    static CROWDED: LogBudget = LogBudget::new();
+                    if let Some(suppressed) = CROWDED.allow(std::time::Instant::now()) {
+                        warn!(peer = %ip, suppressed, "too many connections from one address");
+                    }
                     drop(stream);
                     continue;
                 }
@@ -397,6 +490,69 @@ mod tests {
             .expect("waiter woke")
             .unwrap();
         assert!(got.is_some());
+    }
+
+    /// Review low: a body was read up to 1 MiB for any path before authentication. Each
+    /// path's cap is now what its endpoints take, and never less.
+    #[test]
+    fn body_caps_follow_the_endpoints() {
+        assert_eq!(body_limit("/v1/rpc"), crate::rpc::MAX_BODY);
+        assert_eq!(body_limit("/v1/diagnostics"), crate::diagnostics::MAX_BODY);
+        assert_eq!(body_limit("/v1/plays"), crate::plays::MAX_BODY);
+        for small in [
+            "/v1/auth/login",
+            "/v1/auth/pair",
+            "/v1/auth/refresh",
+            "/v1/account/password",
+            "/v1/account/totp/setup",
+            "/v1/devices/pair",
+            "/v1/devices/self",
+            "/v1/players/aa:bb:cc:dd:ee:ff/alarms",
+            "/v1/players/aa:bb:cc:dd:ee:ff/queue/edit",
+            "/v1/players/aa:bb:cc:dd:ee:ff/queue/save",
+            "/nothing/here",
+            "/",
+            "/v1/rpc/",
+            "/v1/me",
+        ] {
+            assert_eq!(body_limit(small), SMALL_BODY, "{small}");
+        }
+        assert_eq!(body_limit("/v1/me/ratings"), ME_BODY);
+        // The other endpoints' own caps are checked against these when the gateway is built
+        // (the `const _` beside `body_limit`); the offline ratings batch's is private to its
+        // module.
+        let ratings_batch = 128 * 1024;
+        assert!(ratings_batch <= body_limit("/v1/me/ratings"));
+    }
+
+    #[test]
+    fn log_lines_anyone_can_cause_are_rationed() {
+        let b = LogBudget::new();
+        let t0 = std::time::Instant::now();
+        for _ in 0..LOG_BURST {
+            assert_eq!(b.allow(t0), Some(0));
+        }
+        for _ in 0..1000 {
+            assert_eq!(b.allow(t0 + Duration::from_secs(1)), None);
+        }
+        // The next window writes again, saying how many were dropped.
+        assert_eq!(b.allow(t0 + LOG_WINDOW), Some(1000));
+        assert_eq!(b.allow(t0 + LOG_WINDOW), Some(0));
+    }
+
+    #[test]
+    fn logged_paths_are_cut_short() {
+        assert_eq!(log_path("/v1/rpc"), "/v1/rpc");
+        let long = format!("/{}", "a".repeat(10_000));
+        let cut = log_path(&long);
+        assert_eq!(cut.len(), LOG_PATH_MAX + '…'.len_utf8());
+        assert!(cut.ends_with('…'));
+        // Never mid-character, whatever sits at the cut.
+        for pad in 0..4 {
+            let s = format!("{}{}", "x".repeat(LOG_PATH_MAX - pad), "é".repeat(10));
+            let cut = log_path(&s);
+            assert!(cut.len() <= LOG_PATH_MAX + '…'.len_utf8(), "{pad}");
+        }
     }
 
     #[test]

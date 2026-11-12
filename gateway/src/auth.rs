@@ -22,7 +22,7 @@ use crate::{AppState, origin_allowed};
 
 pub const REFRESH_COOKIE: &str = "anywhere_refresh";
 pub const CLIENT_HEADER: &str = "x-anywhere-client";
-const MAX_BODY: usize = 4096;
+pub(crate) const MAX_BODY: usize = 4096;
 /// Sent when this browser's device is signed out, so cached artwork and other responses
 /// go with it. "cache" leaves IndexedDB (offline downloads) alone; browsers may also clear
 /// the service worker's caches, which it refills.
@@ -39,6 +39,13 @@ fn auth_error(e: AuthError) -> Response {
         AuthError::Invalid | AuthError::Reused(_) => {
             error(StatusCode::UNAUTHORIZED, "invalid credentials")
         }
+        // A sign-in that ran out, never revoked: said so, so a native app keeps its
+        // downloads (review M18). Only a refresh token this gateway issued gets here.
+        AuthError::Expired => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "invalid credentials", "reason": "expired" })),
+        )
+            .into_response(),
         AuthError::Locked(d) => {
             let mut r = error(
                 StatusCode::TOO_MANY_REQUESTS,
@@ -65,6 +72,24 @@ fn auth_error(e: AuthError) -> Response {
             tracing::error!(error = %e, "account store error");
             error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
         }
+    }
+}
+
+/// What the account changes that take the password (and perhaps a two-step code) answer
+/// for wrong credentials: 403, never 401, so a client doesn't take them for an expired
+/// access token, renew it and send the same guess again (review M10). 401 stays for a
+/// missing, expired or revoked access token.
+pub(crate) const WRONG_CREDENTIALS: &str = "the current password or two-step code is wrong";
+
+fn account_change_error(e: AuthError) -> Response {
+    match e {
+        AuthError::Invalid => error(StatusCode::FORBIDDEN, WRONG_CREDENTIALS),
+        AuthError::TotpRequired => (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "two-step code required", "totp_required": true })),
+        )
+            .into_response(),
+        e => auth_error(e),
     }
 }
 
@@ -190,6 +215,10 @@ struct LoginRequest {
     device_name: String,
     /// Reuse this (own) device, e.g. a browser logging in again.
     device_id: Option<i64>,
+    /// The refresh token an app holds for `device_id` (a browser's cookie serves the same
+    /// purpose): it proves the device is the user's own, which keeps its sign-in out of
+    /// strangers' shared lockout budget (review M5).
+    refresh_token: Option<String>,
     #[serde(default)]
     refresh: RefreshIn,
     /// `pwa`, `browser` or `android`.
@@ -217,18 +246,23 @@ pub async fn login(
     };
     let addr = crate::client_addr(&gw.cfg, peer, &headers);
     let client = client_id(&gw, peer, &headers);
+    let proof = req
+        .refresh_token
+        .take()
+        .or_else(|| cookie(&headers, REFRESH_COOKIE).map(str::to_string));
     let accounts = gw.accounts().clone();
     // Password hashing is CPU-heavy: keep it off the async workers.
     let result = tokio::task::spawn_blocking(move || {
         accounts
-            .login(
-                &req.username,
-                &req.password,
-                req.totp.as_deref(),
-                &req.device_name,
-                req.device_id,
-                &client,
-            )
+            .sign_in(&crate::accounts::SignIn {
+                username: &req.username,
+                password: &req.password,
+                totp: req.totp.as_deref(),
+                device_name: &req.device_name,
+                device_id: req.device_id,
+                refresh_token: proof.as_deref(),
+                client: &client,
+            })
             .map(|t| (t, req.refresh))
     })
     .await;
@@ -342,7 +376,9 @@ pub async fn refresh(
         (None, None) => return error(StatusCode::UNAUTHORIZED, "invalid credentials"),
     };
     // Diagnostics: which client code asked, from which page, with which token (fingerprint).
-    tracing::info!(
+    // At debug: anyone can ask, before anything is known (review low); what came of it is
+    // logged at info once the token turns out to be real.
+    tracing::debug!(
         target: "anywhere_gateway::refresh",
         token = %crate::accounts::fingerprint(&token),
         via = if matches!(refresh_in, RefreshIn::Cookie) { "cookie" } else { "body" },
@@ -370,9 +406,10 @@ pub async fn refresh(
             r
         }
         // Signed out (revoked, expired or never valid): what the browser cached for this
-        // account is cleared too, as on reuse (review low).
-        Err(AuthError::Invalid) => {
-            let mut r = auth_error(AuthError::Invalid);
+        // account is cleared too, as on reuse (review low). An expiry says so in `reason`
+        // (it leaves IndexedDB, and so offline downloads, alone either way).
+        Err(e @ (AuthError::Invalid | AuthError::Expired)) => {
+            let mut r = auth_error(e);
             r.headers_mut()
                 .insert(CLEAR_SITE_DATA, HeaderValue::from_static(CLEAR_CACHE));
             r
@@ -492,7 +529,7 @@ struct PasswordRequest {
 }
 
 /// Start two-step setup: needs the account password; returns the secret and `otpauth://`
-/// URI for the app.
+/// URI for the app. A wrong password is 403 (see [`WRONG_CREDENTIALS`]).
 pub async fn totp_setup(
     State(gw): State<AppState>,
     headers: HeaderMap,
@@ -520,7 +557,7 @@ pub async fn totp_setup(
                 .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
             r
         }
-        Ok(Err(e)) => auth_error(e),
+        Ok(Err(e)) => account_change_error(e),
         Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
     }
 }
@@ -547,9 +584,10 @@ pub async fn totp_confirm(
         Ok(r) => r,
         Err((status, msg)) => return error(status, msg),
     };
+    // Writes (the code's step, the switch, the audit row): on the blocking pool (M16).
     match gw
-        .accounts()
-        .totp_confirm(p.user_id, &p.username, &req.code)
+        .db(move |a| a.totp_confirm(p.user_id, &p.username, &req.code))
+        .await
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => auth_error(e),
@@ -563,7 +601,8 @@ struct DisableRequest {
     code: String,
 }
 
-/// Turn two-step off: needs the password and a current code.
+/// Turn two-step off: needs the password and a current code. A wrong one is 403 (see
+/// [`WRONG_CREDENTIALS`]).
 pub async fn totp_disable(
     State(gw): State<AppState>,
     headers: HeaderMap,
@@ -592,7 +631,7 @@ pub async fn totp_disable(
     .await;
     match result {
         Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Err(e)) => auth_error(e),
+        Ok(Err(e)) => account_change_error(e),
         Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
     }
 }
@@ -661,16 +700,7 @@ pub async fn change_password(
                 .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
             r
         }
-        Ok(Err(AuthError::Invalid)) => error(
-            StatusCode::FORBIDDEN,
-            "the current password or two-step code is wrong",
-        ),
-        Ok(Err(AuthError::TotpRequired)) => (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "two-step code required", "totp_required": true })),
-        )
-            .into_response(),
-        Ok(Err(e)) => auth_error(e),
+        Ok(Err(e)) => account_change_error(e),
         Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
     }
 }
@@ -682,7 +712,10 @@ pub async fn change_password(
 /// `POST /v1/devices/pair` `{"password"}`: a one-time pairing code that signs another
 /// device in as the caller (shown as a QR code holding a `lyrion-anywhere://pair` link).
 /// There is no user to name: the code is always for the access token's own user. Needs
-/// the password, and is limited per user (see [`crate::accounts::Accounts::create_own_pairing_code`]).
+/// the password (403 when wrong, see [`WRONG_CREDENTIALS`]), and is limited per user (see
+/// [`crate::accounts::Accounts::create_own_pairing_code`]). Before any of that touches the
+/// database, each device may ask [`crate::PAIRING_REQUESTS_PER_WINDOW`] times per
+/// [`crate::PAIRING_REQUEST_WINDOW`] (review M7: refused requests each wrote an audit row).
 pub async fn create_pairing_code(
     State(gw): State<AppState>,
     headers: HeaderMap,
@@ -698,6 +731,12 @@ pub async fn create_pairing_code(
         Ok(r) => r,
         Err((status, msg)) => return error(status, msg),
     };
+    if !gw
+        .pairing_requests
+        .take(p.device_id, std::time::Instant::now())
+    {
+        return auth_error(AuthError::Locked(crate::PAIRING_REQUEST_WINDOW));
+    }
     let accounts = gw.accounts().clone();
     let result = tokio::task::spawn_blocking(move || {
         accounts.create_own_pairing_code(p.user_id, &p.username, p.device_id, &req.password)
@@ -714,7 +753,7 @@ pub async fn create_pairing_code(
                 .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
             r
         }
-        Ok(Err(e)) => auth_error(e),
+        Ok(Err(e)) => account_change_error(e),
         Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
     }
 }

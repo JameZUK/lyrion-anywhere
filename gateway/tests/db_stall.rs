@@ -181,6 +181,99 @@ async fn a_stalled_write_does_not_hold_up_requests_that_only_read() {
     assert_eq!(held.await.unwrap(), S::OK);
 }
 
+/// Start `request` (which needs the database's write side) while device A's stalled write
+/// holds it, and check that an unrelated request is answered at once meanwhile: the write
+/// waits on the blocking pool, not on the test's only async thread (review M16).
+async fn a_write_waiting_for_the_database_is_off_the_workers(
+    h: &Harness,
+    request: reqwest::RequestBuilder,
+    want: S,
+    what: &str,
+) {
+    let held = hold_the_writer(h).await;
+    let started = Instant::now();
+    let write = tokio::spawn(async move { request.send().await.unwrap().status() });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(healthz(h).await, S::OK);
+    assert!(
+        started.elapsed() < PROMPT,
+        "an unrelated request waited {:?} for {what}",
+        started.elapsed()
+    );
+    assert_eq!(write.await.unwrap(), want, "{what}");
+    assert_eq!(held.await.unwrap(), S::OK);
+}
+
+/// The 6-digit code for a base32 secret now.
+fn current_code(secret_b32: &str) -> String {
+    let mut bits = (0u64, 0u32);
+    let mut secret = Vec::new();
+    for c in secret_b32.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'2'..=b'7' => c - b'2' + 26,
+            _ => panic!("bad base32"),
+        };
+        bits = ((bits.0 << 5) | u64::from(v), bits.1 + 5);
+        if bits.1 >= 8 {
+            bits.1 -= 8;
+            secret.push((bits.0 >> bits.1) as u8);
+        }
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    format!(
+        "{:06}",
+        anywhere_gateway::totp::code_at(&secret, now / anywhere_gateway::totp::STEP_SECS)
+    )
+}
+
+/// Regression (review M16): confirming two-step set-up wrote (the code's step, the switch,
+/// the audit row) inline on an async worker.
+#[tokio::test]
+async fn a_two_step_confirmation_waiting_for_the_database_does_not_hold_up_other_requests() {
+    let h = harness().await;
+    let bob = h.accounts.authenticate(&h.tok_b).unwrap();
+    let setup = h
+        .accounts
+        .totp_begin(bob.user_id, "bob", bob.device_id, PW)
+        .unwrap();
+    let request = reqwest::Client::new()
+        .post(h.url("/v1/account/totp/confirm"))
+        .header("x-anywhere-client", "1")
+        .bearer_auth(&h.tok_b)
+        .json(&json!({ "code": current_code(&setup.secret) }));
+    a_write_waiting_for_the_database_is_off_the_workers(
+        &h,
+        request,
+        S::NO_CONTENT,
+        "a two-step confirmation",
+    )
+    .await;
+    assert!(h.accounts.totp_enabled(bob.user_id).unwrap());
+}
+
+/// Regression (review M16): a diagnostics report was stored inline on an async worker.
+#[tokio::test]
+async fn a_diagnostics_report_waiting_for_the_database_does_not_hold_up_other_requests() {
+    let h = harness().await;
+    let request = reqwest::Client::new()
+        .post(h.url("/v1/diagnostics"))
+        .bearer_auth(&h.tok_b)
+        .json(&json!({ "playback": { "mode": "media" } }));
+    a_write_waiting_for_the_database_is_off_the_workers(
+        &h,
+        request,
+        S::NO_CONTENT,
+        "a diagnostics report",
+    )
+    .await;
+    let bob = h.accounts.authenticate(&h.tok_b).unwrap();
+    assert!(h.accounts.diagnostics(bob.device_id).unwrap().is_some());
+}
+
 /// The loopback admin API, served as the gateway serves it.
 async fn admin_api(h: &Harness) -> (String, String) {
     let secret = "s".repeat(64);

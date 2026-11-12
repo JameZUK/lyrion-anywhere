@@ -410,6 +410,336 @@ async fn an_invalid_refresh_token_clears_cached_data() {
     assert_eq!(r.headers().get("clear-site-data").unwrap(), "\"cache\"");
 }
 
+/// Regression (review M18): a sign-in that simply ran out was refused exactly as a
+/// revoked one, so the native apps deleted their downloads when a phone kept offline past
+/// the lifetime came back. Now its 401 says `"reason": "expired"`; a revoked, signed-out,
+/// reused or made-up token's 401 has no `reason` at all.
+#[tokio::test]
+async fn an_expired_sign_in_says_so_and_nothing_else_does() {
+    let h = harness().await;
+    let refresh = |t: String| {
+        let url = h.url("/v1/auth/refresh");
+        async move {
+            reqwest::Client::new()
+                .post(url)
+                .header(CLIENT.0, CLIENT.1)
+                .json(&json!({ "refresh_token": t }))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let sign_in = |device: &str| {
+        h.post(
+            "/v1/auth/login",
+            json!({ "username": "alice", "password": PW, "device_name": device, "refresh": "body" }),
+            &[CLIENT],
+        )
+    };
+    let token_of = |v: &Value| v["refresh_token"].as_str().unwrap().to_string();
+    let expired = token_of(&json_of(sign_in("Phone").await).await);
+    let revoked_v = json_of(sign_in("Tablet").await).await;
+    let reused = token_of(&json_of(sign_in("Laptop").await).await);
+    // Rotated, and the replacement used: presenting the first again is reuse.
+    let next = token_of(&json_of(refresh(reused.clone()).await).await);
+    assert_eq!(refresh(next).await.status(), S::OK);
+    let revoked_id = revoked_v["device"]["id"].as_i64().unwrap();
+    assert!(h.accounts.revoke_device(revoked_id).unwrap());
+    h.accounts.expire_refresh_tokens_for_test();
+
+    let r = refresh(expired.clone()).await;
+    assert_eq!(r.status(), S::UNAUTHORIZED);
+    assert_eq!(r.headers()["clear-site-data"], "\"cache\"");
+    assert_eq!(
+        json_of(r).await,
+        json!({ "error": "invalid credentials", "reason": "expired" })
+    );
+    // Asking again changes nothing: the device was not signed out.
+    let again = json_of(refresh(expired).await).await;
+    assert_eq!(again["reason"], "expired");
+    for (what, token) in [
+        ("revoked", token_of(&revoked_v)),
+        ("reused", reused),
+        ("made up", "f".repeat(64)),
+        ("empty", String::new()),
+    ] {
+        let r = refresh(token).await;
+        assert_eq!(r.status(), S::UNAUTHORIZED, "{what}");
+        assert_eq!(
+            json_of(r).await,
+            json!({ "error": "invalid credentials" }),
+            "{what}: no reason"
+        );
+    }
+    // A browser's expired cookie is told the same.
+    let browser = h.login("alice", PW, &[CLIENT]).await;
+    let cookie = cookie_value(&cookie_from(&browser).unwrap());
+    h.accounts.expire_refresh_tokens_for_test();
+    let r = reqwest::Client::new()
+        .post(h.url("/v1/auth/refresh"))
+        .header(CLIENT.0, CLIENT.1)
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(json_of(r).await["reason"], "expired");
+}
+
+/// Spend the strangers' shared budget for alice's username: throttle it from many
+/// forwarded addresses, then use the two attempts a minute it leaves.
+async fn throttle_alice(h: &Harness) {
+    for i in 0..7 {
+        let ip = format!("198.51.100.{}", i + 100);
+        let r = h
+            .login(
+                "alice",
+                "wrong password!",
+                &[
+                    CLIENT,
+                    ("x-forwarded-proto", "https"),
+                    ("x-forwarded-for", &ip),
+                ],
+            )
+            .await;
+        assert_eq!(r.status(), S::UNAUTHORIZED, "{ip}");
+    }
+}
+
+/// Regression (review M5): once a stranger had throttled alice's username and spent the
+/// shared budget, alice could not sign in again even on her own device. A device that
+/// shows the refresh token it holds (in the body, or the browser's cookie) is held to a
+/// limit of its own instead.
+#[tokio::test]
+async fn the_owners_own_device_signs_in_while_strangers_spend_the_budget() {
+    let h = harness().await;
+    let app = json_of(
+        h.post(
+            "/v1/auth/login",
+            json!({ "username": "alice", "password": PW, "device_name": "Phone", "refresh": "body" }),
+            &[CLIENT],
+        )
+        .await,
+    )
+    .await;
+    let app_id = app["device"]["id"].as_i64().unwrap();
+    let app_token = app["refresh_token"].as_str().unwrap().to_string();
+    let browser = h.login("alice", PW, &[CLIENT]).await;
+    let cookie = cookie_value(&cookie_from(&browser).unwrap());
+    let browser_id = json_of(browser).await["device"]["id"].as_i64().unwrap();
+    // The sign-ins run out (the rows stay known: see the expiry test).
+    h.accounts.expire_refresh_tokens_for_test();
+    throttle_alice(&h).await;
+    async fn login(h: &Harness, body: Value, extra: &[(&str, &str)]) -> reqwest::Response {
+        let mut headers = vec![
+            CLIENT,
+            ("x-forwarded-proto", "https"),
+            ("x-forwarded-for", "203.0.113.50"),
+        ];
+        headers.extend_from_slice(extra);
+        h.post("/v1/auth/login", body, &headers).await
+    }
+    // A stranger (or the owner on a new device) waits.
+    let r = login(
+        &h,
+        json!({ "username": "alice", "password": PW, "device_name": "x" }),
+        &[],
+    )
+    .await;
+    assert_eq!(r.status(), S::TOO_MANY_REQUESTS);
+    // The app, with its token: in, on the same device.
+    let r = login(
+        &h,
+        json!({ "username": "alice", "password": PW, "device_name": "Phone",
+                "device_id": app_id, "refresh_token": app_token, "refresh": "body" }),
+        &[],
+    )
+    .await;
+    assert_eq!(r.status(), S::OK);
+    assert_eq!(json_of(r).await["device"]["id"], app_id);
+    // The browser, with its cookie.
+    let r = login(
+        &h,
+        json!({ "username": "alice", "password": PW, "device_name": "Browser",
+                "device_id": browser_id }),
+        &[("cookie", &cookie)],
+    )
+    .await;
+    assert_eq!(r.status(), S::OK);
+    assert_eq!(json_of(r).await["device"]["id"], browser_id);
+    // A device id with a made-up token proves nothing.
+    let r = login(
+        &h,
+        json!({ "username": "alice", "password": PW, "device_name": "x",
+                "device_id": app_id, "refresh_token": "f".repeat(64) }),
+        &[],
+    )
+    .await;
+    assert_eq!(r.status(), S::TOO_MANY_REQUESTS);
+    // A token that isn't a string is a malformed request.
+    let r = login(
+        &h,
+        json!({ "username": "alice", "password": PW, "device_name": "x",
+                "device_id": app_id, "refresh_token": 7 }),
+        &[],
+    )
+    .await;
+    assert_eq!(r.status(), S::BAD_REQUEST);
+}
+
+/// Review test gap: too many password checks at once is 503 with `Retry-After: 1`, at
+/// the HTTP level, and it costs no lockout.
+#[tokio::test]
+async fn busy_password_checks_answer_503_with_retry_after() {
+    let h = harness().await;
+    let held = h.accounts.hold_password_checks_for_test();
+    let r = h.login("alice", PW, &[CLIENT]).await;
+    assert_eq!(r.status(), S::SERVICE_UNAVAILABLE);
+    assert_eq!(r.headers()["retry-after"], "1");
+    assert_eq!(
+        json_of(r).await,
+        json!({ "error": "busy; try again shortly" })
+    );
+    // The account changes that check the password answer the same.
+    let r = bearer_post(
+        &h,
+        "/v1/account/totp/setup",
+        &h.tok_a,
+        Some(json!({ "password": PW })),
+    )
+    .await;
+    assert_eq!(r.status(), S::SERVICE_UNAVAILABLE);
+    assert_eq!(r.headers()["retry-after"], "1");
+    drop(held);
+    // Not a failure: the right password signs in at once.
+    assert_eq!(h.login("alice", PW, &[CLIENT]).await.status(), S::OK);
+}
+
+/// Review test gap: arbitrary bytes, and arbitrary JSON of the right shape, sent to the
+/// unauthenticated sign-in endpoints never break them: every answer is one a client
+/// expects (never a 5xx other than 503), and the gateway carries on.
+#[tokio::test]
+async fn arbitrary_bodies_never_break_login_pair_or_refresh() {
+    let h = harness().await;
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let raw = |path: &'static str, body: Vec<u8>, i: usize| {
+        let url = h.url(path);
+        async move {
+            reqwest::Client::new()
+                .post(url)
+                .header(CLIENT.0, CLIENT.1)
+                .header("x-forwarded-proto", "https")
+                .header(
+                    "x-forwarded-for",
+                    format!("198.18.{}.{}", i / 250, i % 250 + 1),
+                )
+                .header("content-type", "application/json")
+                .body(body)
+                .send()
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+    let pieces: &[&str] = &[
+        "{",
+        "}",
+        "[",
+        "]",
+        ",",
+        ":",
+        "\"",
+        "\\",
+        "\\u0000",
+        "null",
+        "true",
+        "1e999",
+        "-0",
+        "\"username\"",
+        "\"password\"",
+        "\"code\"",
+        "\"device_name\"",
+        "\"device_id\"",
+        "\"refresh_token\"",
+        "\"refresh\"",
+        "\"totp\"",
+        "\"client_kind\"",
+        "\"alice\"",
+        "\"body\"",
+        "\"android\"",
+        "9223372036854775808",
+        "\u{202e}",
+        "é",
+    ];
+    let mut i = 0;
+    for path in ["/v1/auth/login", "/v1/auth/pair", "/v1/auth/refresh"] {
+        for round in 0..120 {
+            i += 1;
+            let body: Vec<u8> = if round % 2 == 0 {
+                let len = (next() % 300) as usize;
+                (0..len).map(|_| (next() >> 24) as u8).collect()
+            } else {
+                let mut s = String::new();
+                for _ in 0..(next() % 24) {
+                    s.push_str(pieces[(next() % pieces.len() as u64) as usize]);
+                }
+                s.into_bytes()
+            };
+            let status = raw(path, body.clone(), i).await;
+            assert!(
+                matches!(
+                    status,
+                    S::BAD_REQUEST
+                        | S::UNAUTHORIZED
+                        | S::PAYLOAD_TOO_LARGE
+                        | S::TOO_MANY_REQUESTS
+                        | S::SERVICE_UNAVAILABLE
+                ),
+                "{path} {status}: {:?}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+        // Well-formed requests of the right shape with hostile values.
+        fn junk(next: &mut impl FnMut() -> u64) -> String {
+            let n = next() % 40;
+            (0..n)
+                .map(|_| char::from_u32((next() % 0x2fff) as u32).unwrap_or('?'))
+                .collect()
+        }
+        for round in 0..30 {
+            i += 1;
+            let body = match path {
+                "/v1/auth/login" => json!({
+                    "username": junk(&mut next),
+                    "password": junk(&mut next),
+                    "device_name": junk(&mut next),
+                    "device_id": (next() as i64) >> (round % 64),
+                    "refresh_token": junk(&mut next),
+                }),
+                "/v1/auth/pair" => {
+                    json!({ "code": junk(&mut next), "device_name": junk(&mut next) })
+                }
+                _ => json!({ "refresh_token": junk(&mut next) }),
+            };
+            let status = raw(path, body.to_string().into_bytes(), i).await;
+            assert!(
+                matches!(
+                    status,
+                    S::UNAUTHORIZED | S::TOO_MANY_REQUESTS | S::SERVICE_UNAVAILABLE
+                ),
+                "{path} {status}: {body}"
+            );
+        }
+    }
+    // Still answering, and alice (from an address that sent none of it) signs in.
+    assert_eq!(h.login("alice", PW, &[CLIENT]).await.status(), S::OK);
+}
+
 #[tokio::test]
 async fn logout_revokes_the_device_and_clears_the_cookie() {
     let mut h = harness().await;
@@ -1129,7 +1459,9 @@ async fn totp_endpoints_require_auth_and_csrf_header() {
 }
 
 /// Regression: an access token alone (e.g. one lifted from a shared browser) could turn on
-/// two-step with the thief's authenticator, locking the owner out.
+/// two-step with the thief's authenticator, locking the owner out. Changed deliberately
+/// (review M10): a wrong password is 403, as for a password change, not the 401 clients
+/// take for an expired token (renewing and sending the same guess again).
 #[tokio::test]
 async fn totp_setup_needs_the_password() {
     let h = harness().await;
@@ -1137,16 +1469,19 @@ async fn totp_setup_needs_the_password() {
     for (body, want) in [
         (None, S::BAD_REQUEST),
         (Some(json!({})), S::BAD_REQUEST),
-        (
-            Some(json!({ "password": "wrong password!" })),
-            S::UNAUTHORIZED,
-        ),
+        (Some(json!({ "password": "wrong password!" })), S::FORBIDDEN),
         (Some(json!({ "password": PW, "extra": 1 })), S::BAD_REQUEST),
     ] {
         let r = bearer_post(&h, "/v1/account/totp/setup", &token, body.clone()).await;
         assert_eq!(r.status(), want, "{body:?}");
         let v: Value = r.json().await.unwrap();
         assert!(v.get("secret").is_none(), "{v}");
+        if want == S::FORBIDDEN {
+            assert_eq!(
+                v,
+                json!({ "error": "the current password or two-step code is wrong" })
+            );
+        }
     }
     // Nothing was started, so there is nothing to confirm.
     let r = bearer_post(
@@ -1160,19 +1495,32 @@ async fn totp_setup_needs_the_password() {
     enrol_alice(&h).await;
 }
 
+/// Wrong credentials are 403 with the password change's error (review M10), so a client
+/// never renews its token and sends the same guess twice.
 #[tokio::test]
 async fn totp_disable_needs_password_and_code() {
     let h = harness().await;
     let secret = enrol_alice(&h).await;
     let token = h.tok_a.clone();
-    let bad = bearer_post(
-        &h,
-        "/v1/account/totp/disable",
-        &token,
-        Some(json!({ "password": "wrong password!", "code": code_for(&secret, 1) })),
-    )
-    .await;
-    assert_eq!(bad.status(), S::UNAUTHORIZED);
+    for bad in [
+        json!({ "password": "wrong password!", "code": code_for(&secret, 1) }),
+        json!({ "password": PW, "code": "000000" }),
+    ] {
+        let r = bearer_post(&h, "/v1/account/totp/disable", &token, Some(bad.clone())).await;
+        assert_eq!(r.status(), S::FORBIDDEN, "{bad}");
+        assert_eq!(
+            json_of(r).await,
+            json!({ "error": "the current password or two-step code is wrong" })
+        );
+    }
+    // The access token is still good: nothing about it was wrong.
+    let me = reqwest::Client::new()
+        .get(h.url("/v1/me"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(me.status(), S::OK);
     let ok = bearer_post(
         &h,
         "/v1/account/totp/disable",

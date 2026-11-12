@@ -711,7 +711,7 @@ async fn slow_request_heads_are_cut_off() {
     let h = harness().await;
     let addr = served(&h, short()).await;
     let mut s = TcpStream::connect(addr).await.unwrap();
-    s.write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\n")
+    s.write_all(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\n")
         .await
         .unwrap();
     // Trickle a header byte now and then: still cut off at the limit.
@@ -727,7 +727,7 @@ async fn idle_keepalive_connections_are_closed() {
     let h = harness().await;
     let addr = served(&h, short()).await;
     let mut s = TcpStream::connect(addr).await.unwrap();
-    s.write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n")
+    s.write_all(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
         .await
         .unwrap();
     let got = closed_within(&mut s, Duration::from_secs(2)).await;
@@ -741,7 +741,7 @@ async fn slow_request_bodies_get_408() {
     let addr = served(&h, ServeLimits::default()).await;
     let mut s = TcpStream::connect(addr).await.unwrap();
     let req = format!(
-        "POST /v1/rpc HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {}\r\n\
+        "POST /v1/rpc HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {}\r\n\
          Content-Type: application/json\r\nContent-Length: 100\r\n\r\n{{\"cmd\":",
         h.tok_a
     );
@@ -783,13 +783,13 @@ async fn oversize_rpc_bodies_are_refused_without_reading_them() {
     for req in [
         // Declares 100 000 bytes, sends 9 KiB, then waits.
         format!(
-            "POST /v1/rpc HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {}\r\n\
+            "POST /v1/rpc HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {}\r\n\
              Content-Type: application/json\r\nContent-Length: 100000\r\n\r\n{chunk}",
             h.tok_a
         ),
         // Chunked: one 9 KiB chunk, then nothing.
         format!(
-            "POST /v1/rpc HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {}\r\n\
+            "POST /v1/rpc HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {}\r\n\
              Content-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n\
              {:x}\r\n{chunk}\r\n",
             h.tok_a,
@@ -873,7 +873,7 @@ async fn websockets_count_against_the_connection_cap() {
         .unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
     let mut c = TcpStream::connect(addr).await.unwrap();
-    c.write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+    c.write_all(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
         .await
         .unwrap();
     let mut b = [0u8; 64];
@@ -926,7 +926,7 @@ async fn connections_beyond_the_cap_wait() {
     let _b = TcpStream::connect(addr).await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
     let mut c = TcpStream::connect(addr).await.unwrap();
-    c.write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+    c.write_all(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
         .await
         .unwrap();
     let mut b = [0u8; 64];

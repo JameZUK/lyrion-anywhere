@@ -377,6 +377,204 @@ async fn the_tls_refusal_carries_the_security_headers() {
     }
 }
 
+/// Send `head` (a request head without its blank line) on a raw connection and return the
+/// status line's code.
+async fn raw_status(h: &Harness, head: &str) -> u16 {
+    let mut s = TcpStream::connect(h.addr).await.unwrap();
+    s.write_all(format!("{head}\r\nConnection: close\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut got = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(5), s.read_to_end(&mut got)).await;
+    let text = String::from_utf8_lossy(&got);
+    text.split(' ')
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(0)
+}
+
+/// Review low: a page in a browser on the gateway's own machine could rebind its name to
+/// 127.0.0.1 and use the gateway as its own origin over plain HTTP (setting
+/// `X-Forwarded-For` and so choosing lockout keys). Plain HTTP from loopback must now name
+/// this machine; through a proxy nothing changes.
+#[tokio::test]
+async fn plain_http_from_loopback_must_name_this_machine() {
+    let h = harness().await;
+    let port = h.addr.port();
+    for host in [
+        format!("127.0.0.1:{port}"),
+        "127.0.0.1".to_string(),
+        format!("localhost:{port}"),
+        "LOCALHOST".to_string(),
+        format!("[::1]:{port}"),
+        "[::1]".to_string(),
+        format!("10.0.2.2:{port}"),
+    ] {
+        let code = raw_status(&h, &format!("GET /healthz HTTP/1.1\r\nHost: {host}")).await;
+        assert_eq!(code, 200, "{host}");
+    }
+    // No Host at all is no browser's (HTTP/1.0).
+    assert_eq!(raw_status(&h, "GET /healthz HTTP/1.0").await, 200);
+    for host in [
+        format!("evil.example:{port}"),
+        "evil.example".to_string(),
+        "localhost.evil.example".to_string(),
+        "app.localhost".to_string(),
+        "127.0.0.1.nip.io".to_string(),
+        "::1".to_string(),
+        "[::1".to_string(),
+        "[::1]x".to_string(),
+        "127.0.0.1:".to_string(),
+        "127.0.0.1:99999999".to_string(),
+        "127.0.0.1:80:80".to_string(),
+    ] {
+        let code = raw_status(&h, &format!("GET /healthz HTTP/1.1\r\nHost: {host}")).await;
+        assert_eq!(code, 421, "{host:?}");
+    }
+    // A rebinding page signing in with a forged address it chose: refused before anything.
+    let r = post(
+        &h,
+        "/v1/auth/login",
+        json!({ "username": "alice", "password": "wrong password!", "device_name": "x" }),
+        &[CLIENT, ("host", "evil.example")],
+    )
+    .await;
+    assert_eq!(r.status(), S::MISDIRECTED_REQUEST);
+    assert!(r.headers().contains_key("content-security-policy"));
+    // Through the (loopback) proxy, its own public name is fine.
+    let r = reqwest::Client::new()
+        .get(h.url("/healthz"))
+        .header("host", "music.example.com")
+        .header("x-forwarded-proto", "https")
+        .header("x-forwarded-for", "198.51.100.7")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), S::OK);
+}
+
+/// Review low: HTTPS ended at the proxy got no `Strict-Transport-Security`. It does now;
+/// plain HTTP never does (browsers ignore it there anyway, and it would say nothing true).
+#[tokio::test]
+async fn https_through_the_proxy_gets_hsts() {
+    let h = harness().await;
+    let c = reqwest::Client::new();
+    for path in ["/healthz", "/v1/me", "/nothing"] {
+        let r = c
+            .get(h.url(path))
+            .header("x-forwarded-proto", "https")
+            .header("x-forwarded-for", "198.51.100.7")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            r.headers()
+                .get("strict-transport-security")
+                .map(|v| v.to_str().unwrap()),
+            Some("max-age=31536000"),
+            "{path}"
+        );
+        let r = c.get(h.url(path)).send().await.unwrap();
+        assert!(
+            !r.headers().contains_key("strict-transport-security"),
+            "{path} over plain HTTP"
+        );
+    }
+    // Refused as not HTTPS: no HSTS either.
+    let r = c
+        .get(h.url("/healthz"))
+        .header("x-forwarded-proto", "http")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), S::FORBIDDEN);
+    assert!(!r.headers().contains_key("strict-transport-security"));
+}
+
+/// Review low: an `X-Forwarded-Proto` that isn't readable text counted as absent, so from
+/// loopback the request passed as local plain HTTP, while the cookie and origin checks took
+/// it as proxied. It is now refused, as any proxy header that doesn't say `https`.
+#[tokio::test]
+async fn an_unreadable_forwarded_proto_is_refused() {
+    let h = harness().await;
+    for value in [&b"\xffhttps"[..], b"https\xff", b"\x80"] {
+        let mut req = Vec::new();
+        req.extend_from_slice(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Forwarded-Proto: ");
+        req.extend_from_slice(value);
+        req.extend_from_slice(b"\r\nConnection: close\r\n\r\n");
+        let mut s = TcpStream::connect(h.addr).await.unwrap();
+        s.write_all(&req).await.unwrap();
+        let mut got = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_secs(5), s.read_to_end(&mut got)).await;
+        assert!(
+            String::from_utf8_lossy(&got).starts_with("HTTP/1.1 403"),
+            "{value:?}: {}",
+            String::from_utf8_lossy(&got)
+        );
+    }
+}
+
+/// Review low: every path's body was read up to 1 MiB before any handler (and its
+/// authentication) ran. Sign-in, account and device paths now take at most 4 KiB, refused
+/// as soon as that is declared or has arrived.
+#[tokio::test]
+async fn small_endpoints_read_small_bodies_only() {
+    let h = harness().await;
+    for path in [
+        "/v1/auth/login",
+        "/v1/auth/pair",
+        "/v1/auth/refresh",
+        "/v1/account/password",
+        "/v1/devices/pair",
+        "/v1/players/02:4c:41:00:00:01/queue/edit",
+        "/nothing/here",
+    ] {
+        // Declared too big: refused at once.
+        let code = raw_status(
+            &h,
+            &format!(
+                "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Anywhere-Client: 1\r\n\
+                 Content-Type: application/json\r\nContent-Length: 5000"
+            ),
+        )
+        .await;
+        assert_eq!(code, 413, "{path}");
+        // Sent too big, chunked: refused once 4 KiB has arrived, without waiting for more.
+        let mut s = TcpStream::connect(h.addr).await.unwrap();
+        let chunk = "x".repeat(5000);
+        s.write_all(
+            format!(
+                "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Anywhere-Client: 1\r\n\
+                 Content-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n\
+                 {:x}\r\n{chunk}\r\n",
+                chunk.len()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+        let mut b = [0u8; 64];
+        let n = tokio::time::timeout(Duration::from_secs(3), s.read(&mut b))
+            .await
+            .expect("answered without waiting for the rest")
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&b[..n]).starts_with("HTTP/1.1 413"),
+            "{path}: {}",
+            String::from_utf8_lossy(&b[..n])
+        );
+    }
+    // A full-size sign-in body still gets through to the handler.
+    let r = post(
+        &h,
+        "/v1/auth/login",
+        json!({ "username": "alice", "password": PW, "device_name": "y".repeat(3500) }),
+        &[CLIENT],
+    )
+    .await;
+    assert_eq!(r.status(), S::OK);
+}
+
 /// Regression: `http://{Host}` was accepted as same-origin even through the TLS proxy.
 #[tokio::test]
 async fn plain_http_origins_are_refused_through_the_proxy() {

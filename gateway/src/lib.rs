@@ -328,6 +328,9 @@ pub struct Gateway {
     /// "Your devices" requests per asking device ([`DEVICE_REQUESTS_PER_WINDOW`] per
     /// [`DEVICE_REQUEST_WINDOW`]).
     device_requests: plays::Window,
+    /// `POST /v1/devices/pair` requests per asking device ([`PAIRING_REQUESTS_PER_WINDOW`]
+    /// per [`PAIRING_REQUEST_WINDOW`]).
+    pairing_requests: plays::Window,
     /// Requests to `/v1/me/…` per user a minute.
     me_requests: plays::Window,
     /// Users with an offline ratings batch in flight (one at a time each).
@@ -365,6 +368,11 @@ pub const RENAME_WINDOW: Duration = Duration::from_secs(60);
 /// [`DEVICE_REQUEST_WINDOW`], across all their devices.
 pub const DEVICE_REQUESTS_PER_WINDOW: usize = 30;
 pub const DEVICE_REQUEST_WINDOW: Duration = Duration::from_secs(60);
+/// Requests for a pairing code (`POST /v1/devices/pair`) one device may make per
+/// [`PAIRING_REQUEST_WINDOW`], whatever their outcome; beyond that, 429 before the database
+/// is touched. A user may make only 5 codes an hour anyway.
+pub const PAIRING_REQUESTS_PER_WINDOW: usize = 10;
+pub const PAIRING_REQUEST_WINDOW: Duration = Duration::from_secs(60);
 
 pub type AppState = Arc<Gateway>;
 
@@ -421,6 +429,10 @@ impl Gateway {
             plays: plays::PlayLimits::new(cfg.plays_requests_per_minute, cfg.plays_per_hour),
             renames: plays::Window::new(RENAMES_PER_WINDOW, RENAME_WINDOW),
             device_requests: plays::Window::new(DEVICE_REQUESTS_PER_WINDOW, DEVICE_REQUEST_WINDOW),
+            pairing_requests: plays::Window::new(
+                PAIRING_REQUESTS_PER_WINDOW,
+                PAIRING_REQUEST_WINDOW,
+            ),
             me_requests: plays::Window::new(
                 history::ME_REQUESTS_PER_MINUTE,
                 Duration::from_secs(60),
@@ -738,7 +750,10 @@ pub fn router(state: AppState) -> Router {
         state.clone(),
         require_secure_transport,
     ))
-    .layer(middleware::from_fn(security_headers))
+    .layer(middleware::from_fn_with_state(
+        state.clone(),
+        security_headers,
+    ))
     .with_state(state)
 }
 
@@ -755,10 +770,29 @@ const PERMISSIONS_POLICY: &str = "accelerometer=(), ambient-light-sensor=(), aut
      publickey-credentials-get=(), screen-wake-lock=(self), serial=(), usb=(), \
      xr-spatial-tracking=()";
 
-async fn security_headers(req: Request, next: Next) -> Response {
+/// HSTS for responses to HTTPS through a trusted proxy: a year, this host only (the
+/// gateway can't speak for other names under the same domain). Browsers ignore it over a
+/// connection with certificate errors and for IP addresses, so a LAN proxy with a
+/// self-signed certificate is not pinned by it.
+const HSTS: &str = "max-age=31536000";
+
+async fn security_headers(
+    State(gw): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    req: Request,
+    next: Next,
+) -> Response {
     let path = req.uri().path().to_owned();
+    // Review low: no HSTS anywhere, the built-in tunnel's listener included.
+    let https = https_through_a_proxy(&gw.cfg, peer.ip(), req.headers());
     let mut resp = next.run(req).await;
     let h = resp.headers_mut();
+    if https {
+        h.insert(
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static(HSTS),
+        );
+    }
     // Web app files: content-hashed ones never change; everything else (the page, the player
     // worker, worklet and WebAssembly, which keep their names) must be revalidated, or
     // browsers keep running an old player after an update.
@@ -878,7 +912,8 @@ async fn note_device_use(
 /// Refuse remote requests that didn't arrive over TLS: either via a trusted reverse proxy
 /// reporting `X-Forwarded-Proto: https`, or plain HTTP with no proxy headers from loopback
 /// (local development) or from one of the admin's trusted networks (their VPN,
-/// `--trusted-network`). See [`secure_transport`].
+/// `--trusted-network`). See [`secure_transport`]. Plain HTTP from loopback must also
+/// name this machine in `Host` (see [`names_this_machine`]).
 async fn require_secure_transport(
     State(gw): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -886,8 +921,23 @@ async fn require_secure_transport(
     next: Next,
 ) -> Response {
     if !secure_transport(&gw.cfg, peer.ip(), req.headers()) {
-        warn!(peer = %canonical(peer.ip()), path = %req.uri().path(), "refused insecure request");
+        static REFUSED: limits::LogBudget = limits::LogBudget::new();
+        if let Some(suppressed) = REFUSED.allow(std::time::Instant::now()) {
+            warn!(
+                peer = %canonical(peer.ip()),
+                path = %limits::log_path(req.uri().path()),
+                suppressed,
+                "refused insecure request"
+            );
+        }
         return (StatusCode::FORBIDDEN, "TLS required\n").into_response();
+    }
+    if !loopback_host_ok(peer.ip(), req.headers()) {
+        return (
+            StatusCode::MISDIRECTED_REQUEST,
+            "plain HTTP from this machine is answered for localhost or an IP address only\n",
+        )
+            .into_response();
     }
     next.run(req).await
 }
@@ -897,17 +947,67 @@ async fn require_secure_transport(
 /// trusted network, with no proxy header at all. Nothing a client sends can widen this: a
 /// peer that isn't a trusted proxy is refused the moment it sends a proxy header, wherever
 /// it is. With no trusted networks configured (the default) this is the rule it always was.
+/// An `X-Forwarded-Proto` that isn't readable text counts as there and not `https` (review
+/// low: it counted as absent here, but as present for the cookie and the origin checks).
 fn secure_transport(cfg: &Config, peer: IpAddr, headers: &HeaderMap) -> bool {
     let ip = canonical(peer);
     let trusted = is_trusted_proxy(cfg, ip);
-    let proto = headers
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok());
+    let proto = headers.get("x-forwarded-proto");
     let proxied = headers.contains_key("x-forwarded-for") || proto.is_some();
     match proto {
-        Some(p) => trusted && p.eq_ignore_ascii_case("https"),
+        Some(p) => trusted && forwarded_https(p),
         None => (ip.is_loopback() || on_trusted_network(cfg, ip)) && !proxied,
     }
+}
+
+/// An `X-Forwarded-Proto` value saying `https` (any case).
+fn forwarded_https(v: &HeaderValue) -> bool {
+    v.to_str().is_ok_and(|p| p.eq_ignore_ascii_case("https"))
+}
+
+/// HTTPS ended at a trusted proxy in front of us (the tunnel's `cloudflared` included): the
+/// one case in which `Strict-Transport-Security` is sent.
+fn https_through_a_proxy(cfg: &Config, peer: IpAddr, headers: &HeaderMap) -> bool {
+    is_trusted_proxy(cfg, peer)
+        && headers
+            .get("x-forwarded-proto")
+            .is_some_and(forwarded_https)
+}
+
+/// Plain HTTP from loopback (no proxy headers) must name this machine in `Host`: an IP
+/// address or `localhost`, with any port, or no `Host` at all. Review low: a page in a
+/// browser on the gateway's machine could rebind its own name to 127.0.0.1 and talk to the
+/// gateway as same-origin; its `Host` is that name, which is refused here. Requests through
+/// a proxy (and from trusted networks) are not affected.
+fn loopback_host_ok(peer: IpAddr, headers: &HeaderMap) -> bool {
+    let plain_loopback = canonical(peer).is_loopback()
+        && !headers.contains_key("x-forwarded-for")
+        && !headers.contains_key("x-forwarded-proto");
+    if !plain_loopback {
+        return true;
+    }
+    match headers.get(header::HOST) {
+        None => true,
+        Some(h) => h.to_str().is_ok_and(names_this_machine),
+    }
+}
+
+/// `host[:port]` where host is an IPv4 address, a bracketed IPv6 address or `localhost`.
+fn names_this_machine(host: &str) -> bool {
+    let port_ok = |p: &str| !p.is_empty() && p.len() <= 5 && p.bytes().all(|b| b.is_ascii_digit());
+    if let Some(rest) = host.strip_prefix('[') {
+        let Some((v6, after)) = rest.split_once(']') else {
+            return false;
+        };
+        return v6.parse::<std::net::Ipv6Addr>().is_ok()
+            && (after.is_empty() || after.strip_prefix(':').is_some_and(port_ok));
+    }
+    let name = match host.split_once(':') {
+        Some((name, port)) if port_ok(port) => name,
+        Some(_) => return false,
+        None => host,
+    };
+    name.parse::<Ipv4Addr>().is_ok() || name.eq_ignore_ascii_case("localhost")
 }
 
 /// The peer is inside one of the admin's trusted networks (`--trusted-network`). Loopback
@@ -1397,6 +1497,110 @@ mod tests {
         assert!(!ok("10.0.0.10", &[]));
         assert!(ok("127.0.0.1", &[]));
         assert!(!ok("127.0.0.1", &[("x-forwarded-proto", "http")]));
+    }
+
+    /// Regression (review low): an `X-Forwarded-Proto` that isn't readable text counted as
+    /// absent here (so loopback passed as local plain HTTP) and as present elsewhere.
+    #[test]
+    fn an_unreadable_forwarded_proto_is_never_https() {
+        let cfg = trusted_networks_cfg();
+        for bytes in [&b"\xffhttps"[..], b"https\xff", b"\x80", b"htt\xffps"] {
+            let mut h = HeaderMap::new();
+            h.insert("x-forwarded-proto", HeaderValue::from_bytes(bytes).unwrap());
+            for peer in ["127.0.0.1", "10.0.0.10", "10.8.0.5", "203.0.113.9"] {
+                assert!(
+                    !secure_transport(&cfg, peer.parse().unwrap(), &h),
+                    "{peer} {bytes:?}"
+                );
+                assert!(!https_through_a_proxy(&cfg, peer.parse().unwrap(), &h));
+            }
+        }
+        // Readable values as before.
+        let h = headers(&[("x-forwarded-proto", "HTTPS")]);
+        assert!(https_through_a_proxy(
+            &cfg,
+            "10.0.0.10".parse().unwrap(),
+            &h
+        ));
+        assert!(!https_through_a_proxy(
+            &cfg,
+            "10.8.0.5".parse().unwrap(),
+            &h
+        ));
+    }
+
+    #[test]
+    fn only_addresses_and_localhost_name_this_machine() {
+        for ok in [
+            "127.0.0.1",
+            "127.0.0.1:9443",
+            "10.0.2.2:9443",
+            "localhost",
+            "LocalHost:80",
+            "[::1]",
+            "[::1]:9443",
+            "[fe80::1]:1",
+        ] {
+            assert!(names_this_machine(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "evil.example",
+            "evil.example:9443",
+            "localhost.evil.example",
+            "app.localhost",
+            "127.0.0.1.nip.io",
+            "::1",
+            "[::1",
+            "[::1]x",
+            "[::1]:",
+            "[evil.example]",
+            "127.0.0.1:",
+            "127.0.0.1:123456",
+            "127.0.0.1:80:80",
+            "127.0.0.1:-1",
+            "0x7f.1",
+            "localhost:abc",
+        ] {
+            assert!(!names_this_machine(bad), "{bad:?}");
+        }
+        // Arbitrary text never panics.
+        let mut rng = crate::flac_strip::tests::Rng::new(9);
+        let alphabet = b"[]:.0123456789abcdefxlocahst-";
+        for _ in 0..20_000 {
+            let n = rng.below(24) as usize;
+            let s: String = (0..n)
+                .map(|_| alphabet[rng.below(alphabet.len() as u64) as usize] as char)
+                .collect();
+            let _ = names_this_machine(&s);
+        }
+    }
+
+    #[test]
+    fn the_host_check_is_for_plain_http_from_loopback_only() {
+        let lo: IpAddr = "127.0.0.1".parse().unwrap();
+        let evil = headers(&[("host", "evil.example")]);
+        assert!(!loopback_host_ok(lo, &evil));
+        assert!(!loopback_host_ok("::1".parse().unwrap(), &evil));
+        assert!(!loopback_host_ok(
+            "::ffff:127.0.0.1".parse().unwrap(),
+            &evil
+        ));
+        assert!(loopback_host_ok(
+            lo,
+            &headers(&[("host", "localhost:9443")])
+        ));
+        assert!(loopback_host_ok(lo, &HeaderMap::new()));
+        // Through a proxy, or from elsewhere, the host is the proxy's or the network's.
+        let proxied = headers(&[
+            ("host", "music.example.com"),
+            ("x-forwarded-proto", "https"),
+        ]);
+        assert!(loopback_host_ok(lo, &proxied));
+        assert!(loopback_host_ok("10.8.0.5".parse().unwrap(), &evil));
+        let mut bad = HeaderMap::new();
+        bad.insert(header::HOST, HeaderValue::from_bytes(b"\xff").unwrap());
+        assert!(!loopback_host_ok(lo, &bad));
     }
 
     #[test]

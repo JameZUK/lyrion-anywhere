@@ -101,7 +101,16 @@ async fn guard(
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
     if !crate::canonical(peer.ip()).is_loopback() || proxied || !secret_eq(token, &st.secret) {
-        tracing::warn!(peer = %peer.ip(), path = %req.uri().path(), "admin API request refused");
+        // Rationed, with the path cut short (review low).
+        static REFUSED: crate::limits::LogBudget = crate::limits::LogBudget::new();
+        if let Some(suppressed) = REFUSED.allow(std::time::Instant::now()) {
+            tracing::warn!(
+                peer = %peer.ip(),
+                path = %crate::limits::log_path(req.uri().path()),
+                suppressed,
+                "admin API request refused"
+            );
+        }
         return StatusCode::FORBIDDEN.into_response();
     }
     next.run(req).await
