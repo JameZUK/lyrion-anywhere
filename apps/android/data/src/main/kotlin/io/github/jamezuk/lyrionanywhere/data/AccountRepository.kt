@@ -59,20 +59,38 @@ sealed interface AuthState {
     data class SignedInState(val server: ServerInfo, val who: SignedIn) : AuthState
 }
 
-/** The Rust objects for the signed-in server. */
-class Connection(val server: ServerInfo, val session: Session) {
-    val library = MusicLibrary(session)
-    val players = Players(session)
-    val art = Art(session)
-    val events = Events(session)
-    val analysis = Analysis(session)
-    val menus = Menus(session)
-    val me = Me(session)
-    val stations = StationRunner(me)
-    val routine = Routine(session)
-
+/**
+ * The Rust objects for one sign-in, over the account repository's [session]. The session is
+ * not this connection's: the repository keeps it for as long as it uses the server (signing
+ * in again there uses it again), so [close] closes only what the connection made.
+ */
+class Connection(
+    val server: ServerInfo,
+    val session: Session,
+    val library: MusicLibrary,
+    val players: Players,
+    val art: Art,
+    val events: Events,
+    val analysis: Analysis,
+    val menus: Menus,
+    val me: Me,
+    val stations: StationRunner,
+    val routine: Routine,
+) {
+    /** Close this sign-in's objects. Never the session: that is the repository's to close. */
     fun close() {
-        listOf(library, players, art, events, analysis, menus, stations, me, routine, session).forEach { it.close() }
+        listOf(library, players, art, events, analysis, menus, stations, me, routine).forEach { it.close() }
+    }
+
+    companion object {
+        /** A sign-in's objects over [session]. */
+        fun over(server: ServerInfo, session: Session): Connection {
+            val me = Me(session)
+            return Connection(
+                server, session, MusicLibrary(session), Players(session), Art(session), Events(session),
+                Analysis(session), Menus(session), me, StationRunner(me), Routine(session),
+            )
+        }
     }
 }
 
@@ -100,6 +118,7 @@ interface AccountRepository {
     /** Forget the server (only while signed out). */
     suspend fun forgetServer()
 
+    /** Sign in (only while not signed in: one sign-in ends before another starts). */
     suspend fun signIn(username: String, password: String, twoStepCode: String?): ApiResult<Unit>
 
     /**
@@ -110,11 +129,14 @@ interface AccountRepository {
 
     /**
      * Pair with a code; a QR code that names a server switches to it first (with
-     * [confirmedUnencrypted] as [useServer]'s).
+     * [confirmedUnencrypted] as [useServer]'s). Only while not signed in, as [signIn].
      */
     suspend fun pair(invite: PairingInvite, confirmedUnencrypted: Boolean = false): ApiResult<Unit>
 
-    /** Try the saved sign-in again (after [AuthState.Unreachable]). */
+    /**
+     * Try the saved sign-in again (after [AuthState.Unreachable], or a check that never
+     * finished). Does nothing in any other state: signed in, the sign-in is in use.
+     */
     suspend fun retry()
 
     /** Sign out. Returns false if the server couldn't be told (signed out here anyway). */
@@ -180,6 +202,8 @@ class RustAccountRepository(
         val s = Server(url)
         ServerInfo(s.url(), s.displayName(), s.isSecure()) to Session(s, secureStore, deviceName)
     },
+    /** Makes a sign-in's objects over the session (replaced in tests). */
+    private val connect: (ServerInfo, Session) -> Connection = Connection::over,
 ) : AccountRepository, ConnectionSource {
     private val _state = MutableStateFlow<AuthState>(AuthState.Starting)
     override val state: StateFlow<AuthState> = _state.asStateFlow()
@@ -187,11 +211,19 @@ class RustAccountRepository(
     override val connection: StateFlow<Connection?> = _connection.asStateFlow()
 
     private val lock = Mutex()
-    private var session: Session? = null
-    private var server: ServerInfo? = null
 
-    private val observer = object : SessionObserver {
+    /**
+     * The session for [server]. This repository owns it: it outlives each sign-in (signing in
+     * again on the server uses it again) and is closed only when the server changes
+     * ([open]) or is forgotten ([forgetServer]), never by a [Connection].
+     */
+    @Volatile private var session: Session? = null
+    @Volatile private var server: ServerInfo? = null
+
+    /** Told by [owner] that its sign-in ended (from any thread); ignored once it is replaced. */
+    private inner class SignOutObserver(private val owner: Session) : SessionObserver {
         override fun onSignedOut(revoked: Boolean) {
+            if (session !== owner) return
             val s = server ?: return
             dropConnection()
             _state.value = AuthState.SignedOut(s, revoked)
@@ -222,11 +254,14 @@ class RustAccountRepository(
     private suspend fun open(url: String): ApiResult<ServerInfo> = withContext(io) {
         try {
             val (info, sess) = openSession(url)
-            sess.setObserver(observer)
-            session?.close()
+            sess.setObserver(SignOutObserver(sess))
+            // The old session's sign-in objects go first, then the session itself (once
+            // replaced, so its observer no longer speaks for this repository).
             dropConnection()
+            val old = session
             session = sess
             server = info
+            old?.close()
             ApiResult.Ok(info)
         } catch (e: Exception) {
             ApiResult.Err(e.toAppError())
@@ -277,19 +312,27 @@ class RustAccountRepository(
             is ApiResult.Err -> _state.value = when (val e = r.error) {
                 is AppError.Offline -> AuthState.Unreachable(info, e.detail)
                 is AppError.RateLimited, is AppError.ServerBusy, is AppError.Server -> AuthState.Unreachable(info)
-                else -> AuthState.SignedOut(info, revoked = true)
+                // Refused. Only the session knows whether the server revoked this device
+                // (downloads go) or the sign-in merely ended, say expired (they stay): it has
+                // told the observer before failing. Nothing told: not a revocation.
+                else -> (_state.value as? AuthState.SignedOut)?.takeIf { it.server == info } ?: AuthState.SignedOut(info)
             }
         }
     }
 
     private fun signedIn(info: ServerInfo, sess: Session, who: SignedIn) {
         dropConnection()
-        _connection.value = Connection(info, sess)
+        _connection.value = connect(info, sess)
         _state.value = AuthState.SignedInState(info, who)
     }
 
     override suspend fun retry() = lock.withLock {
-        server?.let { restoreLocked(it) } ?: Unit
+        // Only a sign-in still waiting. Signed in, a restore would replace the connection in
+        // use; signed out, there is nothing to resume.
+        when (_state.value) {
+            is AuthState.Unreachable, is AuthState.Restoring -> server?.let { restoreLocked(it) } ?: Unit
+            else -> Unit
+        }
     }
 
     override suspend fun useServer(url: String, confirmedUnencrypted: Boolean): ApiResult<ServerInfo> = lock.withLock {
@@ -310,9 +353,11 @@ class RustAccountRepository(
 
     override suspend fun forgetServer() = lock.withLock {
         if (_state.value is AuthState.SignedInState) return@withLock
-        session?.close()
+        dropConnection()
+        val old = session
         session = null
         server = null
+        old?.close()
         withContext(io) { runCatching { secureStore.clear() } }
         settings.setServerUrl(null)
         _state.value = AuthState.NoServer
@@ -323,6 +368,7 @@ class RustAccountRepository(
         password: String,
         twoStepCode: String?,
     ): ApiResult<Unit> = lock.withLock {
+        if (_state.value is AuthState.SignedInState) return@withLock ApiResult.Err(AppError.Reason.SIGN_OUT_FIRST.error())
         val sess = session ?: return@withLock ApiResult.Err(AppError.Reason.CHOOSE_SERVER_FIRST.error())
         val info = server ?: return@withLock ApiResult.Err(AppError.Reason.CHOOSE_SERVER_FIRST.error())
         apiCall { sess.login(username, password, twoStepCode) }.map { signedIn(info, sess, it) }
@@ -342,6 +388,7 @@ class RustAccountRepository(
             if (switched is ApiResult.Err) return switched
         }
         return lock.withLock {
+            if (_state.value is AuthState.SignedInState) return@withLock ApiResult.Err(AppError.Reason.SIGN_OUT_FIRST.error())
             val sess = session ?: return@withLock ApiResult.Err(AppError.Reason.CHOOSE_SERVER_FIRST.error())
             val info = server ?: return@withLock ApiResult.Err(AppError.Reason.CHOOSE_SERVER_FIRST.error())
             apiCall { sess.pair(invite.code) }.map { signedIn(info, sess, it) }

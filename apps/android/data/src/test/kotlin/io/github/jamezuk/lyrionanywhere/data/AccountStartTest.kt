@@ -2,10 +2,7 @@ package io.github.jamezuk.lyrionanywhere.data
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import io.github.jamezuk.lyrionanywhere.core.ApiException
-import io.github.jamezuk.lyrionanywhere.core.NoHandle
 import io.github.jamezuk.lyrionanywhere.core.SecureStore
-import io.github.jamezuk.lyrionanywhere.core.Session
-import io.github.jamezuk.lyrionanywhere.core.SessionObserver
 import io.github.jamezuk.lyrionanywhere.core.SignedIn
 import io.github.jamezuk.lyrionanywhere.core.StoreException
 import io.github.jamezuk.lyrionanywhere.core.StoredCredentials
@@ -60,8 +57,11 @@ class AccountStartTest {
         }
     }
 
-    /** Behaves as the Rust session does: a store that fails to load reads as no sign-in. */
-    private class FakeSession(store: SecureStore) : Session(NoHandle) {
+    /**
+     * Behaves as the Rust session does: a store that fails to load reads as no sign-in. Like
+     * the binding, it throws once closed.
+     */
+    private class FakeSession(store: SecureStore) : TestSession() {
         val refresh: String? = try {
             store.load()?.refreshToken
         } catch (_: Exception) {
@@ -70,21 +70,17 @@ class AccountStartTest {
         var restores = 0
         var logouts = 0
 
-        override fun hasSignIn() = refresh != null
+        override fun onHasSignIn() = refresh != null
 
-        override suspend fun restore(): SignedIn {
+        override suspend fun onRestore(): SignedIn {
             restores++
             throw ApiException.Network("test: no network")
         }
 
-        override suspend fun logout(): Boolean {
+        override suspend fun onLogout(): Boolean {
             logouts++
             return true
         }
-
-        override fun setObserver(observer: SessionObserver) {}
-
-        override fun close() {}
     }
 
     private fun rig(store: FlakyStore): Pair<RustAccountRepository, MutableList<FakeSession>> {

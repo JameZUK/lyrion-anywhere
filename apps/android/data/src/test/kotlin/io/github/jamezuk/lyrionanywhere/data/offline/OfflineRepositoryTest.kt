@@ -145,6 +145,30 @@ class OfflineRepositoryTest {
     }
 
     @Test
+    fun aSignInThatEndedWithoutARevocationKeepsTheDownloads() = runTest {
+        // Review M18: an expired sign-in is reported as ended, not revoked (SPEC §8.5: only a
+        // revoked device deletes its downloads). Kept, and the user's again once signed in.
+        seed = { mutableListOf(offlineTrack(1)) }
+        val r = repo()
+        signIn()
+        val first = stores.single()
+        auth.value = AuthState.SignedOut(SERVER, revoked = false)
+        link.value = null
+        assertTrue(wiped.isEmpty())
+        assertTrue(first.closed)
+        assertEquals("alice", settings.state.value.offlineOwner)
+        signIn()
+        assertEquals(Owner(SERVER.url, "alice"), r.state.value.owner)
+        assertEquals(1, r.state.value.tracks.size)
+
+        // Found at start, the same.
+        auth.value = AuthState.Restoring(SERVER)
+        auth.value = AuthState.SignedOut(SERVER, revoked = false)
+        assertTrue(wiped.isEmpty())
+        assertEquals("alice", settings.state.value.offlineOwner)
+    }
+
+    @Test
     fun signingOutSendsPlaysThenKeepsOrRemovesAndForgetsTheUser() = runTest {
         seed = { mutableListOf(offlineTrack(1)) }
         val r = repo()
