@@ -95,14 +95,23 @@ internal class QrAnalyzer(private val onText: (String) -> Unit) : ImageAnalysis.
         }
     }
 
+    /**
+     * The text of a QR code in the frame, or null. Any frame at all is safe: one whose shape
+     * can't be right is refused, and whatever the decoder throws on odd pixels is nothing
+     * found (an exception here would end the camera's analysis thread, and the app).
+     */
     fun decode(luminance: ByteArray, rowStride: Int, width: Int, height: Int): String? {
-        if (luminance.size < rowStride * (height - 1) + width) return null
-        val source = PlanarYUVLuminanceSource(luminance, rowStride, height, 0, 0, width, height, false)
+        if (width <= 0 || height <= 0 || rowStride < width) return null
+        if (luminance.size.toLong() < rowStride.toLong() * (height - 1) + width) return null
         return try {
+            val source = PlanarYUVLuminanceSource(luminance, rowStride, height, 0, 0, width, height, false)
             reader.decodeWithState(BinaryBitmap(HybridBinarizer(source))).text
         } catch (_: NotFoundException) {
             null
         } catch (_: ReaderException) {
+            null
+        } catch (_: RuntimeException) {
+            // ZXing's own bugs on crafted or noisy pixels (index or argument errors).
             null
         } finally {
             reader.reset()

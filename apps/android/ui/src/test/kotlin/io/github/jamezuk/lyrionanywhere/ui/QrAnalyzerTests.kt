@@ -96,6 +96,57 @@ class QrAnalyzerTests {
     }
 
     @Test
+    fun framesWithImpossibleShapesAreRefusedNotRead() {
+        // A row stride narrower than the row, no rows, no columns, negative sizes: ZXing's
+        // luminance source throws IllegalArgumentException on these (review, 12 November).
+        val bytes = ByteArray(64 * 64) { 0x70 }
+        val a = QrAnalyzer {}
+        assertNull(a.decode(bytes, 32, 64, 64))
+        assertNull(a.decode(bytes, 64, 0, 64))
+        assertNull(a.decode(bytes, 64, 64, 0))
+        assertNull(a.decode(bytes, -64, 64, 1))
+        assertNull(a.decode(bytes, 64, -1, -1))
+        assertNull(a.decode(ByteArray(0), 0, 0, 0))
+    }
+
+    @Test
+    fun arbitraryFramesNeverThrow() {
+        // Robustness: random sizes, strides and contents, plain noise and blocky noise that
+        // looks enough like finder patterns to get the detector going, and a real code with
+        // bytes flipped at random. The decoder may find nothing; it must never throw.
+        val random = java.util.Random(0x51A7)
+        val a = QrAnalyzer {}
+        val real = frame(320, 240, pxPerModule = 4, left = 40, top = 30)
+        assertEquals(link, a.decode(real.bytes, real.stride, real.width, real.height))
+        repeat(300) { i ->
+            val width = random.nextInt(200) - 8
+            val height = random.nextInt(200) - 8
+            val stride = width + random.nextInt(24) - 12
+            val size = (random.nextInt(48_000)).coerceAtLeast(0)
+            val bytes = ByteArray(size)
+            when (i % 3) {
+                0 -> random.nextBytes(bytes)
+                1 -> {
+                    val block = 1 + random.nextInt(6)
+                    for (p in bytes.indices) {
+                        val x = if (stride > 0) (p % stride) / block else 0
+                        val y = if (stride > 0) (p / stride) / block else 0
+                        bytes[p] = if ((x * 31 + y * 17 + random.nextInt(3)) % 2 == 0) 0x10 else 0xf0.toByte()
+                    }
+                }
+                else -> {
+                    val b = real.bytes.copyOf()
+                    repeat(1 + random.nextInt(400)) { b[random.nextInt(b.size)] = random.nextInt(256).toByte() }
+                    a.decode(b, real.stride, real.width, real.height)
+                }
+            }
+            a.decode(bytes, stride, width, height)
+        }
+        // And it still reads a real code afterwards.
+        assertEquals(link, a.decode(real.bytes, real.stride, real.width, real.height))
+    }
+
+    @Test
     fun theAnalysisUseCaseAsksForTheLargerFrames() {
         val analysis = qrAnalysis(Executor { it.run() }, QrAnalyzer {})
         val strategy = analysis.resolutionSelector?.resolutionStrategy
