@@ -500,8 +500,9 @@ impl StreamCache {
             f.write_all(&serialise_index(&self.entries))?;
             f.sync_all()
         });
+        // The folder too, so the rename survives a power cut (review 2026-11-12).
         if ok.is_ok() {
-            let _ = fs::rename(&tmp, self.dir.join(INDEX));
+            let _ = crate::offline::store::rename_durably(&tmp, &self.dir.join(INDEX));
         } else {
             let _ = fs::remove_file(&tmp);
         }
@@ -659,7 +660,7 @@ impl StreamCache {
         }
         let to = self.file(&n.fp);
         let _ = fs::remove_file(&to); // a stray (never an entry's file: checked above)
-        fs::rename(from, &to).ok()?;
+        crate::offline::store::rename_durably(from, &to).ok()?;
         self.clock += 1;
         self.entries.push(Entry {
             fp: n.fp,
@@ -1191,6 +1192,26 @@ mod tests {
         assert!(c.adopt(&src2, new_entry(d(1), &bytes)).is_none());
         assert!(src2.exists(), "left to the spool to delete");
         assert_eq!(c.totals().count, 1);
+    }
+
+    /// Review 2026-11-12 (open since 10-15): the cache flushed a new file but not the
+    /// folder entry naming it, so a power cut could lose the rename (of the index, or of a
+    /// stream moved in). Both flush the folder now.
+    #[test]
+    fn moving_a_stream_in_and_saving_the_index_flush_the_folder() {
+        use crate::offline::store::SYNCED_DIRS;
+        let root = temp_root();
+        let mut c = open(&root, 1 << 30);
+        let bytes = vec![5u8; 3000];
+        let src = spool_file(&root, "3.spool", &bytes);
+        SYNCED_DIRS.with(|s| s.borrow_mut().clear());
+        c.adopt(&src, new_entry(d(3), &bytes)).unwrap();
+        let synced = SYNCED_DIRS.with(|s| s.borrow().clone());
+        let dir = cache_dir(&root);
+        assert!(
+            synced.iter().filter(|p| **p == dir).count() >= 2,
+            "the stream's move and the index's: {synced:?}"
+        );
     }
 
     #[test]

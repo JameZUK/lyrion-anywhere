@@ -83,6 +83,9 @@ enum Step {
     Unavailable,
     /// Hold the answer until notified (then as `Normal`).
     Stall(Arc<tokio::sync::Notify>),
+    /// The file changed on the server (a transcode evicted and made again, say): from now
+    /// on serve these bytes, with this ETag (`None`: none), then as `Normal`.
+    Replace(Vec<u8>, Option<String>),
 }
 
 #[derive(Default)]
@@ -101,6 +104,12 @@ struct Script {
     /// Every track's `/info` names this track's stable key (one file under several ids,
     /// as after a rescan).
     shared_key: Option<i64>,
+    /// The file's ETag, sent with every audio answer when set.
+    etag: Option<String>,
+    /// Answer `Range` even when `If-Range` names another version (a server that ignores it).
+    ignore_if_range: bool,
+    /// The `If-Range` of every audio request.
+    if_ranges: Vec<Option<String>>,
 }
 
 struct Fake {
@@ -235,19 +244,29 @@ async fn handle(s: Arc<Mutex<Script>>, tokens: Arc<AtomicUsize>, req: Request) -
                 "formats": ["original", "mp3", "opus"]}),
         );
     }
-    let (file, step) = {
+    let if_range = headers
+        .get("if-range")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let (file, step, etag, ignore_if_range) = {
         let mut st = s.lock().unwrap();
-        (
-            st.file.clone(),
-            st.steps.pop_front().unwrap_or(Step::Normal),
-        )
+        st.if_ranges.push(if_range.clone());
+        let step = st.steps.pop_front().unwrap_or(Step::Normal);
+        if let Step::Replace(file, etag) = &step {
+            st.file = file.clone();
+            st.etag = etag.clone();
+            st.info_size = Some(file.len() as u64);
+        }
+        (st.file.clone(), step, st.etag.clone(), st.ignore_if_range)
     };
     let total = file.len();
     let start = range
         .as_deref()
         .and_then(|r| r.strip_prefix("bytes="))
         .and_then(|r| r.strip_suffix('-'))
-        .and_then(|n| n.parse::<usize>().ok());
+        .and_then(|n| n.parse::<usize>().ok())
+        // `If-Range` naming another version: the whole file instead (RFC 9110 §13.1.5).
+        .filter(|_| ignore_if_range || if_range.is_none() || if_range == etag);
     let partial = |from: usize| -> Response {
         let mut r = Response::new(Body::from(file[from..].to_vec()));
         *r.status_mut() = StatusCode::PARTIAL_CONTENT;
@@ -261,8 +280,8 @@ async fn handle(s: Arc<Mutex<Script>>, tokens: Arc<AtomicUsize>, req: Request) -
         h.insert("content-type", "audio/flac".parse().unwrap());
         r
     };
-    match step {
-        Step::Normal => match start {
+    let mut answer = match step {
+        Step::Normal | Step::Replace(..) => match start {
             Some(a) if a < total => partial(a),
             Some(_) => json_resp(
                 StatusCode::RANGE_NOT_SATISFIABLE,
@@ -349,7 +368,13 @@ async fn handle(s: Arc<Mutex<Script>>, tokens: Arc<AtomicUsize>, req: Request) -
                 _ => ([("content-type", "audio/flac")], file).into_response(),
             }
         }
+    };
+    if let Some(e) = etag
+        && answer.status().is_success()
+    {
+        answer.headers_mut().insert("etag", e.parse().unwrap());
     }
+    answer
 }
 
 // --- Observer --------------------------------------------------------------------------
@@ -358,10 +383,12 @@ async fn handle(s: Arc<Mutex<Script>>, tokens: Arc<AtomicUsize>, req: Request) -
 struct Seen {
     last: Mutex<Option<DownloadsSnapshot>>,
     library_changes: AtomicUsize,
+    snapshots: AtomicUsize,
 }
 
 impl DownloadObserver for Seen {
     fn on_downloads(&self, snapshot: DownloadsSnapshot) {
+        self.snapshots.fetch_add(1, Ordering::SeqCst);
         *self.last.lock().unwrap() = Some(snapshot);
     }
 
@@ -630,6 +657,139 @@ async fn a_416_or_a_misplaced_range_starts_again() {
     wait_state(&s.seen, 5, DownloadState::Done, 20).await;
     assert_eq!(stored(&s), file, "never spliced at the wrong place");
     assert_eq!(s.fake.audio_requests()[2].0, None);
+}
+
+/// Review 2026-11-12 (open since 10-15): every change to a download (each one described,
+/// waiting or finished, and every request from the app) sent the whole list, up to 10,000
+/// items, to the app at once, so a batch finishing sent it several times per download.
+/// Snapshots now come at most every 300 ms, and the last change always gets one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_batch_of_downloads_sends_the_list_a_few_times_only() {
+    let s = setup(audio(2000), vec![], DownloadPolicy::default()).await;
+    wait_for("the first snapshot", || {
+        s.seen.snapshots.load(Ordering::SeqCst) > 0
+    })
+    .await;
+    let before = s.seen.snapshots.load(Ordering::SeqCst);
+    let started = std::time::Instant::now();
+    s.dl.enqueue((1..=40).map(manual).collect(), FormatChoice::Original);
+    for id in 1..=40 {
+        wait_state(&s.seen, id, DownloadState::Done, 30).await;
+    }
+    let took = started.elapsed();
+    let sent = s.seen.snapshots.load(Ordering::SeqCst) - before;
+    let allowed = (took.as_millis() / 300) as usize + 2;
+    assert!(sent <= allowed, "{sent} snapshots in {took:?}");
+    assert_eq!(s.lib.tracks().len(), 40);
+    assert!(
+        s.seen
+            .snap()
+            .items
+            .iter()
+            .all(|i| i.state == DownloadState::Done),
+        "the last change was sent"
+    );
+    assert_eq!(s.dl.snapshot(), s.seen.snap());
+}
+
+/// The same number of bytes as `audio(n)`, all different from it.
+fn other_audio(n: usize) -> Vec<u8> {
+    audio(n).into_iter().map(|b| b ^ 0x5a).collect()
+}
+
+/// Review 2026-11-12: a resume sent `Range` with nothing to check that the rest belonged to
+/// the same file, so a transcode the gateway evicted and made again between two attempts
+/// was stitched onto the first one's bytes. What the server said of the whole file is kept
+/// beside the partial file now: a resume whose whole size differs starts again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resume_of_a_file_that_changed_size_starts_again() {
+    let (first, second) = (audio(60_000), other_audio(70_000));
+    let s = setup(
+        first,
+        vec![Step::CutAfter(20_000), Step::Replace(second.clone(), None)],
+        DownloadPolicy::default(),
+    )
+    .await;
+    s.dl.enqueue(vec![manual(5)], FormatChoice::Opus);
+    wait_state(&s.seen, 5, DownloadState::Done, 30).await;
+    assert!(stored(&s) == second, "never two files stitched together");
+    let reqs = s.fake.audio_requests();
+    assert_eq!(reqs[1].0.as_deref(), Some("bytes=20000-"), "a resume first");
+    assert_eq!(reqs.len(), 3, "{reqs:?}");
+    assert_eq!(reqs[2].0, None, "then the new file from the start");
+    // Nothing is left beside the finished file.
+    let partial = PathBuf::from(&s.root)
+        .join(scope_name(&s.url, "alice"))
+        .join("partial");
+    assert!(walk(&partial).is_empty(), "{:?}", walk(&partial));
+}
+
+/// A resume names the version of the file it continues (`If-Range` with the ETag it was
+/// started with): a server whose file changed sends the new one whole instead of its tail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resume_names_the_version_it_continues() {
+    let (first, second) = (audio(60_000), other_audio(60_000));
+    let s = setup(
+        first,
+        vec![
+            Step::CutAfter(20_000),
+            Step::Replace(second.clone(), Some("\"v2\"".into())),
+        ],
+        DownloadPolicy::default(),
+    )
+    .await;
+    s.fake.script.lock().unwrap().etag = Some("\"v1\"".into());
+    s.dl.enqueue(vec![manual(5)], FormatChoice::Opus);
+    wait_state(&s.seen, 5, DownloadState::Done, 30).await;
+    assert!(stored(&s) == second, "the new version, whole");
+    let reqs = s.fake.audio_requests();
+    assert_eq!(reqs.len(), 2, "{reqs:?}");
+    assert_eq!(reqs[1].0.as_deref(), Some("bytes=20000-"));
+    assert_eq!(
+        s.fake.script.lock().unwrap().if_ranges,
+        vec![None, Some("\"v1\"".into())]
+    );
+}
+
+/// A server that ignores `If-Range` and sends the tail of another version (its ETag says
+/// so) is not believed: the download starts again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resume_answered_by_another_version_starts_again() {
+    let (first, second) = (audio(60_000), other_audio(60_000));
+    let s = setup(
+        first,
+        vec![
+            Step::CutAfter(20_000),
+            Step::Replace(second.clone(), Some("\"v2\"".into())),
+        ],
+        DownloadPolicy::default(),
+    )
+    .await;
+    {
+        let mut st = s.fake.script.lock().unwrap();
+        st.etag = Some("\"v1\"".into());
+        st.ignore_if_range = true;
+    }
+    s.dl.enqueue(vec![manual(5)], FormatChoice::Opus);
+    wait_state(&s.seen, 5, DownloadState::Done, 30).await;
+    assert!(stored(&s) == second);
+    let reqs = s.fake.audio_requests();
+    assert_eq!(reqs.len(), 3, "{reqs:?}");
+    assert_eq!(reqs[2].0, None, "from the start");
+}
+
+/// A partial file with no record beside it (left by an older version, or by a crash before
+/// the record was written) is never resumed blind: it starts again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_partial_without_its_record_is_never_resumed() {
+    let file = audio(50_000);
+    let s = setup(file.clone(), vec![], DownloadPolicy::default()).await;
+    let url = s.url.clone();
+    std::fs::write(partial_path(&s, &url, 5, "opus"), other_audio(10_000)).unwrap();
+    s.dl.enqueue(vec![manual(5)], FormatChoice::Opus);
+    wait_state(&s.seen, 5, DownloadState::Done, 20).await;
+    assert!(stored(&s) == file);
+    assert_eq!(s.fake.audio_requests()[0].0, None, "not resumed");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1123,11 +1283,20 @@ async fn downloads_and_resumes_through_the_gateway() {
     assert_eq!(std::fs::read(&path).unwrap(), song);
 
     // Resume through the gateway: leave a partial file whose first half is marked (zeros),
-    // so the result shows the gateway sent only the rest (Range), not the whole file.
+    // so the result shows the gateway sent only the rest (Range), not the whole file. Its
+    // record says what an earlier attempt was told of the whole file: its size (the
+    // gateway's answers carry no validator).
     lib.remove(vec![t.key.clone()]).unwrap();
     let half = song.len() / 2;
     let part = scope.join("partial").join(format!("{}.original", t.key));
     std::fs::write(&part, vec![0u8; half]).unwrap();
+    std::fs::write(
+        scope
+            .join("partial")
+            .join(format!("{}.original.rec", t.key)),
+        json!({"v": 1, "total": song.len(), "validator": null}).to_string(),
+    )
+    .unwrap();
     dl.enqueue(vec![manual(1)], FormatChoice::Original);
     wait_for("the resumed download", || !lib.tracks().is_empty()).await;
     let got = std::fs::read(&path).unwrap();

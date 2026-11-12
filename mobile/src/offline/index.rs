@@ -12,8 +12,15 @@
 //! failing the whole index, text is cut to length, and the file and its entry count are
 //! bounded. Writes go to a temporary file that replaces the index atomically, keeping the
 //! previous version as a backup that is read if the index itself is unreadable.
+//!
+//! A finished download is not a rewrite of the whole index (a batch of downloads would
+//! write it again and again, quadratic in the batch): it is one line appended to a journal
+//! beside it (`index.journal`), and the index is written whole again only once the journal
+//! has grown to a share of it. The index carries a sequence number, and the journal's first
+//! line names the index it continues, so a journal left from before the last rewrite is
+//! never replayed over a newer index.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{Value, json};
 
@@ -270,8 +277,9 @@ fn track_from(v: &Value) -> Option<OfflineTrack> {
 /// What reading an index gave.
 #[derive(Debug, PartialEq)]
 pub enum Parsed {
-    /// The tracks (malformed entries dropped), and how many were dropped.
-    Tracks(Vec<OfflineTrack>, usize),
+    /// The tracks (malformed entries dropped), how many were dropped, and the index's
+    /// sequence number (0 for an index written before it had one).
+    Tracks(Vec<OfflineTrack>, usize, u64),
     /// Not an index at all (corrupt, or another format): don't trust any of it.
     Unreadable,
 }
@@ -299,13 +307,83 @@ pub fn parse(bytes: &[u8]) -> Parsed {
             _ => dropped += 1,
         }
     }
-    Parsed::Tracks(out, dropped)
+    let seq = v.get("seq").and_then(Value::as_u64).unwrap_or(0);
+    Parsed::Tracks(out, dropped, seq)
 }
 
-/// An index file's bytes for `tracks`.
+/// An index file's bytes for `tracks` (sequence number 0).
 pub fn serialise(tracks: &[OfflineTrack]) -> Vec<u8> {
+    serialise_seq(tracks, 0)
+}
+
+/// An index file's bytes for `tracks`, as the index with sequence number `seq`.
+pub fn serialise_seq(tracks: &[OfflineTrack], seq: u64) -> Vec<u8> {
     let list: Vec<Value> = tracks.iter().take(MAX_TRACKS).map(track_json).collect();
-    serde_json::to_vec(&json!({ "v": VERSION, "tracks": list })).expect("JSON encodes")
+    serde_json::to_vec(&json!({ "v": VERSION, "seq": seq, "tracks": list })).expect("JSON encodes")
+}
+
+/// The first line of a journal continuing the index with sequence number `seq`.
+pub fn journal_header(seq: u64) -> Vec<u8> {
+    let mut b = serde_json::to_vec(&json!({ "v": VERSION, "seq": seq })).expect("JSON");
+    b.push(b'\n');
+    b
+}
+
+/// One journal line: a track added (or changed: it replaces the entry with its key).
+pub fn journal_line(t: &OfflineTrack) -> Vec<u8> {
+    let mut b = serde_json::to_vec(&track_json(t)).expect("JSON encodes");
+    b.push(b'\n');
+    b
+}
+
+/// Apply a journal's entries to `tracks`, in order, if it continues the index with sequence
+/// number `seq` (`None`: whatever index it continues, for an index that couldn't be read).
+/// Every entry is checked as in the index; a malformed or cut-off line (a crash while it
+/// was written) is skipped. Returns how many entries were applied. Never panics; bounded.
+pub fn apply_journal(bytes: &[u8], seq: Option<u64>, tracks: &mut Vec<OfflineTrack>) -> usize {
+    if bytes.len() as u64 > MAX_INDEX_BYTES {
+        return 0;
+    }
+    let mut lines = bytes.split(|b| *b == b'\n');
+    let Some(head) = lines
+        .next()
+        .and_then(|l| serde_json::from_slice::<Value>(l).ok())
+    else {
+        return 0;
+    };
+    if head.get("v").and_then(Value::as_u64) != Some(VERSION) {
+        return 0;
+    }
+    let Some(from) = head.get("seq").and_then(Value::as_u64) else {
+        return 0;
+    };
+    if seq.is_some_and(|s| s != from) {
+        return 0;
+    }
+    let mut at: HashMap<String, usize> = tracks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.key.clone(), i))
+        .collect();
+    let mut applied = 0;
+    for line in lines {
+        let Some(t) = serde_json::from_slice::<Value>(line)
+            .ok()
+            .and_then(|v| track_from(&v))
+        else {
+            continue;
+        };
+        match at.get(&t.key) {
+            Some(&i) => tracks[i] = t,
+            None if tracks.len() < MAX_TRACKS => {
+                at.insert(t.key.clone(), tracks.len());
+                tracks.push(t);
+            }
+            None => continue,
+        }
+        applied += 1;
+    }
+    applied
 }
 
 #[cfg(test)]
@@ -350,7 +428,14 @@ pub(crate) mod tests {
         let mut c = sample(3);
         c.original = None;
         let tracks = vec![sample(1), b, c];
-        assert_eq!(parse(&serialise(&tracks)), Parsed::Tracks(tracks, 0));
+        assert_eq!(
+            parse(&serialise(&tracks)),
+            Parsed::Tracks(tracks.clone(), 0, 0)
+        );
+        assert_eq!(
+            parse(&serialise_seq(&tracks, 42)),
+            Parsed::Tracks(tracks, 0, 42)
+        );
     }
 
     /// An index written before the original's format was kept still reads, entry for entry,
@@ -362,7 +447,7 @@ pub(crate) mod tests {
         let file = serde_json::to_vec(&json!({"v": 1, "tracks": [e]})).unwrap();
         let mut want = sample(1);
         want.original = None;
-        assert_eq!(parse(&file), Parsed::Tracks(vec![want], 0));
+        assert_eq!(parse(&file), Parsed::Tracks(vec![want], 0, 0));
     }
 
     /// A damaged or hostile original is unknown, never a reason to drop the track; numbers
@@ -374,7 +459,7 @@ pub(crate) mod tests {
             e["orig"] = orig;
             let file = serde_json::to_vec(&json!({"v": 1, "tracks": [e]})).unwrap();
             match parse(&file) {
-                Parsed::Tracks(t, 0) => t[0].original.clone(),
+                Parsed::Tracks(t, 0, _) => t[0].original.clone(),
                 other => panic!("{other:?}"),
             }
         };
@@ -426,7 +511,7 @@ pub(crate) mod tests {
         bad.push(good.clone()); // a duplicate key
         let file = serde_json::to_vec(&json!({"v": 1, "tracks": bad})).unwrap();
         match parse(&file) {
-            Parsed::Tracks(t, dropped) => {
+            Parsed::Tracks(t, dropped, _) => {
                 assert_eq!(t, vec![sample(1)]);
                 assert_eq!(dropped, n + 1);
             }
@@ -442,7 +527,7 @@ pub(crate) mod tests {
         e["duration"] = json!(f64::MAX);
         e["origin"] = json!("someday");
         let file = serde_json::to_vec(&json!({"v": 1, "tracks": [e]})).unwrap();
-        let Parsed::Tracks(t, 0) = parse(&file) else {
+        let Parsed::Tracks(t, 0, _) = parse(&file) else {
             panic!()
         };
         assert!(t[0].title.starts_with("ABC"));
@@ -464,6 +549,115 @@ pub(crate) mod tests {
             b"\xff\xfe\x00",
         ] {
             assert_eq!(parse(f), Parsed::Unreadable, "{f:?}");
+        }
+    }
+
+    fn journal(seq: u64, entries: &[OfflineTrack]) -> Vec<u8> {
+        let mut b = journal_header(seq);
+        for t in entries {
+            b.extend(journal_line(t));
+        }
+        b
+    }
+
+    #[test]
+    fn a_journal_continues_only_its_own_index() {
+        let mut changed = sample(1);
+        changed.origin = DownloadOrigin::Recent;
+        changed.title = "Renamed".into();
+        let j = journal(7, &[sample(2), changed.clone(), sample(3)]);
+        let mut tracks = vec![sample(1)];
+        assert_eq!(apply_journal(&j, Some(7), &mut tracks), 3);
+        assert_eq!(tracks, vec![changed, sample(2), sample(3)]);
+        // Written on top of another index (before the last rewrite): never replayed.
+        let mut tracks = vec![sample(1)];
+        assert_eq!(apply_journal(&j, Some(8), &mut tracks), 0);
+        assert_eq!(tracks, vec![sample(1)]);
+        // Whatever it continues, when the index couldn't be read.
+        let mut tracks = Vec::new();
+        assert_eq!(apply_journal(&j, None, &mut tracks), 3);
+        assert_eq!(tracks.len(), 3);
+    }
+
+    #[test]
+    fn a_journal_is_read_strictly_and_a_cut_off_line_is_skipped() {
+        let good = journal_line(&sample(4));
+        let mut hostile = journal_header(1);
+        for (k, v) in [
+            ("key", json!("../../etc/passwd")),
+            ("ext", json!("sh")),
+            ("id", json!(-1)),
+            ("size", json!(0)),
+        ] {
+            let mut e = track_json(&sample(5));
+            e[k] = v;
+            hostile.extend(serde_json::to_vec(&e).unwrap());
+            hostile.push(b'\n');
+        }
+        hostile.extend(b"not json\n\n[]\n");
+        hostile.extend(&good);
+        // A crash while the last line was written.
+        hostile.extend(&journal_line(&sample(6))[..40]);
+        let mut tracks = Vec::new();
+        assert_eq!(apply_journal(&hostile, Some(1), &mut tracks), 1);
+        assert_eq!(tracks, vec![sample(4)]);
+        for bad_head in [
+            &b""[..],
+            b"\n",
+            b"{}\n",
+            br#"{"v":2,"seq":1}"#,
+            br#"{"v":1}"#,
+            br#"{"v":1,"seq":"1"}"#,
+        ] {
+            let mut j = bad_head.to_vec();
+            j.push(b'\n');
+            j.extend(&good);
+            let mut tracks = Vec::new();
+            assert_eq!(apply_journal(&j, None, &mut tracks), 0, "{bad_head:?}");
+        }
+    }
+
+    /// Fuzz: arbitrary bytes and damaged journals never panic, and whatever is applied obeys
+    /// every rule of the index.
+    #[test]
+    fn fuzzed_journals_never_panic_and_keep_invariants() {
+        let mut seed = 0x0123_4567_89ab_cdefu64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let base = journal(3, &(1..=12).map(sample).collect::<Vec<_>>());
+        let alphabet = b"{}[]\",:0123456789abcdefv-.seqtrunlsx\\ \n\xff";
+        for round in 0..3000 {
+            let bytes: Vec<u8> = match round % 3 {
+                0 => (0..next() % 512)
+                    .map(|_| alphabet[(next() as usize) % alphabet.len()])
+                    .collect(),
+                1 => {
+                    let mut b = base.clone();
+                    for _ in 0..(1 + next() % 8) {
+                        let i = (next() as usize) % b.len();
+                        b[i] = alphabet[(next() as usize) % alphabet.len()];
+                    }
+                    b
+                }
+                _ => {
+                    let mut b = base.clone();
+                    b.truncate((next() as usize) % b.len());
+                    b
+                }
+            };
+            let mut tracks = vec![sample(1)];
+            apply_journal(&bytes, Some(3), &mut tracks);
+            let mut keys = HashSet::new();
+            for t in &tracks {
+                assert!(valid_key(&t.key) && valid_ext(&t.ext));
+                assert!(keys.insert(t.key.clone()), "one entry per key");
+                assert!(t.track_id > 0 && t.size > 0);
+                assert!(t.title.chars().count() <= MAX_TEXT);
+            }
         }
     }
 
@@ -507,7 +701,7 @@ pub(crate) mod tests {
                     b
                 }
             };
-            if let Parsed::Tracks(tracks, _) = parse(&bytes) {
+            if let Parsed::Tracks(tracks, _, _) = parse(&bytes) {
                 let mut keys = HashSet::new();
                 for t in &tracks {
                     assert!(valid_key(&t.key) && valid_ext(&t.ext));
