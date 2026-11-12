@@ -81,7 +81,7 @@ fn db(x: f64) -> f32 {
 impl Visualiser {
     /// For interleaved PCM of `channels` at `sample_rate` Hz (clamped to sane values).
     pub fn new(sample_rate: u32, channels: u16) -> Self {
-        let rate = sample_rate.clamp(8_000, 768_000) as f32;
+        let rate = sample_rate.clamp(crate::MIN_SAMPLE_RATE, crate::MAX_SAMPLE_RATE) as f32;
         let channels = (channels as usize).clamp(1, MAX_CHANNELS);
         let hop = (rate as usize / MAX_FPS as usize).max(1);
         let window = (0..FFT_SIZE)

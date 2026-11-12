@@ -99,7 +99,7 @@ impl Crossfeed {
     }
 
     pub fn set_sample_rate(&mut self, sample_rate: u32) {
-        let fs = f64::from(sample_rate.clamp(8_000, 768_000));
+        let fs = f64::from(sample_rate.clamp(crate::MIN_SAMPLE_RATE, crate::MAX_SAMPLE_RATE));
         let r = 10f64.powf(-self.config.feed_db / 20.0);
         self.direct = 1.0 / (1.0 + r);
         self.cross = r / (1.0 + r);

@@ -39,8 +39,12 @@ use crate::proto::{ClientMsg, DEVICE_ID_SOFTWARE, Helo, ServerFrameReader, Serve
 
 /// Stop reading the network stream once this many compressed bytes are waiting.
 pub const INPUT_HIGH_WATER: usize = 8 * 1024 * 1024;
-/// Decode ahead until this many seconds of PCM are queued.
+/// Decode ahead until this many seconds of PCM are queued, up to
+/// [`OUTPUT_TARGET_MAX_BYTES`].
 pub const OUTPUT_TARGET_SECS: u32 = 10;
+/// The most decoded PCM queued ahead, in bytes (8 a stereo frame): the whole
+/// [`OUTPUT_TARGET_SECS`] up to 192 kHz, less above it (under 3 s at 768 kHz).
+pub const OUTPUT_TARGET_MAX_BYTES: u64 = 16 * 1024 * 1024;
 /// Packets decoded per `tick`, to bound the time spent per call.
 const PACKETS_PER_TICK: usize = 48;
 const HEARTBEAT_MS: u64 = 1000;
@@ -1387,10 +1391,16 @@ impl Player {
         (want - frames) * 1000 / u64::from(rate)
     }
 
+    /// Frames to decode ahead: [`OUTPUT_TARGET_SECS`] at the output rate, at most
+    /// [`OUTPUT_TARGET_MAX_BYTES`]. In `u64`, so it can't overflow on 32-bit hosts (wasm32);
+    /// the decoders refuse rates outside 8 kHz to 768 kHz, so it is never 0.
+    fn decode_target_frames(&self) -> u64 {
+        let rate = u64::from(self.output_rate().unwrap_or(48_000));
+        (u64::from(OUTPUT_TARGET_SECS) * rate).min(OUTPUT_TARGET_MAX_BYTES / 8)
+    }
+
     fn decode_some(&mut self) {
-        let target_frames =
-            OUTPUT_TARGET_SECS as usize * self.output_rate().unwrap_or(48_000) as usize;
-        if self.pcm.len() / 2 >= target_frames {
+        if (self.pcm.len() / 2) as u64 >= self.decode_target_frames() {
             return;
         }
         // A header made for bare FLAC frames (a seek): noted once, for the Connection log.
@@ -1674,13 +1684,64 @@ mod tests {
         v.extend_from_slice(&1u16.to_le_bytes());
         v.extend_from_slice(&2u16.to_le_bytes());
         v.extend_from_slice(&rate.to_le_bytes());
-        v.extend_from_slice(&(rate * 4).to_le_bytes());
+        v.extend_from_slice(&rate.wrapping_mul(4).to_le_bytes());
         v.extend_from_slice(&4u16.to_le_bytes());
         v.extend_from_slice(&16u16.to_le_bytes());
         v.extend_from_slice(b"data");
         v.extend_from_slice(&(data_len as u32).to_le_bytes());
         v.resize(44 + data_len, 0x10);
         v
+    }
+
+    /// Security (M2): the declared sample rate was never range-checked. At 0 the
+    /// decode-ahead target was nothing, so the track never finished and LMS never heard
+    /// `STMd` or `STMn`; a huge rate made the target unbounded, so the whole stream was
+    /// decoded into memory (and on wasm32 the multiplication overflowed). Anything outside
+    /// 8 kHz to 768 kHz is refused with `STMn`, and the player is not left decoding.
+    #[test]
+    fn a_hostile_declared_sample_rate_is_refused() {
+        for rate in [0, 1, 7_999, 768_001, 1_000_000_000, u32::MAX] {
+            let mut p = Player::new(cfg());
+            p.on_control_data(&strm(b's', b'1', b'p', 0), 0).unwrap();
+            p.on_stream_data(&wav(rate, 44_100 * 4), 1);
+            p.on_stream_end(2);
+            tick_n(&mut p, 3, 50);
+            let ev = events(&p.take_actions());
+            assert!(ev.contains(&"STMn".to_string()), "rate {rate}: {ev:?}");
+            assert!(p.pcm.is_empty(), "rate {rate}: nothing decoded");
+            let err = p.status().last_error.unwrap_or_default();
+            assert!(err.contains("sample rate"), "rate {rate}: {err}");
+            assert!(p.audio_exhausted(), "rate {rate}: left decoding");
+        }
+    }
+
+    /// The edges of the range play. At 768 kHz the decode-ahead stops at its byte cap
+    /// (a little under 3 s there) rather than at 10 s.
+    #[test]
+    fn the_edge_sample_rates_play_and_the_decode_ahead_is_capped_in_bytes() {
+        for (rate, secs) in [(8_000, 2), (768_000, 4)] {
+            let mut p = Player::new(cfg());
+            p.on_control_data(&strm(b's', b'1', b'p', 0), 0).unwrap();
+            p.on_stream_data(&wav(rate, rate as usize * secs), 1);
+            p.on_stream_end(2);
+            let mut queued = 0;
+            for i in 0..5_000 {
+                p.tick(3 + i);
+                if p.pcm.len() == queued && i > 10 {
+                    break;
+                }
+                queued = p.pcm.len();
+            }
+            let ev = events(&p.take_actions());
+            assert!(!ev.contains(&"STMn".to_string()), "rate {rate}: {ev:?}");
+            assert_eq!(p.status().sample_rate, rate);
+            let bytes = p.pcm.len() as u64 * 4;
+            assert!(bytes > 0, "rate {rate}: something decoded");
+            assert!(
+                bytes <= OUTPUT_TARGET_MAX_BYTES + 1024 * 1024,
+                "rate {rate}: {bytes} bytes decoded ahead"
+            );
+        }
     }
 
     /// Pull everything currently playable, reporting it as played immediately.

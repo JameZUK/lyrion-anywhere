@@ -96,7 +96,7 @@ impl TruePeakLimiter {
     pub fn new(sample_rate: u32, channels: usize, config: LimiterConfig) -> Self {
         let config = config.sanitised();
         let channels = channels.max(1);
-        let rate = f64::from(sample_rate.clamp(8_000, 768_000));
+        let rate = f64::from(sample_rate.clamp(crate::MIN_SAMPLE_RATE, crate::MAX_SAMPLE_RATE));
         let attack = ((config.attack_ms * 1e-3 * rate).round() as usize).max(1);
         let hold_len = attack + 2 * HALF_TAPS;
         let latency = 2 * HALF_TAPS + hold_len - 2;

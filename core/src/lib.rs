@@ -21,3 +21,14 @@ pub mod quality;
 #[cfg(test)]
 mod test_timing;
 pub mod visual;
+
+/// The lowest sample rate the core plays, processes or analyses (the lowest MP3 rate).
+pub const MIN_SAMPLE_RATE: u32 = 8_000;
+/// The highest sample rate the core plays, processes or analyses.
+pub const MAX_SAMPLE_RATE: u32 = 768_000;
+
+/// Whether the core handles audio at `rate` Hz: [`MIN_SAMPLE_RATE`] to [`MAX_SAMPLE_RATE`].
+/// A rate a stream declares outside that is a broken or hostile header.
+pub const fn sample_rate_supported(rate: u32) -> bool {
+    MIN_SAMPLE_RATE <= rate && rate <= MAX_SAMPLE_RATE
+}
