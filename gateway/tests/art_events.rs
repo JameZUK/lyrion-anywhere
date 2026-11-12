@@ -329,6 +329,104 @@ async fn events_socket_requires_a_token_and_closes_on_bad_messages() {
     );
 }
 
+/// Regression (review low): the events socket limited messages to 1 KiB but not frames, so
+/// a socket not yet signed in could announce a frame of 16 MiB and the gateway would wait
+/// to read it all. A frame over the limit is refused as soon as its header arrives.
+#[tokio::test]
+async fn an_oversize_frame_on_the_events_socket_is_refused_at_its_header() {
+    let h = harness_with(|c| c.auth_timeout = Duration::from_secs(30)).await;
+    let mut s = TcpStream::connect(h.addr).await.unwrap();
+    s.write_all(
+        b"GET /v1/events HTTP/1.1\r\nhost: test\r\nupgrade: websocket\r\nconnection: upgrade\r\n\
+          sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n",
+    )
+    .await
+    .unwrap();
+    let mut head = Vec::new();
+    let mut buf = [0u8; 1024];
+    while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+        let n = s.read(&mut buf).await.unwrap();
+        assert!(n > 0);
+        head.extend_from_slice(&buf[..n]);
+    }
+    assert!(String::from_utf8_lossy(&head).starts_with("HTTP/1.1 101"));
+    // A masked text frame announcing 1 MiB, and nothing of it.
+    let mut frame = vec![0x81, 0x80 | 127];
+    frame.extend_from_slice(&(1024u64 * 1024).to_be_bytes());
+    frame.extend_from_slice(&[1, 2, 3, 4]);
+    s.write_all(&frame).await.unwrap();
+    // The gateway gives up on the socket at once: well before the sign-in time limit.
+    let closed = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            match s.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+    })
+    .await;
+    assert!(closed.is_ok(), "the socket waited for the frame's body");
+}
+
+/// Regression (review low): revoking a device left its open event sockets running until
+/// their next periodic check, up to 30 s (SECURITY.md says "at once"). Told of the
+/// revocation, they close at once; other devices' sockets stay.
+#[tokio::test]
+async fn a_revoked_devices_event_socket_closes_at_once() {
+    let h = harness().await;
+    let mut a = h.events(&h.tok_a).await;
+    let mut b = h.events(&h.tok_b).await;
+    assert!(h.accounts.revoke_device(h.dev_a).unwrap());
+    h.gw.recheck_event_sockets(&[h.dev_a]);
+    let t = std::time::Instant::now();
+    expect_close(&mut a, CloseCode::Policy).await;
+    assert!(t.elapsed() < Duration::from_secs(2));
+    // Bob's socket is untouched (and still answers a recheck with nothing to say).
+    h.gw.rescope_event_sockets();
+    let quiet = tokio::time::timeout(Duration::from_millis(300), b.next()).await;
+    assert!(quiet.is_err(), "bob's socket got {quiet:?}");
+}
+
+/// Regression (review low): taking a player away from a user left their open event
+/// sockets reporting it until their next periodic check. Told of the change, they stop at
+/// once, and go on reporting the players the user may still control.
+#[tokio::test]
+async fn an_ungranted_player_drops_out_of_open_event_sockets_at_once() {
+    let h = harness().await;
+    let shared = "aa:bb:cc:dd:ee:02";
+    h.accounts.grant_player("alice", shared).unwrap();
+    let mine = anywhere_core::proto::format_mac(&h.mac_a);
+    let mut ws = h.events(&h.tok_a).await;
+    wait_for_async(|| async {
+        h.lms
+            .rec
+            .lock()
+            .unwrap()
+            .cli_in
+            .concat()
+            .contains("listen 1")
+    })
+    .await;
+    let esc = |m: &str| m.replace(':', "%3A");
+    h.lms
+        .cli_send(&format!("{} mixer volume 10", esc(shared)))
+        .await;
+    assert_eq!(event_json(&mut ws).await["player"], shared);
+    h.accounts.ungrant_player("alice", shared).unwrap();
+    h.gw.rescope_event_sockets();
+    // Give the socket the moment it needs to re-read its permissions.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    h.lms
+        .cli_send(&format!("{} mixer volume 20", esc(shared)))
+        .await;
+    h.lms
+        .cli_send(&format!("{} mixer volume 30", esc(&mine)))
+        .await;
+    let next_event = event_json(&mut ws).await;
+    assert_eq!(next_event["player"], mine.as_str(), "{next_event}");
+    assert_eq!(next_event["event"], json!(["mixer", "volume", "30"]));
+}
+
 async fn wait_for_async<F, Fut>(cond: F)
 where
     F: Fn() -> Fut,

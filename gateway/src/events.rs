@@ -55,7 +55,11 @@ const PLAYER_EVENTS: &[&str] = &[
 ];
 const SERVER_EVENTS: &[&str] = &["rescan"];
 const MAX_LINE: usize = 16 * 1024;
+/// How often an open socket checks its device and permissions on its own; a revocation or
+/// a change of permissions has it check at once ([`Hub::recheck`]).
 const RECHECK: Duration = Duration::from_secs(30);
+/// Largest message, and frame, a client may send (its access token; then only pings).
+pub const MAX_CLIENT_MESSAGE: usize = 1024;
 
 fn unescape(t: &str) -> String {
     let b = t.as_bytes();
@@ -157,6 +161,7 @@ pub struct Hub {
     tx: broadcast::Sender<Event>,
     running: std::sync::Mutex<bool>,
     sockets: std::sync::Mutex<Sockets>,
+    backoff: Backoff,
 }
 
 impl Default for Hub {
@@ -165,9 +170,27 @@ impl Default for Hub {
             tx: broadcast::channel(256).0,
             running: std::sync::Mutex::new(false),
             sockets: Default::default(),
+            backoff: BACKOFF,
         }
     }
 }
+
+/// Pauses between attempts to reach LMS's CLI: from `first`, doubling up to `most`, and back
+/// to `first` after a connection that worked for `healthy` (LMS answered and kept it open).
+/// Review low: the pause only ever grew, so once LMS had restarted a few times, live updates
+/// came back up to 30 s after it did, for the life of the gateway.
+#[derive(Debug, Clone, Copy)]
+struct Backoff {
+    first: Duration,
+    most: Duration,
+    healthy: Duration,
+}
+
+const BACKOFF: Backoff = Backoff {
+    first: Duration::from_millis(500),
+    most: Duration::from_secs(30),
+    healthy: Duration::from_secs(10),
+};
 
 /// Open event sockets, per user, oldest first.
 #[derive(Default)]
@@ -181,6 +204,8 @@ struct OpenSocket {
     device: i64,
     /// Tells the socket's handler to close it.
     evict: oneshot::Sender<()>,
+    /// Tells the socket's handler to check its device and permissions now.
+    recheck: Arc<tokio::sync::Notify>,
 }
 
 /// An open socket's place in [`Hub`]'s table; removed when dropped.
@@ -188,6 +213,8 @@ pub struct Registration {
     hub: Arc<Hub>,
     user: i64,
     id: u64,
+    /// Fires when the socket must check its access at once (see [`Hub::recheck`]).
+    recheck: Arc<tokio::sync::Notify>,
 }
 
 impl Drop for Registration {
@@ -213,11 +240,17 @@ impl Hub {
         per_user: usize,
     ) -> (Registration, oneshot::Receiver<()>) {
         let (evict, evicted) = oneshot::channel();
+        let recheck = Arc::new(tokio::sync::Notify::new());
         let mut t = self.sockets.lock().unwrap();
         t.next += 1;
         let id = t.next;
         let list = t.by_user.entry(user).or_default();
-        list.push_back(OpenSocket { id, device, evict });
+        list.push_back(OpenSocket {
+            id,
+            device,
+            evict,
+            recheck: recheck.clone(),
+        });
         let mut gone = Vec::new();
         while list.iter().filter(|s| s.device == device).count() > per_device.max(1) {
             if let Some(i) = list.iter().position(|s| s.device == device) {
@@ -244,9 +277,23 @@ impl Hub {
                 hub: self.clone(),
                 user,
                 id,
+                recheck,
             },
             evicted,
         )
+    }
+
+    /// Have open sockets check their device and re-read their player permissions now,
+    /// rather than at their next periodic check ([`RECHECK`]): those of `devices`, or every
+    /// socket for `None`. A revoked device's sockets then close with "access revoked", and
+    /// a socket whose user lost a player stops getting its events. Never waits.
+    pub fn recheck(&self, devices: Option<&[i64]>) {
+        let t = self.sockets.lock().unwrap();
+        for s in t.by_user.values().flatten() {
+            if devices.is_none_or(|d| d.contains(&s.device)) {
+                s.recheck.notify_one();
+            }
+        }
     }
 
     /// Event sockets open for a user.
@@ -284,9 +331,15 @@ impl Hub {
     }
 
     async fn listen(self: Arc<Self>, addr: String) {
-        let mut backoff = Duration::from_millis(500);
+        let mut backoff = self.backoff.first;
         loop {
-            match self.listen_once(&addr).await {
+            let started = std::time::Instant::now();
+            let ended = self.listen_once(&addr).await;
+            // A connection LMS kept open a while worked: the next attempt is soon.
+            if started.elapsed() >= self.backoff.healthy && !matches!(ended, Ok(Ended::Refused)) {
+                backoff = self.backoff.first;
+            }
+            match ended {
                 Ok(Ended::Refused) => warn!(
                     "LMS closed its CLI connection without answering `listen`: if LMS's \
                      password protection is on, its CLI wants a login, which the gateway \
@@ -299,7 +352,7 @@ impl Hub {
                 return;
             }
             tokio::time::sleep(backoff).await;
-            backoff = (backoff * 2).min(Duration::from_secs(30));
+            backoff = (backoff * 2).min(self.backoff.most);
         }
     }
 
@@ -412,8 +465,11 @@ pub async fn events_upgrade(
     if !origin_allowed(&gw.cfg, &headers) {
         return (StatusCode::FORBIDDEN, "origin not allowed\n").into_response();
     }
-    // The connection's place under the caps is held until the socket closes.
-    ws.max_message_size(1024)
+    // The connection's place under the caps is held until the socket closes. A frame is as
+    // small as a message (review low: without its own limit a frame could announce 16 MiB,
+    // and be read, before the message limit applied, on a socket not yet signed in).
+    ws.max_message_size(MAX_CLIENT_MESSAGE)
+        .max_frame_size(MAX_CLIENT_MESSAGE)
         .on_upgrade(move |socket| async move {
             handle(gw, socket).await;
             drop(slot);
@@ -441,7 +497,7 @@ async fn handle(gw: AppState, mut ws: WebSocket) {
     let Ok(mut scope) = gw.accounts().player_scope(&principal) else {
         return close(ws, close_code::ERROR, "internal error").await;
     };
-    let (_registration, mut evicted) = gw.events.register(
+    let (registration, mut evicted) = gw.events.register(
         principal.user_id,
         principal.device_id,
         gw.cfg.events_per_device,
@@ -511,16 +567,49 @@ async fn handle(gw: AppState, mut ws: WebSocket) {
                     return;
                 }
             }
-            _ = recheck.tick() => {
-                // Revocation and permission changes take effect without reconnecting.
-                if !gw.accounts().device_active(principal.device_id) {
+            // Revocation and permission changes take effect without reconnecting: at once
+            // when the gateway says so (a revocation, a grant or ungrant), and periodically.
+            _ = registration.recheck.notified() => {
+                if !still_allowed(&gw, &principal, &mut scope) {
                     return close(ws, close_code::POLICY, "access revoked").await;
                 }
-                if let Ok(s) = gw.accounts().player_scope(&principal) {
-                    scope = s;
+            }
+            _ = recheck.tick() => {
+                if !still_allowed(&gw, &principal, &mut scope) {
+                    return close(ws, close_code::POLICY, "access revoked").await;
                 }
             }
         }
+    }
+}
+
+/// Whether the socket's device is still active; its player permissions re-read if so.
+fn still_allowed(
+    gw: &AppState,
+    principal: &crate::accounts::Principal,
+    scope: &mut crate::accounts::PlayerScope,
+) -> bool {
+    if !gw.accounts().device_active(principal.device_id) {
+        return false;
+    }
+    if let Ok(s) = gw.accounts().player_scope(principal) {
+        *scope = s;
+    }
+    true
+}
+
+impl crate::Gateway {
+    /// Have these devices' open event sockets check their access now: after a revocation,
+    /// so they close at once, not at their next periodic check (review low; SECURITY.md says
+    /// "at once"). For [`crate::Gateway::end_sessions_for`], which every revocation calls.
+    pub fn recheck_event_sockets(&self, devices: &[i64]) {
+        self.events.recheck(Some(devices));
+    }
+
+    /// Have every open event socket re-read its player permissions now: after a player is
+    /// granted or ungranted, so a user stops hearing of a player at once.
+    pub fn rescope_event_sockets(&self) {
+        self.events.recheck(None);
     }
 }
 
@@ -685,6 +774,105 @@ mod tests {
             assert_eq!(hub.listen_once(&addr).await.unwrap(), want);
             server.await.unwrap();
         }
+    }
+
+    /// Regression (review low): the pause between attempts to reach LMS's CLI only ever
+    /// grew, so after LMS had restarted a few times live updates came back up to 30 s after
+    /// it did. A connection that worked (answered, and open a while) resets it.
+    #[tokio::test]
+    async fn the_listeners_pause_starts_again_after_a_connection_that_worked() {
+        use tokio::io::AsyncReadExt;
+        let hub = Arc::new(Hub {
+            backoff: Backoff {
+                first: Duration::from_millis(20),
+                most: Duration::from_secs(5),
+                healthy: Duration::from_millis(100),
+            },
+            ..Hub::default()
+        });
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap().to_string();
+        // A CLI that answers, keeps each connection 150 ms, then hangs up: as an LMS that
+        // keeps restarting would. The gap before each new connection is recorded.
+        let gaps = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let g = gaps.clone();
+        tokio::spawn(async move {
+            let mut closed: Option<std::time::Instant> = None;
+            for _ in 0..7 {
+                let (mut s, _) = l.accept().await.unwrap();
+                if let Some(c) = closed {
+                    g.lock().unwrap().push(c.elapsed());
+                }
+                let mut cmd = [0u8; 9];
+                s.read_exact(&mut cmd).await.unwrap();
+                s.write_all(b"listen 1\n").await.unwrap();
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                drop(s);
+                closed = Some(std::time::Instant::now());
+            }
+        });
+        let _rx = hub.subscribe(addr);
+        for _ in 0..200 {
+            if gaps.lock().unwrap().len() >= 6 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let gaps = gaps.lock().unwrap().clone();
+        assert_eq!(gaps.len(), 6, "{gaps:?}");
+        // Without the reset the pause doubles each time: 20, 40, 80, 160, 320, 640 ms.
+        assert!(
+            gaps.iter().all(|g| *g < Duration::from_millis(150)),
+            "{gaps:?}"
+        );
+    }
+
+    /// A connection that never worked keeps backing off.
+    #[tokio::test]
+    async fn the_listeners_pause_grows_while_lms_refuses() {
+        let hub = Arc::new(Hub {
+            backoff: Backoff {
+                first: Duration::from_millis(20),
+                most: Duration::from_secs(5),
+                healthy: Duration::from_millis(100),
+            },
+            ..Hub::default()
+        });
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap().to_string();
+        let accepted = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let a = accepted.clone();
+        tokio::spawn(async move {
+            loop {
+                let (s, _) = l.accept().await.unwrap();
+                a.lock().unwrap().push(std::time::Instant::now());
+                drop(s); // refused: hung up without answering
+            }
+        });
+        let _rx = hub.subscribe(addr);
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        let n = accepted.lock().unwrap().len();
+        // 20 + 40 + 80 + 160 + 320 ms: about five attempts, not thirty.
+        assert!((3..=7).contains(&n), "{n} attempts");
+    }
+
+    /// Open sockets can be told to check their access at once: one device's, or everyone's.
+    #[tokio::test]
+    async fn sockets_can_be_told_to_recheck_at_once() {
+        let hub = Arc::new(Hub::default());
+        let (a, _ea) = hub.register(1, 10, 4, 16);
+        let (b, _eb) = hub.register(1, 11, 4, 16);
+        let (c, _ec) = hub.register(2, 20, 4, 16);
+        async fn fired(r: &Registration) -> bool {
+            tokio::time::timeout(Duration::from_millis(20), r.recheck.notified())
+                .await
+                .is_ok()
+        }
+        hub.recheck(Some(&[10]));
+        assert!(fired(&a).await && !fired(&b).await && !fired(&c).await);
+        hub.recheck(None);
+        assert!(fired(&a).await && fired(&b).await && fired(&c).await);
+        assert!(!fired(&a).await, "each request is answered once");
     }
 
     /// The listener's idle check and a new subscription can't interleave: either the
