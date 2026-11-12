@@ -459,6 +459,47 @@ async fn menu_actions_are_per_device_and_respect_player_permissions() {
     );
 }
 
+/// Regression (review low): a learned menu action's answer was filtered as a plain one
+/// whatever the command, so a menu offering `serverstatus` would have listed every player on
+/// the server, other people's included. It is filtered as the allow-list's own answer to
+/// that command is.
+#[tokio::test]
+async fn a_player_list_reached_through_a_menu_shows_only_permitted_players() {
+    let h = harness().await;
+    h.accounts
+        .grant_player("alice", "aa:bb:cc:dd:ee:02")
+        .unwrap();
+    let mine = anywhere_core::proto::format_mac(&h.mac_a);
+    let menu = json!({"id": 1, "result": {"count": 1, "item_loop": [
+        {"text": "Who is listening", "actions": {"go": {"cmd": ["serverstatus"], "params": {"menu": "menu"}}}}
+    ]}});
+    h.lms
+        .odd_rpc
+        .lock()
+        .unwrap()
+        .insert("trackinfo".into(), menu.to_string());
+    open_track_menu(&h, &h.tok_a, &mine).await;
+    h.lms.odd_rpc.lock().unwrap().clear();
+    let r = h
+        .rpc(&h.tok_a, &mine, json!(["serverstatus", 0, 50, "menu:menu"]))
+        .await;
+    assert_eq!(r.status(), S::OK, "offered, so it runs");
+    let body: Value = r.json().await.unwrap();
+    let s = body.to_string();
+    for leak in [
+        "Home One",
+        "Someone's phone",
+        "10.0.0.",
+        "server-uuid-secret",
+    ] {
+        assert!(!s.contains(leak), "{leak} leaked: {s}");
+    }
+    let players = body["result"]["players_loop"].as_array().unwrap();
+    assert_eq!(players.len(), 1, "{s}");
+    assert_eq!(players[0]["name"], "Home Two");
+    assert_eq!(body["result"]["player count"], 1);
+}
+
 #[tokio::test]
 async fn server_commands_offered_in_menus_still_never_run() {
     let h = harness().await;

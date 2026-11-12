@@ -440,10 +440,11 @@ impl crate::Gateway {
         let verdict = crate::menu_actions::allowed(learned, &raw, principal.role == Role::Admin);
         drop(all);
         Some(match verdict {
+            // Filtered as the allow-list's answer to the same command would be.
             Ok(()) => Ok(Checked {
                 player: player.to_string(),
+                kind: rpc_policy::response_kind(&raw[0]),
                 cmd: raw,
-                kind: Kind::Plain,
             }),
             Err(Refusal::NotOffered) => return None,
             Err(e) => Err(e),
