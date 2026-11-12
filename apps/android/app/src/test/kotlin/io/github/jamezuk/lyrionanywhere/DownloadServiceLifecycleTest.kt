@@ -1,6 +1,7 @@
 package io.github.jamezuk.lyrionanywhere
 
 import android.app.Application
+import android.app.ForegroundServiceStartNotAllowedException
 import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
@@ -37,6 +38,17 @@ class DownloadServiceLifecycleTest {
         val channel = context.getSystemService(NotificationManager::class.java).getNotificationChannel(DownloadService.CHANNEL)
         assertNotNull(channel)
         assertEquals(NotificationManager.IMPORTANCE_LOW, channel.importance)
+    }
+
+    @Test
+    fun aRefusedForegroundStopsTheServiceInsteadOfCrashingTheApp() {
+        // Android 12+ refuses the foreground from the background, and Android 15 once the
+        // day's dataSync time is used up (review, 12 November): the downloads carry on
+        // while the process lives, and the service stops.
+        val controller = Robolectric.buildService(DownloadService::class.java, Intent(context, DownloadService::class.java)).create()
+        shadowOf(controller.get()).setThrowInStartForeground(ForegroundServiceStartNotAllowedException("test: refused"))
+        assertEquals(android.app.Service.START_NOT_STICKY, controller.get().onStartCommand(Intent(context, DownloadService::class.java), 0, 1))
+        assertTrue("stopped itself", shadowOf(controller.get()).isStoppedBySelf)
     }
 
     @Test

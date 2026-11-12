@@ -34,6 +34,24 @@ private fun np(id: String = PHONE, title: String = "One", playing: Boolean = tru
     NowPlaying(id, "Kitchen", title, "Artist", "music/1/cover", playing, id == PHONE)
 
 class WidgetModelTest {
+    /**
+     * The launcher's redraw runs inside a broadcast (goAsync), which Android ends after about
+     * ten seconds: the artwork gets its own short limit, and a slow server only costs the
+     * picture, never the redraw (review, 12 November).
+     */
+    @Test
+    fun theArtworkWaitIsShortAndBounded() = runTest {
+        assertTrue(NowPlayingWidget.ART_LIMIT_MS in 1..5_000)
+        assertTrue(NowPlayingWidget.ART_LIMIT_MS < NowPlayingWidget.REDRAW_LIMIT_MS)
+        assertTrue(NowPlayingWidget.REDRAW_LIMIT_MS < 10_000)
+        val start = testScheduler.currentTime
+        val never = NowPlayingWidget.artWithin<String> { kotlinx.coroutines.awaitCancellation() }
+        assertNull(never)
+        assertEquals(NowPlayingWidget.ART_LIMIT_MS, testScheduler.currentTime - start)
+        assertEquals("cover", NowPlayingWidget.artWithin { "cover" })
+        assertNull(NowPlayingWidget.artWithin<String> { null })
+    }
+
     /** With large text, the widget's one row keeps the title and drops the detail line. */
     @Test
     fun theDetailLineIsDroppedWithLargeText() {

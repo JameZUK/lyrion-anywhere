@@ -11,6 +11,7 @@ import coil3.request.Options
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.AppError
 import io.github.jamezuk.lyrionanywhere.data.ArtRepository
+import io.github.jamezuk.lyrionanywhere.data.AuthState
 import okio.Buffer
 
 /** What to load: an artwork key from a record, at a size in pixels. */
@@ -66,7 +67,21 @@ class ArtworkFetcher(
     }
 }
 
-/** Memory-cache key: the artwork key and size (never anything secret). */
-class ArtworkKeyer : Keyer<Artwork> {
-    override fun key(data: Artwork, options: Options): String = "${data.key}@${data.sizePx}"
+/**
+ * Memory-cache key: the server, the artwork key and the size (never anything secret). An
+ * artwork key (`music/123/cover`, a downloaded album's reference) names an image only on its
+ * own server, so after a change of server the same key must not find the old server's cover.
+ * [scope]: the server in use now (its address; empty: none).
+ */
+class ArtworkKeyer(private val scope: () -> String = { "" }) : Keyer<Artwork> {
+    override fun key(data: Artwork, options: Options): String = "${scope()}|${data.key}@${data.sizePx}"
+}
+
+/** [ArtworkKeyer]'s scope for an account state: the server in use (empty: none yet). */
+fun artScopeOf(state: AuthState): String = when (state) {
+    is AuthState.SignedInState -> state.server.url
+    is AuthState.SignedOut -> state.server.url
+    is AuthState.Restoring -> state.server.url
+    is AuthState.Unreachable -> state.server.url
+    AuthState.NoServer, AuthState.Starting -> ""
 }

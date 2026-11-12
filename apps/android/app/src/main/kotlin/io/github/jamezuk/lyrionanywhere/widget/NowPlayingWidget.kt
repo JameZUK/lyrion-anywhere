@@ -49,6 +49,7 @@ import io.github.jamezuk.lyrionanywhere.R
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The home-screen widget: artwork, title and artist, with play/pause and next, for this
@@ -69,6 +70,19 @@ object NowPlayingWidget {
     /** Whether the artist/player line fits at [fontScale]. */
     fun detailFits(fontScale: Float): Boolean = fontScale <= LARGE_TEXT_SCALE
 
+    /**
+     * The longest a redraw waits for the artwork. The launcher's redraws run inside a
+     * broadcast (goAsync), which Android ends after about ten seconds; a slow server then
+     * costs only the picture.
+     */
+    const val ART_LIMIT_MS = 4_000L
+
+    /** The longest a launcher's redraw may take in all (inside its broadcast). */
+    const val REDRAW_LIMIT_MS = 8_000L
+
+    /** [fetch]'s artwork, or null (drawn without) if it takes longer than [ART_LIMIT_MS]. */
+    suspend fun <T : Any> artWithin(fetch: suspend () -> T?): T? = withTimeoutOrNull(ART_LIMIT_MS) { fetch() }
+
     /** Redraw every placed widget (cheap when none is placed). */
     @OptIn(ExperimentalGlanceRemoteViewsApi::class)
     suspend fun render(app: LyrionApp) {
@@ -78,7 +92,7 @@ object NowPlayingWidget {
         val large = manager.getAppWidgetIds(ComponentName(app, NowPlayingLargeWidgetReceiver::class.java)) ?: IntArray(0)
         if (ids.isEmpty() && large.isEmpty()) return
         val model = WidgetModel.from(app.nowPlaying.shown.first())
-        val art = model.artwork?.let { loadArtwork(app, it) }
+        val art = model.artwork?.let { key -> artWithin { loadArtwork(app, key) } }
         if (ids.isNotEmpty()) {
             val views = GlanceRemoteViews().compose(app, DpSize(320.dp, 72.dp)) {
                 GlanceTheme { Content(model, art) }
@@ -278,30 +292,22 @@ class WidgetControl : ActionCallback {
 
 /** The larger widget's receiver: the launcher asks, and both widgets are drawn. */
 class NowPlayingLargeWidgetReceiver : AppWidgetProvider() {
-    override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
-        val app = context.applicationContext as LyrionApp
-        val pending = goAsync()
-        app.appScope.launch {
-            try {
-                NowPlayingWidget.render(app)
-            } finally {
-                pending.finish()
-            }
-        }
-    }
+    override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) = redrawWithin(context, goAsync())
 }
 
 /** The launcher asks for the widget (placed, resized, or after a reboot): draw it. */
 class NowPlayingWidgetReceiver : AppWidgetProvider() {
-    override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
-        val app = context.applicationContext as LyrionApp
-        val pending = goAsync()
-        app.appScope.launch {
-            try {
-                NowPlayingWidget.render(app)
-            } finally {
-                pending.finish()
-            }
+    override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) = redrawWithin(context, goAsync())
+}
+
+/** Both widgets drawn inside the broadcast's time ([NowPlayingWidget.REDRAW_LIMIT_MS] at most). */
+private fun redrawWithin(context: Context, pending: android.content.BroadcastReceiver.PendingResult) {
+    val app = context.applicationContext as LyrionApp
+    app.appScope.launch {
+        try {
+            withTimeoutOrNull(NowPlayingWidget.REDRAW_LIMIT_MS) { NowPlayingWidget.render(app) }
+        } finally {
+            pending.finish()
         }
     }
 }

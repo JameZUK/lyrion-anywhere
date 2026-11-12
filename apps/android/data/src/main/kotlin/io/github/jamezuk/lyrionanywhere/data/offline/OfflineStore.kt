@@ -16,6 +16,8 @@ import io.github.jamezuk.lyrionanywhere.core.planSmart
 import io.github.jamezuk.lyrionanywhere.core.removeOfflineData
 import io.github.jamezuk.lyrionanywhere.core.syncPlays
 import io.github.jamezuk.lyrionanywhere.data.Connection
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /** Whose downloads: a user on a server. */
 data class Owner(val serverUrl: String, val username: String)
@@ -79,8 +81,45 @@ interface OnlineLink {
     suspend fun syncRatings(store: OfflineStore) {}
 }
 
-/** The real store over the Rust library. */
-class RustOfflineStore(val library: OfflineLibrary) : OfflineStore {
+/**
+ * The real store over the Rust library. The repository closes it at a sign-out, a revocation
+ * or a change of user while other work may still hold it, so the library is handed to other
+ * Rust calls only through [lend].
+ */
+class RustOfflineStore(@PublishedApi internal val library: OfflineLibrary) : OfflineStore {
+    /** One while open, plus one per [lend] in progress: the library closes when it reaches 0. */
+    @PublishedApi internal val uses = AtomicLong(1)
+    private val closed = AtomicBoolean(false)
+
+    /**
+     * Runs [block] with the library, kept open until [block] returns even if the store is
+     * closed meanwhile. For passing the library to another Rust call: UniFFI refuses a closed
+     * object's own methods, but one passed as an argument is not checked and would reach freed
+     * memory. Throws [IllegalStateException] once the store is closed.
+     */
+    inline fun <R> lend(block: (OfflineLibrary) -> R): R {
+        acquire()
+        try {
+            return block(library)
+        } finally {
+            release()
+        }
+    }
+
+    @PublishedApi internal fun acquire() {
+        while (true) {
+            val n = uses.get()
+            check(n > 0 && !isClosed()) { "the offline library is closed" }
+            if (uses.compareAndSet(n, n + 1)) return
+        }
+    }
+
+    @PublishedApi internal fun isClosed() = closed.get()
+
+    @PublishedApi internal fun release() {
+        if (uses.decrementAndGet() == 0L) library.close()
+    }
+
     override fun tracks() = library.tracks()
 
     override fun albums() = library.albums()
@@ -101,12 +140,15 @@ class RustOfflineStore(val library: OfflineLibrary) : OfflineStore {
 
     override fun pendingPlays() = library.pendingPlays().toInt()
 
-    override fun planSmart(wanted: List<DownloadRequest>) = planSmart(library, wanted)
+    override fun planSmart(wanted: List<DownloadRequest>) = lend { planSmart(it, wanted) }
 
     override fun rateOffline(trackId: Long, trackKey: String, rating: Int, at: Long) =
         rating in 0..100 && at >= 0 && library.rateOffline(trackId, trackKey, rating.toUInt(), at.toULong())
 
-    override fun close() = library.close()
+    /** Closes the library now, or once the last [lend] in progress ends. */
+    override fun close() {
+        if (closed.compareAndSet(false, true)) release()
+    }
 
     companion object {
         fun open(root: String, owner: Owner): OfflineStore =
@@ -146,12 +188,12 @@ class RustOnlineLink(private val connection: Connection) : OnlineLink {
         network: NetworkKind,
         observer: DownloadObserver,
     ): DownloaderHandle =
-        RustDownloader(Downloader(connection.session, (store as RustOfflineStore).library, policy, network, observer))
+        RustDownloader((store as RustOfflineStore).lend { Downloader(connection.session, it, policy, network, observer) })
 
     override suspend fun syncPlays(store: OfflineStore): PlaysSyncOutcome =
-        syncPlays(connection.session, (store as RustOfflineStore).library)
+        (store as RustOfflineStore).lend { syncPlays(connection.session, it) }
 
     override suspend fun syncRatings(store: OfflineStore) {
-        syncRatings(connection.session, (store as RustOfflineStore).library)
+        (store as RustOfflineStore).lend { syncRatings(connection.session, it) }
     }
 }

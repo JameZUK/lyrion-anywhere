@@ -1,5 +1,7 @@
 package io.github.jamezuk.lyrionanywhere.playback
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -14,9 +16,12 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
+import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
 import io.github.jamezuk.lyrionanywhere.playback.auto.AutoArtGrants
@@ -361,6 +366,49 @@ class PlaybackService : MediaLibraryService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? =
         session.takeIf { ready && access(controllerInfo) != CallerAccess.REJECT }
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val result = super.onStartCommand(intent, flags, startId)
+        // Started by anything but the app itself (the service is exported for cars, so any
+        // app can start it, also with startForegroundService): Android may then require the
+        // foreground, or end the app with a crash. Media3 takes the foreground only while
+        // something plays, so a placeholder satisfies Android, and goes at once. A restart
+        // after the process died has no intent and needs nothing.
+        if (intent != null && !isOwnStart(intent) && foregroundServiceType == ServiceInfo.FOREGROUND_SERVICE_TYPE_NONE) {
+            placeholderForeground()
+            val nothingToPlay = !ready || (!host.localPlayer.state.value.enabled && !offlineActive)
+            if (nothingToPlay) stopSelf(startId)
+        }
+        return result
+    }
+
+    /** Into the foreground and straight out again, with a placeholder (see [onStartCommand]). */
+    private fun placeholderForeground() {
+        try {
+            val nm = getSystemService(NotificationManager::class.java)
+            // Media3's own channel ("Now playing"), so no other channel appears in the settings.
+            if (nm != null && nm.getNotificationChannel(DefaultMediaNotificationProvider.DEFAULT_CHANNEL_ID) == null) {
+                nm.createNotificationChannel(
+                    NotificationChannel(
+                        DefaultMediaNotificationProvider.DEFAULT_CHANNEL_ID,
+                        getString(androidx.media3.session.R.string.default_notification_channel_name),
+                        NotificationManager.IMPORTANCE_LOW,
+                    ),
+                )
+            }
+            val placeholder = NotificationCompat.Builder(this, DefaultMediaNotificationProvider.DEFAULT_CHANNEL_ID)
+                .setSmallIcon(androidx.media3.session.R.drawable.media3_notification_small_icon)
+                .setSilent(true)
+                .build()
+            ServiceCompat.startForeground(this, PLACEHOLDER_ID, placeholder, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        } catch (_: IllegalStateException) {
+            // Refused (ForegroundServiceStartNotAllowedException): started from the background
+            // with plain startService, which requires nothing.
+        } catch (_: SecurityException) {
+            // Not allowed this foreground type: nothing more to do.
+        }
+    }
+
     override fun onTaskRemoved(rootIntent: Intent?) {
         // Keep playing in the background; otherwise there is no reason to stay.
         if (!playing) stopSelf()
@@ -387,6 +435,24 @@ class PlaybackService : MediaLibraryService() {
         session = null
         scope.cancel()
         super.onDestroy()
+    }
+
+    companion object {
+        /** The extra that marks the app's own starts ([startIntent]). */
+        const val EXTRA_START = "io.github.jamezuk.lyrionanywhere.playback.extra.START"
+
+        /** The placeholder's notification id (never Media3's, whose notification stays). */
+        private const val PLACEHOLDER_ID = 0x1A57
+
+        /** Known only in this process: another app can't mark its start as the app's. */
+        private val ownStart: String = java.util.UUID.randomUUID().toString()
+
+        private fun isOwnStart(intent: Intent): Boolean =
+            runCatching { intent.getStringExtra(EXTRA_START) }.getOrNull() == ownStart
+
+        /** How the app starts the service (a plain start, from the foreground). */
+        fun startIntent(context: Context): Intent =
+            Intent(context, PlaybackService::class.java).putExtra(EXTRA_START, ownStart)
     }
 }
 

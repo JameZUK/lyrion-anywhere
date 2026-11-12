@@ -1,7 +1,6 @@
 package io.github.jamezuk.lyrionanywhere.navigation
 
 import android.content.Context
-import android.content.Intent
 import android.os.SystemClock
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -73,7 +72,7 @@ internal val offlineClock: () -> Long = SystemClock::elapsedRealtime
 /** Start the media session service (allowed while the app is in the foreground). */
 internal fun startPlayback(context: Context) {
     try {
-        context.startService(Intent(context, PlaybackService::class.java))
+        context.startService(PlaybackService.startIntent(context))
     } catch (_: IllegalStateException) {
         // Not in the foreground after all; it starts the next time the app opens.
     }

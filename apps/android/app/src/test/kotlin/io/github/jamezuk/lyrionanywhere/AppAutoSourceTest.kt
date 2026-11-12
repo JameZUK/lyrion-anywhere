@@ -2,6 +2,8 @@ package io.github.jamezuk.lyrionanywhere
 
 import io.github.jamezuk.lyrionanywhere.auto.AppAutoSource
 import io.github.jamezuk.lyrionanywhere.core.Device
+import io.github.jamezuk.lyrionanywhere.core.DownloadFormat
+import io.github.jamezuk.lyrionanywhere.core.DownloadOrigin
 import io.github.jamezuk.lyrionanywhere.core.LocalRepeat
 import io.github.jamezuk.lyrionanywhere.core.OutputRoute
 import io.github.jamezuk.lyrionanywhere.core.PlayerConnection
@@ -31,6 +33,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -114,17 +117,41 @@ class AppAutoSourceTest {
         ApiResult.Ok(Unit)
     } as PlayersRepository
 
+    private val downloads = MutableStateFlow(OfflineState())
+
     private fun source() = AppAutoSource(
         auth,
         offlineMode,
         unused<LibraryRepository>(),
         players,
         local,
-        MutableStateFlow(OfflineState()),
+        downloads,
         offline,
         settleMs = 1_000,
         phoneMs = 2_000,
     )
+
+    private fun dl(n: Int, albumId: Long?, trackNumber: Int?) = OfflineTrack(
+        "%064x".format(n), 100L + n, "Song $n", "Band", "Record", albumId, trackNumber?.toUInt(), 120.0,
+        DownloadFormat.ORIGINAL, "flc", null, "flac", 1000uL, 0uL, DownloadOrigin.MANUAL,
+    )
+
+    @Test
+    fun theDownloadsAreGroupedByAlbumOncePerState() {
+        // The car's search reads every album's tracks: grouped once per state, not once per
+        // album (review, 12 November).
+        downloads.value = OfflineState(tracks = listOf(dl(1, 7, 2), dl(2, 8, 1), dl(3, 7, 1), dl(4, null, null)))
+        val s = source()
+        val seven = s.downloadedTracks("a7")
+        assertEquals(listOf(103L, 101L), seven.map { it.trackId })
+        assertEquals(listOf(102L), s.downloadedTracks("a8").map { it.trackId })
+        assertEquals(listOf(104L), s.downloadedTracks("t" + "%064x".format(4).take(16)).map { it.trackId })
+        assertTrue(s.downloadedTracks("a9").isEmpty())
+        assertSame("the same grouping while the state is the same", seven, s.downloadedTracks("a7"))
+        // A new state: grouped again.
+        downloads.value = downloads.value.copy(tracks = listOf(dl(5, 7, 3)))
+        assertEquals(listOf(105L), s.downloadedTracks("a7").map { it.trackId })
+    }
 
     @Test
     fun onlineOnlySignedInAndReachable() {

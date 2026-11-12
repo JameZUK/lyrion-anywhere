@@ -43,7 +43,8 @@ class LibraryCallbackTest {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
     private val source = FakeAutoSource()
     private val codec = FakeCodec()
-    private val tree = AutoCatalogue(source, { it::class.simpleName ?: "?" }, codec)
+    // The downloads searched at once, on the caller's thread: results are ready when asked for.
+    private val tree = AutoCatalogue(source, { it::class.simpleName ?: "?" }, codec, compute = Dispatchers.Unconfined)
 
     private fun controller(pkg: String, uid: Int) =
         MediaSession.ControllerInfo.createTestOnlyControllerInfo(pkg, 0, uid, 0, 0, false, android.os.Bundle.EMPTY, true)
@@ -129,10 +130,22 @@ class LibraryCallbackTest {
     @Test
     fun playRequestsAreCheckedAndStrippedToAnId() {
         val album = codec.id(BrowseNode.Album(7))!!
-        val fromCar = MediaItem.Builder().setMediaId(album).setUri("https://example.com/evil.mp3").build()
+        // The caller's own metadata never goes on (review, 12 November): Media3 shows a new
+        // item's metadata while it loads, and would fetch its artwork URI for the notification.
+        val planted = androidx.media3.common.MediaMetadata.Builder()
+            .setTitle("Planted title")
+            .setArtworkUri(android.net.Uri.parse("content://io.example.provider/secret"))
+            .setArtworkData(byteArrayOf(1, 2, 3), androidx.media3.common.MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+            .setExtras(android.os.Bundle().apply { putString("k", "v") })
+            .build()
+        val fromCar = MediaItem.Builder().setMediaId(album).setUri("https://example.com/evil.mp3").setMediaMetadata(planted).build()
         val ok = done(callback.onAddMediaItems(session, car, mutableListOf(fromCar)))
         assertEquals(album, ok.single().mediaId)
         assertEquals(null, ok.single().localConfiguration)
+        assertEquals(androidx.media3.common.MediaMetadata.EMPTY, ok.single().mediaMetadata)
+        assertEquals(null, ok.single().mediaMetadata.artworkUri)
+        assertEquals(null, ok.single().requestMetadata.mediaUri)
+        assertEquals(null, ok.single().requestMetadata.extras)
 
         fun refused(who: MediaSession.ControllerInfo, items: MutableList<MediaItem>) {
             try {

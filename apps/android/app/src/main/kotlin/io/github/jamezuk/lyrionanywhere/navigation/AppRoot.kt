@@ -107,7 +107,12 @@ fun AppRoot(container: AppContainer) {
                 } else {
                     stringResource(R.string.offline_banner, server.name)
                 },
-                onRetry = { scope.launch { container.account.retry() } },
+                // Signed in, the sign-in itself is fine: the phone's player reconnects now.
+                onRetry = if (s is AuthState.SignedInState) {
+                    { container.localPlayer.reconnectNow() }
+                } else {
+                    { scope.launch { container.account.retry() } }
+                },
                 onSignOut = if (s is AuthState.SignedInState) {
                     null
                 } else {

@@ -2,11 +2,9 @@ package io.github.jamezuk.lyrionanywhere.data
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import io.github.jamezuk.lyrionanywhere.core.ApiException
-import io.github.jamezuk.lyrionanywhere.core.NoHandle
 import io.github.jamezuk.lyrionanywhere.core.PairingInvite
 import io.github.jamezuk.lyrionanywhere.core.SecureStore
 import io.github.jamezuk.lyrionanywhere.core.Session
-import io.github.jamezuk.lyrionanywhere.core.SessionObserver
 import io.github.jamezuk.lyrionanywhere.core.SignedIn
 import io.github.jamezuk.lyrionanywhere.core.StoredCredentials
 import kotlinx.coroutines.CoroutineScope
@@ -43,29 +41,20 @@ class UnencryptedServerTest {
         override fun clear() {}
     }
 
-    /**
-     * Records what is sent; the calls then fail as if offline (a successful sign-in would
-     * build the native library objects, which a JVM test can't).
-     */
-    private class FakeSession : Session(NoHandle) {
+    /** Records what is sent; the calls then fail as if offline. Throws once closed, as the binding does. */
+    private class FakeSession : TestSession() {
         val pairs = mutableListOf<String>()
         val logins = mutableListOf<String>()
 
-        override fun hasSignIn() = false
-
-        override suspend fun login(username: String, password: String, twoStepCode: String?): SignedIn {
+        override suspend fun onLogin(username: String, password: String, twoStepCode: String?): SignedIn {
             logins += username
             throw ApiException.Network("test: offline")
         }
 
-        override suspend fun pair(code: String): SignedIn {
+        override suspend fun onPair(code: String): SignedIn {
             pairs += code
             throw ApiException.Network("test: offline")
         }
-
-        override fun setObserver(observer: SessionObserver) {}
-
-        override fun close() {}
     }
 
     private class Rig(val repo: RustAccountRepository, val settings: SettingsStore, val opened: MutableList<String>, val sessions: MutableList<Session>)

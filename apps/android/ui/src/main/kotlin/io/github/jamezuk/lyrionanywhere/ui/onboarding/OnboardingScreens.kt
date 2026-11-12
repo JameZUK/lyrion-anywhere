@@ -267,7 +267,9 @@ fun SignInScreen(
                     imeAction = ImeAction.Done,
                 ),
                 keyboardActions = KeyboardActions(onDone = { onSubmit() }),
-                modifier = Modifier.fillMaxWidth().semantics { contentType = ContentType.SmsOtpCode },
+                modifier = Modifier.fillMaxWidth().semantics {
+                    contentType = io.github.jamezuk.lyrionanywhere.ui.components.TwoStepCodeContentType
+                },
             )
         }
         ErrorText(state.error?.let { authErrorMessage(it, R.string.error_wrong_credentials) })

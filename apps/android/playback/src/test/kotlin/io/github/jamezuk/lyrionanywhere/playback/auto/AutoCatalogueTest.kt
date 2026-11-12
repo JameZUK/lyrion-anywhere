@@ -6,6 +6,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import io.github.jamezuk.lyrionanywhere.core.BrowseNode
 import io.github.jamezuk.lyrionanywhere.core.Placement
 import io.github.jamezuk.lyrionanywhere.core.Selection
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -188,6 +189,27 @@ class AutoCatalogueTest {
         source.library.calls.clear()
         assertTrue(tree.search("song").all { codec.parse(it.mediaId) is BrowseNode.DownloadedTrack })
         assertTrue(source.library.calls.isEmpty())
+    }
+
+    @Test
+    fun theDownloadsAreSearchedOffTheCallersThread() = runTest {
+        // The session calls in on the main thread; matching every downloaded track there
+        // would stall the car's screen and the app (review, 12 November).
+        val pool = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "downloads-search") }
+        try {
+            val readOn = mutableListOf<String>()
+            val watched = object : AutoSource by source {
+                override fun downloadedTracks(albumRef: String) = source.downloadedTracks(albumRef).also {
+                    synchronized(readOn) { readOn += Thread.currentThread().name }
+                }
+            }
+            val offMain = AutoCatalogue(watched, { node -> node::class.simpleName ?: "?" }, codec, compute = pool.asCoroutineDispatcher())
+            source.isOnline = false
+            assertEquals(3, offMain.search("song").size)
+            assertTrue(readOn.toString(), readOn.isNotEmpty() && readOn.all { it == "downloads-search" })
+        } finally {
+            pool.shutdownNow()
+        }
     }
 
     @Test

@@ -206,7 +206,8 @@ class LyrionApp : Application(), SingletonImageLoader.Factory, PlaybackHost, Lau
     override fun newImageLoader(context: PlatformContext): ImageLoader =
         ImageLoader.Builder(context)
             .components {
-                add(ArtworkKeyer())
+                // Covers are cached per server: the same artwork key names another image there.
+                add(ArtworkKeyer { io.github.jamezuk.lyrionanywhere.ui.art.artScopeOf(container.account.state.value) })
                 add(ArtworkFetcher.Factory(container.art) { ref -> container.offline.artwork(ref) })
             }
             .memoryCache { MemoryCache.Builder().maxSizePercent(context, 0.2).build() }

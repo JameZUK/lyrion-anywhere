@@ -1,19 +1,41 @@
 package io.github.jamezuk.lyrionanywhere.data
 
 import androidx.datastore.core.DataStore
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.MutablePreferences
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import io.github.jamezuk.lyrionanywhere.core.DownloadFormat
 import io.github.jamezuk.lyrionanywhere.core.StreamQuality
 import io.github.jamezuk.lyrionanywhere.data.offline.DownloadSettings
+import java.io.File
+import java.io.IOException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
+
+/**
+ * The settings' file as a DataStore. A file that is corrupt (a truncated write, a bad block)
+ * is replaced by the defaults rather than failing every read and write from then on.
+ */
+fun settingsDataStore(
+    scope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+    produceFile: () -> File,
+): DataStore<Preferences> = PreferenceDataStoreFactory.create(
+    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+    scope = scope,
+    produceFile = produceFile,
+)
 
 /** Non-secret settings: which server, which player is being controlled, whether this
  *  phone is a player itself, its sound (DSP and bit-perfect output), and which LMS virtual
@@ -233,7 +255,18 @@ interface SettingsStore {
 fun isOwnerName(v: String?): Boolean = v != null && v.length in 1..128 && v.none { it.isISOControl() }
 
 class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsStore {
-    override val settings: Flow<AppSettings> = store.data.map {
+    /** Saves a change. A disk that fails (full, an I/O error) loses only this change. */
+    private suspend fun save(transform: suspend (MutablePreferences) -> Unit) {
+        try {
+            store.edit(transform)
+        } catch (_: IOException) {
+        }
+    }
+
+    // A file that can't be read gives the defaults (a corrupt one is replaced: settingsDataStore).
+    override val settings: Flow<AppSettings> = store.data.catch { e ->
+        if (e is IOException) emit(emptyPreferences()) else throw e
+    }.map {
         AppSettings(
             serverUrl = it[SERVER],
             selectedPlayerId = it[PLAYER],
@@ -282,12 +315,12 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
     }
 
     override suspend fun setBackgroundPromptDismissed(dismissed: Boolean) {
-        store.edit { e -> e[BACKGROUND_PROMPT_DISMISSED] = dismissed }
+        save { e -> e[BACKGROUND_PROMPT_DISMISSED] = dismissed }
     }
 
     override suspend fun setDevicePrefs(prefs: DevicePrefs) {
         val car = prefs.car.sanitised()
-        store.edit { e ->
+        save { e ->
             e[HAPTICS] = prefs.haptics
             e[DYNAMIC_COLOUR] = prefs.dynamicColour
             e[CAR_AUTO] = car.auto.name
@@ -303,7 +336,7 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
     }
 
     override suspend fun setNowPlayingPrefs(prefs: NowPlayingPrefs) {
-        store.edit { e ->
+        save { e ->
             e[NP_LAYOUT] = prefs.layout.name
             e[NP_VISUALISER] = prefs.visualiser
             e[NP_STYLE] = prefs.visualStyle.name
@@ -313,7 +346,7 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
 
     override suspend fun setLibraryPrefs(prefs: LibraryPrefs) {
         val p = prefs.sanitised()
-        store.edit { e ->
+        save { e ->
             if (p.chip == null) e.remove(LIB_CHIP) else e[LIB_CHIP] = p.chip.name
             e[LIB_SORT] = p.albumOrder.name
             e[LIB_GRID] = p.albumGrid
@@ -321,46 +354,46 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
     }
 
     override suspend fun addRecentSearch(term: String) {
-        store.edit { e -> e[RECENT_SEARCHES] = RecentSearches.encode(RecentSearches.add(RecentSearches.decode(e[RECENT_SEARCHES]), term)) }
+        save { e -> e[RECENT_SEARCHES] = RecentSearches.encode(RecentSearches.add(RecentSearches.decode(e[RECENT_SEARCHES]), term)) }
     }
 
     override suspend fun removeRecentSearch(term: String) {
-        store.edit { e -> e[RECENT_SEARCHES] = RecentSearches.encode(RecentSearches.remove(RecentSearches.decode(e[RECENT_SEARCHES]), term)) }
+        save { e -> e[RECENT_SEARCHES] = RecentSearches.encode(RecentSearches.remove(RecentSearches.decode(e[RECENT_SEARCHES]), term)) }
     }
 
     override suspend fun clearRecentSearches() {
-        store.edit { e -> e.remove(RECENT_SEARCHES) }
+        save { e -> e.remove(RECENT_SEARCHES) }
     }
 
     override suspend fun setSleepFade(seconds: Int) {
-        store.edit { p -> p[SLEEP_FADE] = sanitiseSleepFade(seconds) }
+        save { p -> p[SLEEP_FADE] = sanitiseSleepFade(seconds) }
     }
 
     override suspend fun setStreaming(streaming: StreamingSettings) {
-        store.edit { p ->
+        save { p ->
             p[STREAM_WIFI] = streaming.wifi.name
             p[STREAM_MOBILE] = streaming.mobile.name
         }
     }
 
     override suspend fun setReadAhead(readAhead: ReadAheadSettings) {
-        store.edit { p ->
+        save { p ->
             p[READ_AHEAD] = readAhead.enabled
             p[READ_AHEAD_MOBILE] = readAhead.onMobileData
         }
     }
 
     override suspend fun setReplayCacheBytes(bytes: Long) {
-        store.edit { p -> p[REPLAY_CACHE] = ReplayCache.sanitise(bytes) }
+        save { p -> p[REPLAY_CACHE] = ReplayCache.sanitise(bytes) }
     }
 
     override suspend fun setLyricsPeek(on: Boolean) {
-        store.edit { p -> p[LYRICS_PEEK] = on }
+        save { p -> p[LYRICS_PEEK] = on }
     }
 
     override suspend fun setDownloads(downloads: DownloadSettings) {
         val d = downloads.sanitised()
-        store.edit { p ->
+        save { p ->
             p[DL_WIFI] = d.wifiFormat.name
             p[DL_MOBILE] = d.mobileFormat.name
             p[DL_WIFI_ONLY] = d.wifiOnly
@@ -371,13 +404,13 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
     }
 
     override suspend fun setOfflineOwner(username: String?) {
-        store.edit { p ->
+        save { p ->
             if (username != null && isOwnerName(username)) p[OFFLINE_OWNER] = username else p.remove(OFFLINE_OWNER)
         }
     }
 
     override suspend fun setServerUrl(url: String?) {
-        store.edit { p ->
+        save { p ->
             if (url == null) p.remove(SERVER) else p[SERVER] = url
             // A different server has different players and libraries.
             p.remove(PLAYER)
@@ -392,21 +425,21 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
     }
 
     override suspend fun setSelectedPlayer(playerId: String?) {
-        store.edit { p -> if (playerId == null) p.remove(PLAYER) else p[PLAYER] = playerId }
+        save { p -> if (playerId == null) p.remove(PLAYER) else p[PLAYER] = playerId }
     }
 
     override suspend fun setPlayOnPhone(on: Boolean) {
-        store.edit { p -> p[PLAY_ON_PHONE] = on }
+        save { p -> p[PLAY_ON_PHONE] = on }
     }
 
     override suspend fun setSound(sound: SoundSettings) {
         val s = sound.sanitised()
-        store.edit { p -> writeSound(p, s) }
+        save { p -> writeSound(p, s) }
     }
 
     override suspend fun setDefaultPlayer(choice: DefaultPlayer, playerId: String?) {
         if (choice == DefaultPlayer.SPECIFIC && !isPlayerId(playerId)) return
-        store.edit { p ->
+        save { p ->
             p[DEFAULT_PLAYER] = choice.name
             if (choice == DefaultPlayer.SPECIFIC && playerId != null) {
                 p[DEFAULT_PLAYER_ID] = playerId.lowercase()
@@ -418,7 +451,7 @@ class DataStoreSettings(private val store: DataStore<Preferences>) : SettingsSto
 
     override suspend fun setLibrary(id: String?) {
         if (id != null && !isLibraryId(id)) return
-        store.edit { p -> if (id == null) p.remove(LIBRARY) else p[LIBRARY] = id }
+        save { p -> if (id == null) p.remove(LIBRARY) else p[LIBRARY] = id }
     }
 
     private companion object {

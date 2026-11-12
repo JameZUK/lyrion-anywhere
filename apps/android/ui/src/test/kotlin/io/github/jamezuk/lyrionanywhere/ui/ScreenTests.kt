@@ -1,6 +1,11 @@
 package io.github.jamezuk.lyrionanywhere.ui
 
+import androidx.compose.ui.autofill.ContentType
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
+import io.github.jamezuk.lyrionanywhere.ui.components.TwoStepCodeContentType
+import org.junit.Assert.assertTrue
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.assertIsEnabled
@@ -32,6 +37,12 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+
+/** The autofill content types the screen's fields carry. */
+fun contentTypes(compose: androidx.compose.ui.test.junit4.ComposeContentTestRule): List<ContentType> =
+    compose.onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsProperties.ContentType))
+        .fetchSemanticsNodes()
+        .map { n -> n.config[SemanticsProperties.ContentType] }
 
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35], qualifiers = "w420dp-h1800dp")
@@ -71,6 +82,15 @@ class ScreenTests {
         signIn(SignInUiState(username = "alice", password = "pw", needsCode = true, code = "123"))
         compose.onNodeWithText("Two-step code").assertIsDisplayed()
         signInButton().assertIsNotEnabled()
+    }
+
+    @Test
+    fun theTwoStepCodeIsOfferedToAuthenticatorAppsNotTextMessages() {
+        // The code comes from an authenticator app: marked as an SMS code, autofill would
+        // offer whatever six digits last arrived by text message (review, 12 November).
+        signIn(SignInUiState(username = "alice", password = "pw", needsCode = true, code = ""))
+        assertEquals(listOf(ContentType.Username, ContentType.Password, TwoStepCodeContentType), contentTypes(compose))
+        assertTrue(ContentType.SmsOtpCode !in contentTypes(compose))
     }
 
     @Test

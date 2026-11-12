@@ -86,9 +86,9 @@ class RustTrackResolver(
 ) : TrackResolver {
     override suspend fun resolve(owner: Owner, tracks: List<QueuedDownload>): ApiResult<List<Long?>> {
         val c = source.connection.value ?: return ApiResult.Err(AppError.SignedOut)
-        val library = (storeOf(owner) as? RustOfflineStore)?.library
+        val store = storeOf(owner) as? RustOfflineStore
             ?: return ApiResult.Err(AppError.Forbidden(WRONG_ACCOUNT))
-        return apiCall { resolveOfflineTracks(c.session, library, tracks.map { OfflineTrackRef(it.trackId, it.key) }) }
+        return apiCall { store.lend { resolveOfflineTracks(c.session, it, tracks.map { t -> OfflineTrackRef(t.trackId, t.key) }) } }
     }
 }
 

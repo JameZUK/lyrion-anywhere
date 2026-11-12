@@ -53,8 +53,16 @@ class AppAutoSource(
     override fun downloadedAlbums(): List<OfflineAlbum> =
         offline.value.albums.sortedBy { it.title.lowercase() }
 
-    override fun downloadedTracks(albumRef: String): List<OfflineTrack> =
-        OfflineAlbumViewModel.albumOf(offline.value, albumRef).tracks
+    override fun downloadedTracks(albumRef: String): List<OfflineTrack> = byAlbum()[albumRef].orEmpty()
+
+    /** The downloads by album, grouped once per state (the car's search reads every album). */
+    @Volatile private var grouped: Pair<OfflineState, Map<String, List<OfflineTrack>>>? = null
+
+    private fun byAlbum(): Map<String, List<OfflineTrack>> {
+        val s = offline.value
+        grouped?.let { (state, albums) -> if (state === s) return albums }
+        return OfflineAlbumViewModel.byAlbum(s).also { grouped = s to it }
+    }
 
     override fun allDownloadedTracks(): List<OfflineTrack> = offline.value.tracks
 

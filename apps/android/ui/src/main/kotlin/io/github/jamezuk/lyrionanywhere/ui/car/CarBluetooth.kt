@@ -128,7 +128,10 @@ object CarBluetooth {
 
 /**
  * Listens for Bluetooth connections while the app is in front (registered at run time, not
- * in the manifest, and not exported: only the system's broadcasts reach it).
+ * in the manifest). Registered as exported: the two broadcasts come from the Bluetooth
+ * stack's own uid, not the system's, and a not-exported receiver never hears them. That lets
+ * no other app in: both are protected broadcasts, which only the system and the Bluetooth
+ * stack may send, and [CarBluetooth.eventOf] still reads nothing but those two with a device.
  */
 class CarBluetoothWatcher(private val context: Context, private val onEvent: (CarBtEvent) -> Unit) {
     private var registered = false
@@ -148,7 +151,7 @@ class CarBluetoothWatcher(private val context: Context, private val onEvent: (Ca
             addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
         }
         registered = runCatching {
-            ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+            ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
         }.isSuccess
         return registered
     }
