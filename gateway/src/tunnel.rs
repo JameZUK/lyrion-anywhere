@@ -79,7 +79,11 @@ pub async fn player_upgrade(
     ws: WebSocketUpgrade,
 ) -> Response {
     if !origin_allowed(&gw.cfg, &headers) {
-        warn!("refused cross-origin websocket");
+        // Anyone can cause this line: rationed (review low).
+        static CROSS: crate::limits::LogBudget = crate::limits::LogBudget::new();
+        if let Some(suppressed) = CROSS.allow(Instant::now()) {
+            warn!(suppressed, "refused cross-origin websocket");
+        }
         return (StatusCode::FORBIDDEN, "origin not allowed\n").into_response();
     }
     let addr = crate::client_addr(&gw.cfg, peer, &headers);
@@ -321,7 +325,11 @@ async fn handle(gw: AppState, mut ws: WebSocket, addr: std::net::IpAddr) {
         ),
     };
     let Some(auth) = auth else {
-        warn!("player authentication failed");
+        // Anyone can cause this line: rationed (review low).
+        static FAILED: crate::limits::LogBudget = crate::limits::LogBudget::new();
+        if let Some(suppressed) = FAILED.allow(Instant::now()) {
+            warn!(suppressed, "player authentication failed");
+        }
         return close(ws, close_code::POLICY, "unauthorised").await;
     };
     // An old client: told to update, before anything is opened or resumed (a session it
@@ -450,18 +458,16 @@ async fn handle(gw: AppState, mut ws: WebSocket, addr: std::net::IpAddr) {
             return;
         }
     }
-    // Off the async workers (M7): a stalled disk must not hold up other sessions.
+    // At most one write, and only when something is due (review low: two writes at every
+    // attach, however often a device reconnected), off the async workers (M7): a stalled
+    // disk must not hold up other sessions.
     let device = session.device.device_id;
-    let seen = gw.accounts.claim_seen(device);
+    let due = gw.accounts.claim_attach(device, protocol);
     gw.too_old.forget(device);
-    gw.db(move |a| {
-        a.touch_device(device);
-        a.record_protocol(device, protocol);
-        if seen {
-            a.write_seen(device, addr);
-        }
-    })
-    .await;
+    if due.seen || due.protocol {
+        gw.db(move |a| a.write_attach(device, protocol, addr, due))
+            .await;
+    }
     info!(device = %session.name(), user = %session.device.username, mac = %session.device.mac_string(), resumed, "player attached");
 
     let (sink, stream) = ws.split();

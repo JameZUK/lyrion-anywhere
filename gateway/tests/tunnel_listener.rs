@@ -175,6 +175,28 @@ fn the_tunnel_listener_serves_the_gateway_and_the_status_names_it() {
     let v = gw.tunnel_status();
     assert_eq!(v["tunnel_listen"], tunnel.to_string(), "{v}");
     assert_eq!(v["error"], Value::Null, "{v}");
+    // Review low: what `cloudflared` relays (HTTPS ended at Cloudflare's edge) is answered
+    // with HSTS; the listener's own plain probe above is not.
+    assert!(
+        !out.to_ascii_lowercase()
+            .contains("strict-transport-security"),
+        "{out}"
+    );
+    let out = http_get(
+        tunnel,
+        "/healthz",
+        &[
+            ("x-forwarded-proto", "https"),
+            ("x-forwarded-for", "198.51.100.7"),
+            ("cf-connecting-ip", "198.51.100.7"),
+        ],
+    );
+    assert!(out.starts_with("HTTP/1.1 200"), "{out}");
+    assert!(
+        out.to_ascii_lowercase()
+            .contains("strict-transport-security: max-age=31536000"),
+        "{out}"
+    );
 }
 
 #[test]
