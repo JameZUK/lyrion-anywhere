@@ -724,7 +724,9 @@ fn opus_head_parser_survives_random_and_mutated_headers() {
             assert!(matches!(h.channels, 1 | 2));
             assert_eq!(h.mapping.len(), h.channels as usize);
             assert!(h.streams >= 1 && h.coupled <= h.streams);
+            assert!(h.streams <= h.channels, "one stream per channel at most");
             assert!(h.output_gain_db.is_finite());
+            assert!(h.gain() <= 16.0, "the applied gain is capped");
         }
     }
 }

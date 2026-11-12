@@ -183,6 +183,26 @@ fn ogg_crc_matches_the_fixture() {
     }
 }
 
+/// Security (open since the 15 October review): the header's output gain was applied as
+/// it came, so a stream saying +128 dB (the most a header can) played about 2.5 million
+/// times too loud. The gain is capped at +24 dB.
+#[test]
+fn a_hostile_output_gain_is_capped() {
+    let (page, _) = ogg_pages(FIXTURE)[0].clone();
+    let mut b = FIXTURE.to_vec();
+    let head = page.start + 27 + usize::from(FIXTURE[page.start + 26]);
+    assert_eq!(&b[head..head + 8], b"OpusHead");
+    b[head + 16..head + 18].copy_from_slice(&i16::MAX.to_le_bytes());
+    b[page.start + 22..page.start + 26].fill(0);
+    let crc = ogg_crc(&b[page.clone()]);
+    b[page.start + 22..page.start + 26].copy_from_slice(&crc.to_le_bytes());
+    let (st, _, pcm) = decode(&b, b'u');
+    assert_eq!(st, DecodeStatus::Finished);
+    // The fixture peaks at 0.1; +24 dB is about 15.8 times.
+    let peak = pcm.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    assert!((1.4..1.8).contains(&peak), "peak {peak}");
+}
+
 /// The packets of a page that holds only whole packets.
 fn page_packets(page: &[u8]) -> Vec<Vec<u8>> {
     assert_eq!(page[5] & 1, 0, "a continued packet");
