@@ -35,7 +35,7 @@ pub const OUTBOX_LIMIT: usize = 2000;
 pub const STREAM_RETRY_DEFAULT: Duration = Duration::from_secs(60);
 
 /// The gateway's reply to a new or resumed player session.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Greeting {
     /// 32 lowercase hex characters.
     pub session: String,
@@ -48,6 +48,21 @@ pub struct Greeting {
     pub resumed: bool,
     /// The resume grace granted, in seconds (`None`: an older gateway, which holds 60 s).
     pub grace: Option<u64>,
+}
+
+/// Never prints the resume secret, so a `{:?}` in a log line, panic message or crash report
+/// can't leak it (review 2026-11-12).
+impl std::fmt::Debug for Greeting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Greeting")
+            .field("session", &self.session)
+            .field("secret", &"<redacted>")
+            .field("mac", &self.mac)
+            .field("name", &self.name)
+            .field("resumed", &self.resumed)
+            .field("grace", &self.grace)
+            .finish()
+    }
 }
 
 /// How long to keep resuming a dropped session, from the grace the greeting granted:
@@ -893,6 +908,21 @@ pub fn resumed_commands(acted: bool, paused: bool) -> Option<Vec<Vec<Value>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review 2026-11-12: `Greeting` derived `Debug`, printing the resume secret.
+    #[test]
+    fn a_greeting_never_prints_its_secret() {
+        let secret = "5e".repeat(16);
+        let g = parse_greeting(&format!(
+            r#"{{"session":"{}","secret":"{secret}","mac":"02:4c:41:00:00:01","name":"Phone","resumed":false,"grace":600}}"#,
+            "ab".repeat(16)
+        ))
+        .unwrap();
+        assert_eq!(g.secret, secret);
+        let shown = format!("{g:?} {g:#?}");
+        assert!(!shown.contains(&secret), "{shown}");
+        assert!(shown.contains("redacted") && shown.contains(&"ab".repeat(16)));
+    }
 
     #[test]
     fn only_a_clean_end_that_brought_nothing_is_the_end() {
