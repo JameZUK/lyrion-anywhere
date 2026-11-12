@@ -28,6 +28,7 @@ export const session = {
 	token: 't',
 	subscribe: () => () => {},
 	authed: <T,>(fn: (t: string) => Promise<T>) => fn('t'),
+	authedOnce: <T,>(fn: (t: string) => Promise<T>) => fn('t'),
 	renew: async () => true,
 };
 

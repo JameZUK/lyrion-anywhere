@@ -48,6 +48,8 @@ class FakeWorker {
 }
 
 let addModuleGate: Promise<void> | null = null;
+/** Rates whose worklet fails to load (as when the network drops just then). */
+const failRates = new Set<number>();
 /** False: a context without `audioWorklet`, as on a plain-http page. */
 let worklets = true;
 /** Like a browser without a user gesture yet: contexts start suspended until one. */
@@ -59,7 +61,15 @@ class FakeAudioContext {
 	destination = {};
 	// On the prototype, as in a browser (capability detection looks there).
 	get audioWorklet() {
-		return worklets ? { addModule: async () => addModuleGate ?? undefined } : undefined;
+		const rate = this.sampleRate;
+		return worklets
+			? {
+					addModule: async () => {
+						await (addModuleGate ?? undefined);
+						if (failRates.has(rate)) throw new Error('the worklet did not load');
+					},
+				}
+			: undefined;
 	}
 	constructor(o: { sampleRate: number }) {
 		this.sampleRate = o.sampleRate;
@@ -96,7 +106,7 @@ HTMLMediaElement.prototype.play = async () => {};
 HTMLMediaElement.prototype.pause = () => {};
 HTMLMediaElement.prototype.load = () => {};
 
-const { device } = await import('#lib/player/device.svelte');
+const { device, START_WATCHDOG_MS } = await import('#lib/player/device.svelte');
 
 const settle = async () => {
 	for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
@@ -108,6 +118,7 @@ beforeEach(() => {
 	FakeWorker.all = [];
 	FakeAudioContext.all = [];
 	addModuleGate = null;
+	failRates.clear();
 	worklets = true;
 	gesture = { needed: false, given: false };
 	session.current = { access_token: 't1' };
@@ -184,6 +195,49 @@ test('rate requests are built one at a time; an overtaken one is dropped', async
 	expect(w.cmds('rate-ready').map((m) => m.rate)).toEqual([44100, 48000]);
 });
 
+// Regression (review, Web low): a failed sample-rate switch closed the old context first and
+// was never tried again (the worker asks once per rate), so the device went silent for good.
+test('a failed rate switch keeps the old output, and tells the worker so it asks again', async () => {
+	const w = await started();
+	failRates.add(96000);
+	w.say({ rate: 96000 });
+	await settle();
+	expect(open().map((c) => c.sampleRate)).toEqual([44100]); // the old one is still there
+	expect(w.cmds('rate-failed')).toEqual([{ cmd: 'rate-failed', rate: 96000 }]);
+	expect(w.cmds('start-sink')).toHaveLength(0);
+	expect(device.log.some((l) => l.includes('audio output failed at 96000 Hz'))).toBe(true);
+	// The worker asks again (after its pause); this time it works, and only then is the old one closed.
+	failRates.clear();
+	w.say({ rate: 96000 });
+	await settle();
+	expect(open().map((c) => c.sampleRate)).toEqual([96000]);
+	expect(w.cmds('start-sink')).toHaveLength(1);
+	expect(w.cmds('rate-ready').at(-1)).toEqual({ cmd: 'rate-ready', rate: 96000 });
+});
+
+test('while a new output is built, the old one keeps playing', async () => {
+	const w = await started();
+	let release!: () => void;
+	addModuleGate = new Promise((r) => (release = r));
+	w.say({ rate: 96000 });
+	await settle();
+	expect(open().map((c) => c.sampleRate)).toEqual([44100, 96000]);
+	release();
+	addModuleGate = null;
+	await settle();
+	expect(open().map((c) => c.sampleRate)).toEqual([96000]);
+});
+
+test('stopping while a new output is being built closes both, even if its worklet never loads', async () => {
+	const w = await started();
+	addModuleGate = new Promise(() => {}); // never loads
+	w.say({ rate: 96000 });
+	await settle();
+	expect(open()).toHaveLength(2);
+	device.stop();
+	expect(open()).toHaveLength(0);
+});
+
 test('stopping closes the context, and a late rate request builds nothing', async () => {
 	const w = await started();
 	device.stop();
@@ -214,6 +268,92 @@ test('a worker error shows the error and lets the device start again', async () 
 	expect(w.terminated).toBe(true);
 	await device.start();
 	expect(FakeWorker.all).toHaveLength(2);
+});
+
+// Regression (review M19): the worker's start failing (its core not loading, say) reached the
+// page as nothing at all, and the device stayed "starting" until a reload.
+test('a worker that cannot start says so: an error, everything released, and it can start again', async () => {
+	await device.start();
+	const w = FakeWorker.all.at(-1)!;
+	expect(device.state).toBe('starting');
+	w.say({ fatal: 'the core would not load' });
+	expect(device.state).toBe('error');
+	expect(w.terminated).toBe(true);
+	expect(open()).toHaveLength(0);
+	expect(device.log.some((l) => l.includes('could not start') && l.includes('the core would not load'))).toBe(true);
+	await device.start();
+	expect(FakeWorker.all).toHaveLength(2);
+});
+
+test('a fatal message is shown as text only, and bounded', async () => {
+	await device.start();
+	const w = FakeWorker.all.at(-1)!;
+	w.say({ fatal: `<img src=x onerror=alert(1)>${'x'.repeat(5000)}` });
+	expect(device.state).toBe('error');
+	const line = device.log.find((l) => l.includes('could not start'))!;
+	expect(line.length).toBeLessThan(400);
+	// Anything but a string is not a fatal message.
+	await device.start();
+	const w2 = FakeWorker.all.at(-1)!;
+	w2.say({ fatal: { message: 'x' } });
+	w2.say({ fatal: 1 });
+	expect(device.state).toBe('starting');
+});
+
+describe('the start watchdog', () => {
+	afterEach(() => vi.useRealTimers());
+
+	test('a worker that never says anything is given up on: never "starting" for ever', async () => {
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		await device.start();
+		const w = FakeWorker.all.at(-1)!;
+		expect(device.state).toBe('starting');
+		await vi.advanceTimersByTimeAsync(START_WATCHDOG_MS - 1);
+		expect(device.state).toBe('starting');
+		await vi.advanceTimersByTimeAsync(2);
+		expect(device.state).toBe('error');
+		expect(w.terminated).toBe(true);
+		expect(device.log.some((l) => l.includes('did not start'))).toBe(true);
+	});
+
+	test('a worker that has started (connecting) or reports its connection is left alone', async () => {
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		await device.start();
+		FakeWorker.all.at(-1)!.say({ started: true });
+		await vi.advanceTimersByTimeAsync(START_WATCHDOG_MS * 2);
+		expect(device.state).toBe('starting');
+		device.stop();
+		await device.start();
+		FakeWorker.all.at(-1)!.say({ connection: 'restarting' });
+		await vi.advanceTimersByTimeAsync(START_WATCHDOG_MS * 2);
+		expect(device.state).toBe('reconnecting');
+	});
+
+	test('a start that hangs before the worker is made is given up on too, and makes nothing later', async () => {
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		let release!: () => void;
+		addModuleGate = new Promise((r) => (release = r));
+		const starting = device.start();
+		await vi.advanceTimersByTimeAsync(START_WATCHDOG_MS + 1);
+		expect(device.state).toBe('error');
+		release();
+		await starting;
+		await vi.advanceTimersByTimeAsync(10);
+		expect(FakeWorker.all).toHaveLength(0);
+		expect(open()).toHaveLength(0);
+	});
+
+	test('a stop, or a start that connected, cancels it', async () => {
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		await device.start();
+		device.stop();
+		await vi.advanceTimersByTimeAsync(START_WATCHDOG_MS * 2);
+		expect(device.state).toBe('stopped');
+		await device.start();
+		FakeWorker.all.at(-1)!.say({ connection: 'connected', player: { mac: '02:4c:41:00:00:01', name: 'Test' } });
+		await vi.advanceTimersByTimeAsync(START_WATCHDOG_MS * 2);
+		expect(device.state).toBe('connected');
+	});
 });
 
 // Regression: pressing Stop while "Starting…" let the start carry on and create a worker.

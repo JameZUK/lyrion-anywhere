@@ -55,6 +55,54 @@ test('backoff grows, is capped, and is jittered', () => {
   assert.ok(backoffMs(2, () => 0) >= 1600 && backoffMs(2, () => 1) <= 2400);
 });
 
+// Review M20: the backoff started again at every greeting, so a gateway that greets and then
+// closes at once (LMS refusing the player, say) was reconnected about every 1.5 s for ever,
+// each time a new LMS session. As in the native apps, it starts again only once a connection
+// has lived a while after its greeting.
+test('greet-then-close: the backoff keeps growing; it starts again only after a connection lived 5 s', async () => {
+  const { Backoff, STABLE_AFTER_MS } = await import('../../static/player/reconnect.js');
+  assert.equal(STABLE_AFTER_MS, 5000, 'the same rule as the mobile engine');
+  const mid = () => 0.5;
+  const b = new Backoff();
+  let t = 0;
+  const delays = [];
+  for (let i = 0; i < 6; i++) {
+    t += 300; // the socket opens and is greeted…
+    b.greeted(t);
+    t += 200; // …and closed again at once
+    const d = b.next(t, mid);
+    delays.push(d);
+    t += d;
+  }
+  assert.deepEqual(delays, [500, 1000, 2000, 4000, 5000, 5000]);
+  // A connection that lived long enough: the next drop is retried quickly again.
+  b.greeted(t);
+  t += STABLE_AFTER_MS;
+  assert.equal(b.next(t, mid), 500);
+  // Just short of it is not enough.
+  b.greeted(t);
+  t += STABLE_AFTER_MS - 1;
+  assert.equal(b.next(t, mid), 1000);
+  // Closes with no greeting at all (nothing listening) grow as before.
+  const c = new Backoff();
+  assert.deepEqual([c.next(0, mid), c.next(10, mid), c.next(20, mid)], [500, 1000, 2000]);
+  // A greeting counts once: a later close without a new greeting is not "lived" again.
+  const g = new Backoff();
+  g.greeted(0);
+  assert.equal(g.next(10_000, mid), 500);
+  assert.equal(g.next(20_000, mid), 1000);
+});
+
+test('the worker resets its backoff by the connection’s age, never at the greeting', () => {
+  const src = readFileSync(new URL('../../static/player/player-worker.js', import.meta.url), 'utf8');
+  const greeting = src.slice(src.indexOf('function onGreeting('), src.indexOf('function onFrames('));
+  assert.doesNotMatch(greeting, /attempt\s*=\s*0/);
+  assert.match(greeting, /backoff\.greeted\(now\(\)\)/);
+  assert.doesNotMatch(src, /backoffMs\(attempt\+\+\)/);
+  const close = src.slice(src.indexOf('function onClose('), src.indexOf('function send('));
+  assert.match(close, /const delay = backoff\.next\(now\(\)\);/);
+});
+
 test('stream failures: retry network trouble, fail on definitive answers', () => {
   assert.equal(streamFailureAction(0), 'retry');
   assert.equal(streamFailureAction(502), 'retry');
@@ -108,6 +156,58 @@ test('a rate change is requested once, not on every tick', () => {
   assert.equal(r.want(44100, ready), true);
 });
 
+// Regression (review, Web low): a rate the page failed to build was never asked for again
+// (once per rate), so the device stayed silent for good after one failed switch.
+test('a failed rate is asked for again after a pause that grows; a new rate is asked at once', async () => {
+  const { RATE_RETRY_MS } = await import('../../static/player/reconnect.js');
+  const r = new RateRequest();
+  let ready = 44100;
+  let t = 0;
+  const asks = [];
+  const tick = (rate) => r.want(rate, ready, t) && asks.push([rate, t]);
+  tick(96000);
+  assert.deepEqual(asks, [[96000, 0]]);
+  r.failed(96000, t);
+  // Every 20 ms tick until the pause is over: nothing.
+  for (; t < RATE_RETRY_MS[0]; t += 20) tick(96000);
+  assert.deepEqual(asks, [[96000, 0]]);
+  tick(96000);
+  assert.deepEqual(asks.at(-1), [96000, RATE_RETRY_MS[0]]);
+  // It fails again: a longer pause.
+  r.failed(96000, t);
+  const second = t;
+  for (; t < second + RATE_RETRY_MS[1]; t += 20) tick(96000);
+  assert.equal(asks.length, 2);
+  tick(96000);
+  assert.equal(asks.length, 3);
+  // Meanwhile the next track wants another rate: asked at once.
+  r.failed(96000, t);
+  tick(48000);
+  assert.deepEqual(asks.at(-1), [48000, t]);
+  // Built: the pauses start again from the shortest.
+  ready = 48000;
+  r.ready();
+  t += 1;
+  tick(96000);
+  r.failed(96000, t);
+  const third = t;
+  t += RATE_RETRY_MS[0];
+  tick(96000);
+  assert.deepEqual(asks.at(-1), [96000, third + RATE_RETRY_MS[0]]);
+  // A stale failure (for a rate no longer asked for) changes nothing.
+  r.failed(22050, t);
+  assert.equal(r.want(44100, ready, t), true);
+  // The pauses are capped.
+  assert.ok(RATE_RETRY_MS.every((ms, i) => i === 0 || ms >= RATE_RETRY_MS[i - 1]));
+  assert.ok(RATE_RETRY_MS.at(-1) <= 30_000);
+});
+
+test('the worker hears of a failed rate and tells RateRequest', () => {
+  const src = readFileSync(new URL('../../static/player/player-worker.js', import.meta.url), 'utf8');
+  assert.match(src, /msg\.cmd === 'rate-failed'\) \{(\s*\/\/[^\n]*)*\s*rateRequest\.failed\(msg\.rate, now\(\)\)/);
+  assert.match(src, /readyRate = msg\.rate;\s*rateRequest\.ready\(\);/);
+});
+
 // Regression: after an unauthorised close, the worker reconnected only on a token sent with
 // reconnect:true, so a renewal retried after being offline (a plain token update) never
 // brought the player back.
@@ -127,7 +227,7 @@ test('the worker goes through both guards', () => {
   // Every rate request is gated by RateRequest.
   const posts = src.match(/postMessage\(\{ rate \}\)/g) ?? [];
   assert.equal(posts.length, 1);
-  assert.match(src, /if \(rateRequest\.want\(rate, readyRate\)\) postMessage\(\{ rate \}\)/);
+  assert.match(src, /if \(rateRequest\.want\(rate, readyRate, now\(\)\)\) postMessage\(\{ rate \}\)/);
   // A token reconnects through AuthWait, which the unauthorised close arms.
   assert.match(src, /if \(authWait\.token\(open\)\) connect\(/);
   assert.match(src, /authWait\.refused\(\);\s*postMessage\(\{ connection: 'reauthenticating', authFailed: true \}\)/);

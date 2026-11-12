@@ -1,6 +1,7 @@
 // App-wide state: the session, the players the user may control, the selected player's
 // status (polled, and refreshed at once on events), and smooth progress between polls.
 import { SessionManager, type SessionStatus } from '#lib/api/session';
+import { browserBus } from '#lib/api/session-bus';
 import { Api } from '#lib/api/rpc';
 import { EventsClient, type EventsState, type LmsEvent, type LmsHealth } from '#lib/api/events';
 import type { Session } from '#lib/api/auth';
@@ -57,7 +58,8 @@ function stored(key: string): string {
 	}
 }
 
-export const session = new SessionManager();
+/** This tab's sign-in; a sign-out in another tab of this browser ends it too (see session-bus). */
+export const session = new SessionManager(undefined, undefined, browserBus());
 export const api = new Api(session);
 /** Track analyses (waveforms) for this session. */
 export const analyses = new AnalysisClient((url, signal) =>
@@ -162,12 +164,17 @@ class AppState {
 		});
 		api.onHealth = (e) => {
 			this.#reached(true);
+			// The gateway answered: if the events socket is waiting to try again, it tries now.
+			this.#events.nudge();
 			if (e) this.#markBusy(e.retryAfter === undefined ? null : Math.min(e.retryAfter, 300));
 			else this.#markOk();
 		};
 		api.onUnreachable = () => this.#reached(false);
 		if (typeof window !== 'undefined') {
-			addEventListener('online', () => this.#reassess());
+			addEventListener('online', () => {
+				this.#reassess();
+				this.#events.nudge(); // back online: the events socket need not wait out its backoff
+			});
 			addEventListener('offline', () => this.#reassess());
 		}
 		session.subscribe((s, st) => {
@@ -420,7 +427,9 @@ class AppState {
 	}
 
 	#onVisible = () => {
-		if (document.visibilityState === 'visible') this.soon();
+		if (document.visibilityState !== 'visible') return;
+		this.soon();
+		this.#events.nudge(); // shown again: the events socket tries now if it is waiting
 	};
 
 	async loadPlayers() {

@@ -3,6 +3,7 @@
 import * as auth from './auth';
 import { ApiError } from './http';
 import type { RefreshReason, Session } from './auth';
+import type { SessionBus, SessionSignal } from './session-bus';
 
 /** Renew this long before the 15-minute access token expires. */
 const RENEW_BEFORE_MS = 5 * 60 * 1000;
@@ -14,11 +15,13 @@ export type SessionStatus = 'unknown' | 'offline' | 'signed-out' | 'signed-in';
 export const RETRY_MS = [2_000, 5_000, 15_000, 30_000, 60_000];
 
 /**
- * Did the server refuse the sign-in? Only then is the user signed out. Anything else (no
- * network, a phone waking up, the gateway restarting behind the proxy) is retried, so a
- * moment offline never costs the user their sign-in.
+ * Did the gateway itself refuse the sign-in? That is a 401 carrying its JSON `error`
+ * (docs/PROTOCOL.md), and only then is the user signed out. Anything else is retried: no
+ * network, a phone waking up, the gateway restarting behind the proxy, and a proxy's, CDN's
+ * or firewall's own page of any status (a challenge page, a 404 from a misrouted path). A
+ * moment like that never costs the user their sign-in, their profile or their downloads.
  */
-export const refused = (e: unknown) => e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 429;
+export const refused = (e: unknown) => e instanceof ApiError && e.status === 401 && typeof e.body.error === 'string';
 type Listener = (s: Session | null, status: SessionStatus) => void;
 
 /** Set while a sign-out has not reached the server yet: the next page load must not restore. */
@@ -34,6 +37,13 @@ export const PROFILE_KEY = 'anywhere.session';
 
 /** The part of a session kept across page loads. */
 export type Profile = Pick<Session, 'user' | 'device'>;
+
+/**
+ * The same sign-in: the same user on the same device. A refresh that answers with anyone
+ * else means the shared cookie now belongs to another sign-in (signed out and in again in
+ * another tab), which is never taken for a renewal of this one.
+ */
+export const sameSignIn = (a: Profile, b: Profile): boolean => a.user.username === b.user.username && a.device.id === b.device.id;
 
 const text = (v: unknown, max: number): v is string => typeof v === 'string' && v.length > 0 && v.length <= max;
 
@@ -92,15 +102,30 @@ export class SessionManager {
 	#retry: ReturnType<typeof setTimeout> | undefined;
 	#attempt = 0;
 	/**
-	 * Bumped by every sign-out and sign-in: a refresh started before it must not apply its
-	 * result (it would sign the user back in, or out of the new session).
+	 * Bumped by every sign-out and sign-in (and a switch to another sign-in): a refresh
+	 * started before it must not apply its result (it would sign the user back in, or out of
+	 * the new session), and a call made before it is never retried after it.
 	 */
 	#gen = 0;
+	/** The last sign-out was asked for (here or in another tab), not the server ending it. */
+	#onPurpose = false;
 
+	/**
+	 * `bus`: the other tabs of this browser (see session-bus.ts). A sign-out here is told to
+	 * them, and one there ends the sign-in here.
+	 */
 	constructor(
 		private api: AuthApi = auth,
 		private flags: Flags | undefined = safeLocal(),
-	) {}
+		private bus: SessionBus | undefined = undefined,
+	) {
+		bus?.listen((m) => this.#heard(m));
+	}
+
+	/** Signed out because someone asked to be (here or in another tab), not by the server. */
+	get endedOnPurpose(): boolean {
+		return this.status === 'signed-out' && (this.#onPurpose || this.signOutPending);
+	}
 
 	/** A sign-out this browser has not managed to tell the server about yet. */
 	get signOutPending(): boolean {
@@ -155,6 +180,7 @@ export class SessionManager {
 		clearTimeout(this.#timer);
 		clearTimeout(this.#retry);
 		this.#attempt = 0;
+		if (s) this.#onPurpose = false;
 		this.current = s;
 		this.provisional = false;
 		this.status = s ? 'signed-in' : 'signed-out';
@@ -164,6 +190,35 @@ export class SessionManager {
 			this.#timer = setTimeout(() => void this.renew('timer'), ms);
 		}
 		this.#emit();
+	}
+
+	/**
+	 * Take a session the server gave back for this sign-in. If it is someone else's (another
+	 * user or device: see sameSignIn), this sign-in has ended: everything of it stops and is
+	 * reset as at a sign-out, then the new one starts afresh, and nothing pending is retried
+	 * under it. Returns whether it was this same sign-in.
+	 */
+	#apply(s: Session): boolean {
+		if (!this.current || sameSignIn(this.current, s)) {
+			this.#set(s);
+			return true;
+		}
+		this.#gen++;
+		this.#renewing = null;
+		this.#set(null);
+		this.#set(s);
+		return false;
+	}
+
+	/** A message from another tab of this browser. */
+	#heard(m: SessionSignal) {
+		if (m.type !== 'signed-out' || this.status === 'signed-out') return;
+		// Signed out there: the shared refresh cookie is gone, so this sign-in is too. That tab
+		// has told the server; here it only ends.
+		this.#gen++;
+		this.#renewing = null;
+		this.#onPurpose = true;
+		this.#set(null);
 	}
 
 	/** Try again later: the server couldn't be reached. */
@@ -186,7 +241,8 @@ export class SessionManager {
 		try {
 			const s = await this.api.refresh(reason);
 			if (gen !== this.#gen) return false; // signed out (or in) meanwhile
-			this.#set(s);
+			// A page that came back provisionally as someone else starts afresh as this one.
+			this.#apply(s);
 			return true;
 		} catch (e) {
 			if (gen !== this.#gen) return false;
@@ -230,7 +286,10 @@ export class SessionManager {
 		this.#gen++;
 		this.#renewing = null;
 		this.#flag(true);
+		this.#onPurpose = true;
 		this.#set(null);
+		// The other tabs share the cookie: they are signed out with this one.
+		this.bus?.post({ type: 'signed-out' });
 		if (!token) return; // finished on the next page load (see restore)
 		const gen = this.#gen;
 		try {
@@ -266,8 +325,8 @@ export class SessionManager {
 			try {
 				const s = await this.api.refresh(reason);
 				if (gen !== this.#gen) return false; // signed out meanwhile: stay signed out
-				this.#set(s);
-				return true;
+				// Someone else's session: not a renewal of this one, so nothing is retried.
+				return this.#apply(s);
 			} catch (e) {
 				if (gen !== this.#gen) return false;
 				if (refused(e)) this.#set(null);
@@ -288,14 +347,25 @@ export class SessionManager {
 		this.#emit();
 	}
 
+	/**
+	 * Before a call: signed in, and with a real token (a sign-in not confirmed yet gets one
+	 * first, so no request ever goes with an empty one). Returns the sign-in's generation.
+	 */
+	async #ready(): Promise<number> {
+		if (!this.current) throw new ApiError(401, 'not signed in');
+		const gen = this.#gen;
+		if (this.provisional) {
+			const ok = await this.renew();
+			// Signed out, or confirmed as someone else: the call was made for the old sign-in.
+			if (!this.current || gen !== this.#gen) throw new ApiError(401, 'not signed in');
+			if (!ok) throw new TypeError('Can’t reach your music server.');
+		}
+		return gen;
+	}
+
 	/** Run an authenticated call; on 401, renew the token once and retry. */
 	async authed<T>(fn: (token: string) => Promise<T>): Promise<T> {
-		if (!this.current) throw new ApiError(401, 'not signed in');
-		// Not confirmed yet: get a real token first (no request ever goes with an empty one).
-		if (this.provisional && !(await this.renew())) {
-			if (!this.current) throw new ApiError(401, 'not signed in');
-			throw new TypeError('Can’t reach your music server.');
-		}
+		const gen = await this.#ready();
 		const token = this.token;
 		try {
 			return await fn(token);
@@ -303,8 +373,40 @@ export class SessionManager {
 			if (!(e instanceof ApiError) || e.status !== 401) throw e;
 			// Another call may have renewed it already.
 			if (this.token === token && !(await this.renew())) throw e;
-			if (!this.current) throw e;
+			// Signed out, or in as someone else, meanwhile: never retried under another sign-in.
+			if (!this.current || gen !== this.#gen) throw e;
 			return fn(this.token);
 		}
+	}
+
+	/**
+	 * Run a call that carries a password or a two-step code. The gateway answers wrong
+	 * credentials with 403, never 401 (docs/PROTOCOL.md), so a 401 is about the token: it is
+	 * renewed for the next try, but the call is not sent again by itself. What the person
+	 * typed is sent once per tap, and fails with {@link RenewedFirst} instead.
+	 */
+	async authedOnce<T>(fn: (token: string) => Promise<T>): Promise<T> {
+		const gen = await this.#ready();
+		const token = this.token;
+		try {
+			return await fn(token);
+		} catch (e) {
+			if (!(e instanceof ApiError) || e.status !== 401) throw e;
+			const ok = this.token === token ? await this.renew() : true;
+			if (!this.current || gen !== this.#gen) throw e;
+			if (!ok) throw new TypeError('Can’t reach your music server.');
+			throw new RenewedFirst();
+		}
+	}
+}
+
+/**
+ * A call carrying a password or code met an expired token. The token has been renewed, and
+ * nothing was checked or changed: the person tries again (see SessionManager.authedOnce).
+ */
+export class RenewedFirst extends Error {
+	constructor() {
+		super('Your sign-in had to be renewed first, so nothing was changed. Try again.');
+		this.name = 'RenewedFirst';
 	}
 }

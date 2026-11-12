@@ -2,8 +2,8 @@
 	// "Add another device": a one-time code that signs another device (the Android app) in
 	// as this user, shown as a QR code holding the pairing link and as text to type. The
 	// gateway asks for the password and makes a few an hour; each lasts 10 minutes, once.
-	import { ApiError } from '#lib/api/http';
 	import type { PairingCode } from '#lib/api/auth';
+	import { credentialsError } from '#lib/account/credentials';
 	import { encodeQr, groupPairingCode, pairingLink, qrPath } from '#lib/qr/qr.js';
 	import Icon from './Icon.svelte';
 
@@ -13,7 +13,7 @@
 		now = () => Date.now(),
 		heading = true,
 	}: {
-		/** Ask the gateway for a code (with the account password). */
+		/** Ask the gateway for a code (with the account password), sent once (see SessionManager.authedOnce). */
 		create: (password: string) => Promise<PairingCode>;
 		/** This app's own address (`location.origin`): the server the link names. */
 		server: string;
@@ -58,12 +58,8 @@
 			const secs = Number.isFinite(r.expires_in) && r.expires_in > 0 && r.expires_in <= 3600 ? r.expires_in : 600;
 			shown = { code, link: pairingLink(server, r.code), ends: now() + secs * 1000 };
 		} catch (err) {
-			error =
-				err instanceof ApiError && err.status === 401
-					? 'Password not right.'
-					: err instanceof ApiError && err.status === 429
-						? 'Too many codes or new devices recently. Try again later.'
-						: (err as Error).message;
+			// A wrong password is 403 (a 401 is the token, renewed without sending it again).
+			error = credentialsError(err, 'Password not right.', 'Too many codes or new devices recently. Try again later.');
 		} finally {
 			password = '';
 			busy = false;

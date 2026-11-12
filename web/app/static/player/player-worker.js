@@ -11,8 +11,24 @@ const V = new URL(self.location.href).searchParams.get('v');
 // Messages that arrive while the helpers load wait here, then go to the real handler.
 const early = [];
 onmessage = (e) => early.push(e);
+// Anything that goes wrong while this worker starts is fatal, and the page is told, so this
+// device never stays "starting". The message handler is async: a rejection in it never
+// reaches the page's Worker.onerror, only this. Once started, one is only logged.
+let started = false;
+let failed = false;
+const why = (err) => String((err && err.message) || err || 'unknown error').slice(0, 300);
+function fatal(err) {
+  if (failed) return;
+  failed = true;
+  postMessage({ fatal: why(err) });
+}
+self.onunhandledrejection = (e) => {
+  e.preventDefault?.();
+  if (!started) fatal(e.reason);
+  else postMessage({ log: `unexpected error: ${why(e.reason)}` });
+};
 const VQ = V && /^[\w.-]{1,64}$/.test(V) ? `?v=${V}` : '';
-const { AuthWait, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, StreamInfo, backoffMs, factsSeq, closeAction, describeSeek, downloadStream, loadCore, qualityMessage, routeMessage, sanitiseQuality, signInMessage, socketSilent } =
+const { AuthWait, Backoff, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, StreamInfo, factsSeq, closeAction, describeSeek, downloadStream, loadCore, qualityMessage, routeMessage, sanitiseQuality, signInMessage, socketSilent } =
   await import(`./reconnect.js${VQ}`);
 const { Presentation } = await import(`./presentation.js${VQ}`);
 const { VisualTap } = await import(`./visual.js${VQ}`);
@@ -59,7 +75,8 @@ let stream = null; // { id, n, controller }
 let streamId = 0;
 let tickTimer = null;
 let open = false;
-let attempt = 0;
+// Starts again only once a connection has lived a while after its greeting (see Backoff).
+const backoff = new Backoff();
 let disconnectedAt = 0;
 // When the socket last brought anything (LMS polls every 5 s): a silent one has died.
 let lastHeard = 0;
@@ -220,18 +237,25 @@ function reportVolume() {
 onmessage = async (e) => {
   const msg = e.data;
   if (msg.cmd === 'start') {
-    token = msg.token;
-    quality = sanitiseQuality(msg.quality);
-    outputMode = msg.mode === 'media' ? 'media' : 'worklet';
-    mediaVariant = Number.isInteger(msg.variant) ? msg.variant : 0;
-    if (msg.port) attachSink(msg.port);
-    // The build version in the URLs: a browser can't pair an old cached copy with a new app.
-    core = await loadCore(self.location.href, (u) => import(u));
-    wasmMemory = core.wasm.memory ?? null;
-    // Learn the gateway's features first (briefly), so even the first sign-in can ask for
-    // keepalives; if that fails, it is asked again after the greeting.
-    await learnFeatures(3000);
-    connect(false);
+    try {
+      token = msg.token;
+      quality = sanitiseQuality(msg.quality);
+      outputMode = msg.mode === 'media' ? 'media' : 'worklet';
+      mediaVariant = Number.isInteger(msg.variant) ? msg.variant : 0;
+      if (msg.port) attachSink(msg.port);
+      // The build version in the URLs: a browser can't pair an old cached copy with a new app.
+      core = await loadCore(self.location.href, (u) => import(u));
+      wasmMemory = core.wasm.memory ?? null;
+      // Learn the gateway's features first (briefly), so even the first sign-in can ask for
+      // keepalives; if that fails, it is asked again after the greeting.
+      await learnFeatures(3000);
+      connect(false);
+      // Connecting: from here the connection reports itself (the page's start watchdog stops).
+      started = true;
+      postMessage({ started: true });
+    } catch (err) {
+      fatal(err);
+    }
   } else if (msg.cmd === 'visual') {
     // The page shows the visualiser (or stopped showing it).
     visual.setOn(msg.on === true);
@@ -248,6 +272,10 @@ onmessage = async (e) => {
     attachSink(msg.port);
   } else if (msg.cmd === 'rate-ready') {
     readyRate = msg.rate;
+    rateRequest.ready();
+  } else if (msg.cmd === 'rate-failed') {
+    // The page could not build an output at that rate (and kept the old one): ask again later.
+    rateRequest.failed(msg.rate, now());
   } else if (msg.cmd === 'clock') {
     // Web Audio mode: which context time is heard when (from getOutputTimestamp).
     presentation.setClock(msg.ctx, msg.at, msg.rate);
@@ -393,7 +421,7 @@ function onGreeting(g) {
   open = true;
   lastHeard = now();
   void learnFeatures();
-  attempt = 0;
+  backoff.greeted(now());
   // A fresh session (not a resumed one): what the page did here meanwhile must be retold.
   const fresh = !g.resumed || !player;
   if (fresh) {
@@ -511,7 +539,7 @@ function onClose(code, reason) {
   }
   let resume = action === 'resume' && session !== '' && now() - disconnectedAt < RESUME_FOR_MS;
   if (!resume) session = '';
-  const delay = backoffMs(attempt++);
+  const delay = backoff.next(now());
   postMessage({ connection: resume ? 'reconnecting' : 'restarting' });
   setTimeout(() => connect(resume), delay);
 }
@@ -677,7 +705,7 @@ function workletTick() {
   const rate = player.output_rate();
   if (rate && rate !== readyRate) {
     // The main thread (re)creates the AudioContext at this rate: ask once, then wait.
-    if (rateRequest.want(rate, readyRate)) postMessage({ rate });
+    if (rateRequest.want(rate, readyRate, now())) postMessage({ rate });
   } else if (rate) {
     const target = rate * WORKLET_AHEAD_SECS;
     while (pulled - played < target) {

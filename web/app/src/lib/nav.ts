@@ -70,9 +70,12 @@ export function routeOutsideHashChanges(shown: () => string): () => void {
 			if (routerEntry(e.state)) {
 				// Stepped back to the page shown: now go on to the route asked for, after the
 				// router has seen this event too (it would cancel a navigation started before
-				// it ran).
+				// it ran). It was opened from outside the app (see openedFromOutside).
 				pending = null;
-				setTimeout(() => void goto(to), 0);
+				setTimeout(() => {
+					outsideNext = routeOf(to);
+					void goto(to);
+				}, 0);
 				return;
 			}
 			if (stepped < MAX_STRAY_ENTRIES) {
@@ -116,6 +119,35 @@ export function noteNavigation(n: NavigationNote) {
 	if (n.type === 'enter') depth = 0;
 	else if (n.type === 'popstate') depth = Math.max(0, depth + (Number.isInteger(n.delta) ? (n.delta as number) : -1));
 	else if (n.type !== 'form') depth++;
+	const here = currentRoute();
+	if (n.type === 'enter') outside = here;
+	else outside = outsideNext !== null && outsideNext === here ? here : null;
+	outsideNext = null;
+}
+
+// --- Opened from outside ------------------------------------------------------------------
+// Pages that act by themselves (the installed app's shortcuts, "Search on …") must not act on
+// a link from elsewhere: anyone can link to them. Such a page asks for a tap first when its
+// route was opened from outside the app, and acts at once only when reached from inside it.
+
+const currentRoute = (): string | null => (typeof location === 'undefined' ? null : routeOf(location.hash));
+
+/**
+ * The route opened from outside the app: the one this page load began on (a link elsewhere,
+ * a bookmark, the address bar, an installed app's shortcut, a reload), or one an address
+ * change outside the router opened since. Navigating in the app clears it.
+ */
+let outside: string | null = currentRoute();
+/** The route the outside-change handler is about to open (see routeOutsideHashChanges). */
+let outsideNext: string | null = null;
+
+/**
+ * Was the route of `hash` opened from outside the app, rather than by a tap in it? Answered
+ * for that route only, so a page that asks a moment late (just after the app navigated on)
+ * gets the answer for its own route, not the next one's.
+ */
+export function openedFromOutside(hash: string): boolean {
+	return outside !== null && typeof hash === 'string' && routeOf(hash.startsWith('#') ? hash : `#${hash}`) === outside;
 }
 
 /** Whether Back can return to an earlier page of the app. */

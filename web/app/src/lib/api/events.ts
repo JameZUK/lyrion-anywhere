@@ -21,6 +21,12 @@ export interface EventsHandlers {
 	onLms?: (h: LmsHealth) => void;
 }
 
+/**
+ * A nudge (see EventsClient.nudge) never makes a connection attempt sooner than this after
+ * the last one, however often it comes.
+ */
+export const NUDGE_FLOOR_MS = 1000;
+
 /** Backoff with jitter: ~1 s, 2 s, 4 s … up to ~30 s. */
 export function eventsBackoff(attempt: number, random = Math.random): number {
 	return Math.round(Math.min(1000 * 2 ** attempt, 30_000) * (0.8 + 0.4 * random()));
@@ -55,7 +61,10 @@ export class EventsClient {
 	#ws: WebSocket | null = null;
 	#attempt = 0;
 	#stopped = false;
+	/** The next attempt, while one is waiting (undefined otherwise). */
 	#timer: ReturnType<typeof setTimeout> | undefined;
+	/** When the last attempt was made (Date.now()). */
+	#lastAttempt = -Infinity;
 
 	constructor(
 		private session: SessionManager,
@@ -71,13 +80,29 @@ export class EventsClient {
 	stop() {
 		this.#stopped = true;
 		clearTimeout(this.#timer);
+		this.#timer = undefined;
 		this.#ws?.close(1000);
 		this.#ws = null;
 		this.h.onState?.('stopped');
 	}
 
+	/**
+	 * There is reason to think the server is back (the browser is online again, the page is
+	 * shown again, a request just got through): while waiting to try again, try now rather
+	 * than at the end of the backoff, which may be half a minute away. Never sooner than
+	 * NUDGE_FLOOR_MS after the last attempt; a socket that is live or connecting is left be.
+	 */
+	nudge() {
+		if (this.#stopped || this.#ws || this.#timer === undefined || !this.session.current) return;
+		clearTimeout(this.#timer);
+		const wait = Math.max(0, this.#lastAttempt + NUDGE_FLOOR_MS - Date.now());
+		this.#timer = setTimeout(() => this.#connect(), wait);
+	}
+
 	#connect() {
+		this.#timer = undefined;
 		if (this.#stopped || !this.session.current) return;
+		this.#lastAttempt = Date.now();
 		this.h.onState?.('connecting');
 		const url = new URL('/v1/events', location.href);
 		url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';

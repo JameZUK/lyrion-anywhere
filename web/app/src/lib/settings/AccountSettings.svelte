@@ -6,6 +6,7 @@
 	import { device } from '#lib/player/device.svelte';
 	import * as auth from '#lib/api/auth';
 	import { ApiError } from '#lib/api/http';
+	import { credentialsError } from '#lib/account/credentials';
 	import { downloads, offlinePlayer, plays } from '#lib/offline/index.svelte';
 	import { forgetOwner } from '#lib/offline/settings';
 	import { signOutHere } from '#lib/account/sign-out';
@@ -43,6 +44,8 @@
 	});
 
 	// --- two-step verification --------------------------------------------------------------
+	// Each call carrying the password or a code goes through `authedOnce`: a wrong one is 403
+	// (said as such), and an expired token is renewed without sending them again.
 	let setup = $state<auth.TotpSetup | null>(null);
 	let password = $state('');
 	let code = $state('');
@@ -70,9 +73,9 @@
 		return totpStep(async () => {
 			msg = '';
 			try {
-				setup = await session.authed((t) => auth.totpSetup(t, password));
+				setup = await session.authedOnce((t) => auth.totpSetup(t, password));
 			} catch (err) {
-				msg = err instanceof ApiError && err.status === 401 ? 'Password not right.' : (err as Error).message;
+				msg = credentialsError(err, 'Password not right.');
 			} finally {
 				password = '';
 			}
@@ -82,13 +85,13 @@
 		e.preventDefault();
 		return totpStep(async () => {
 			try {
-				await session.authed((t) => auth.totpConfirm(t, code.replace(/\s/g, '')));
+				await session.authedOnce((t) => auth.totpConfirm(t, code.replace(/\s/g, '')));
 				setup = null;
 				code = '';
 				msg = 'Two-step verification is on.';
 				await loadAccount();
 			} catch (err) {
-				msg = err instanceof ApiError && err.status === 400 ? 'That code is not right. Try the next one.' : (err as Error).message;
+				msg = err instanceof ApiError && err.status === 400 ? 'That code is not right. Try the next one.' : credentialsError(err, 'That code is not right. Try the next one.');
 			}
 		});
 	}
@@ -96,11 +99,11 @@
 		e.preventDefault();
 		return totpStep(async () => {
 			try {
-				await session.authed((t) => auth.totpDisable(t, password, code.replace(/\s/g, '')));
+				await session.authedOnce((t) => auth.totpDisable(t, password, code.replace(/\s/g, '')));
 				msg = 'Two-step verification is off.';
 				await loadAccount();
 			} catch (err) {
-				msg = err instanceof ApiError && err.status === 401 ? 'Password or code not right.' : (err as Error).message;
+				msg = credentialsError(err, 'Password or code not right.');
 			} finally {
 				password = '';
 				code = '';
@@ -144,7 +147,7 @@
 
 {#if open === 'password' && account}
 	<Sheet title="Change password" onclose={() => (open = null)}>
-		<ChangePassword username={account.username} totp={account.totp_enabled} change={(c) => session.authed((t) => auth.changePassword(t, c))} heading={false} />
+		<ChangePassword username={account.username} totp={account.totp_enabled} change={(c) => session.authedOnce((t) => auth.changePassword(t, c))} heading={false} />
 	</Sheet>
 {:else if open === 'two-step' && account}
 	<Sheet title="Two-step verification" onclose={() => (open = null)}>
@@ -188,7 +191,7 @@
 	</Sheet>
 {:else if open === 'device'}
 	<Sheet title="Add another device" onclose={() => (open = null)}>
-		<AddDevice create={(pw) => session.authed((t) => auth.createPairingCode(t, pw))} server={globalThis.location?.origin ?? ''} heading={false} />
+		<AddDevice create={(pw) => session.authedOnce((t) => auth.createPairingCode(t, pw))} server={globalThis.location?.origin ?? ''} heading={false} />
 	</Sheet>
 {/if}
 

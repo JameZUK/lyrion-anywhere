@@ -246,7 +246,7 @@ describe('a page loaded while the server is out of reach', () => {
 	test('the server refusing the sign-in ends it: signed out, and the device forgets who', async () => {
 		vi.useFakeTimers();
 		await signedInBefore();
-		const s = new SessionManager(scripted([new TypeError('Failed to fetch'), new ApiError(401, 'expired')]));
+		const s = new SessionManager(scripted([new TypeError('Failed to fetch'), new ApiError(401, 'expired', false, undefined, { error: 'expired' })]));
 		await s.restore();
 		expect(s.provisional).toBe(true);
 		await vi.advanceTimersByTimeAsync(RETRY_MS[0]!);
@@ -258,7 +258,7 @@ describe('a page loaded while the server is out of reach', () => {
 
 	test('a refusal on a call while provisional signs out too', async () => {
 		await signedInBefore();
-		const s = new SessionManager(scripted([new TypeError('Failed to fetch'), new ApiError(401, 'expired')]));
+		const s = new SessionManager(scripted([new TypeError('Failed to fetch'), new ApiError(401, 'expired', false, undefined, { error: 'expired' })]));
 		await s.restore();
 		await expect(s.authed(async (t) => t)).rejects.toMatchObject({ status: 401 });
 		expect(s.status).toBe('signed-out');

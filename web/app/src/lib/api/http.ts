@@ -34,35 +34,77 @@ export function isBusy(e: unknown): e is ApiError {
 	return e instanceof ApiError && e.status === 503 && e.busy;
 }
 
-/** fetch() that returns parsed JSON (or null for 204) and throws ApiError on failure. */
-export async function callJson<T>(path: string, init: RequestInit = {}): Promise<T> {
-	const resp = await fetch(path, {
-		credentials: 'same-origin',
-		cache: 'no-store',
-		...init,
-		headers: { ...CLIENT_HEADER, ...(init.headers as Record<string, string> | undefined) },
-	});
-	if (resp.status === 204) return null as T;
-	const text = await resp.text().catch(() => '');
-	let parsed: unknown = {};
-	let malformed = false;
-	if (text.trim()) {
-		try {
-			parsed = JSON.parse(text);
-		} catch {
-			malformed = true;
+/**
+ * The longest an API call may take, its answer and body together. Past it the call counts as
+ * the server being out of reach (a connection that died without closing, say). Streams and
+ * downloads don't come through here: they have their own handling of a stalled transfer.
+ */
+export const API_TIMEOUT_MS = 15_000;
+
+/** An API call that took too long. A TypeError, as fetch's own network errors are. */
+export class RequestTimeout extends TypeError {
+	constructor() {
+		super('The music server took too long to answer.');
+		this.name = 'RequestTimeout';
+	}
+}
+
+/**
+ * fetch() that returns parsed JSON (or null for 204) and throws ApiError on failure. Gives up
+ * after `timeoutMs` with {@link RequestTimeout}; a `signal` of the caller's still aborts it.
+ */
+export async function callJson<T>(path: string, init: RequestInit = {}, timeoutMs: number = API_TIMEOUT_MS): Promise<T> {
+	const ctl = new AbortController();
+	const outer = init.signal;
+	let timedOut = false;
+	const timer = setTimeout(() => {
+		if (ctl.signal.aborted) return; // the caller's own abort came first
+		timedOut = true;
+		ctl.abort();
+	}, timeoutMs);
+	const follow = () => ctl.abort(outer?.reason);
+	if (outer?.aborted) follow();
+	else outer?.addEventListener('abort', follow, { once: true });
+	try {
+		const resp = await fetch(path, {
+			credentials: 'same-origin',
+			cache: 'no-store',
+			...init,
+			signal: ctl.signal,
+			headers: { ...CLIENT_HEADER, ...(init.headers as Record<string, string> | undefined) },
+		});
+		if (resp.status === 204) return null as T;
+		// A body cut short by the limit (or an abort) is not an empty answer.
+		const text = await resp.text().catch((e) => {
+			if (ctl.signal.aborted) throw e;
+			return '';
+		});
+		let parsed: unknown = {};
+		let malformed = false;
+		if (text.trim()) {
+			try {
+				parsed = JSON.parse(text);
+			} catch {
+				malformed = true;
+			}
 		}
+		// A success that isn't JSON came from something in the way (a proxy's fallback page,
+		// say), not the gateway: never read it as an empty answer.
+		if (resp.ok && malformed) throw new ApiError(502, 'the server sent something that isn’t the gateway’s answer');
+		const body = (parsed && typeof parsed === 'object' ? parsed : {}) as Record<string, unknown>;
+		if (!resp.ok) {
+			const busy = resp.status === 503 && body.busy === true;
+			const msg = busy ? BUSY_MESSAGE : typeof body.error === 'string' ? body.error : `HTTP ${resp.status}`;
+			throw new ApiError(resp.status, msg, body.totp_required === true, retryAfterOf(resp.headers?.get?.('retry-after') ?? null), body);
+		}
+		return parsed as T;
+	} catch (e) {
+		if (timedOut) throw new RequestTimeout();
+		throw e;
+	} finally {
+		clearTimeout(timer);
+		outer?.removeEventListener('abort', follow);
 	}
-	// A success that isn't JSON came from something in the way (a proxy's fallback page,
-	// say), not the gateway: never read it as an empty answer.
-	if (resp.ok && malformed) throw new ApiError(502, 'the server sent something that isn’t the gateway’s answer');
-	const body = (parsed && typeof parsed === 'object' ? parsed : {}) as Record<string, unknown>;
-	if (!resp.ok) {
-		const busy = resp.status === 503 && body.busy === true;
-		const msg = busy ? BUSY_MESSAGE : typeof body.error === 'string' ? body.error : `HTTP ${resp.status}`;
-		throw new ApiError(resp.status, msg, body.totp_required === true, retryAfterOf(resp.headers?.get?.('retry-after') ?? null), body);
-	}
-	return parsed as T;
 }
 
 /** A `Retry-After` in whole seconds (1 to a day); dates and nonsense give undefined. */

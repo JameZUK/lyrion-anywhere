@@ -1,8 +1,9 @@
 // Session renewal, the RPC/artwork client and the events stream, against fakes.
-import { RETRY_MS, SIGNED_OUT_KEY, SessionManager, refused, type AuthApi } from '#lib/api/session';
+import { PROFILE_KEY, RETRY_MS, SIGNED_OUT_KEY, SessionManager, refused, type AuthApi } from '#lib/api/session';
 import { Api, artUrl } from '#lib/api/rpc';
-import { ApiError, callJson, CLIENT_HEADER } from '#lib/api/http';
-import { EventsClient, eventsBackoff, parseEventMessage } from '#lib/api/events';
+import { API_TIMEOUT_MS, ApiError, callJson, CLIENT_HEADER, RequestTimeout } from '#lib/api/http';
+import { isNetworkError } from '#lib/state/reachability';
+import { EventsClient, NUDGE_FLOOR_MS, eventsBackoff, parseEventMessage } from '#lib/api/events';
 import { clientKind, defaultDeviceName, groupKey, LOCK_HOLD_MS, LOCK_WAIT_MS, login, PAGE_ID, refresh, REFRESH_LOCK, REFRESH_TIMEOUT_MS, RefreshTimeout, rememberedDevice, renameDevice, totpSetup, validDeviceName, withRefreshLock, type LockManagerLike } from '#lib/api/auth';
 import type { Session } from '#lib/api/auth';
 
@@ -13,6 +14,9 @@ const sess = (token: string): Session => ({
 	device: { id: 3, name: 'Firefox on Linux' },
 });
 
+/** The gateway's own refusal of a refresh: a 401 carrying its JSON `error` (docs/PROTOCOL.md). */
+const gatewayRefusal = (message = 'invalid credentials') => new ApiError(401, message, false, undefined, { error: message });
+
 function fakeAuth(tokens: string[]): AuthApi & { refreshes: number } {
 	const api = {
 		refreshes: 0,
@@ -20,7 +24,7 @@ function fakeAuth(tokens: string[]): AuthApi & { refreshes: number } {
 		refresh: vi.fn(async () => {
 			api.refreshes++;
 			const t = tokens.shift();
-			if (!t) throw new ApiError(401, 'expired');
+			if (!t) throw gatewayRefusal('expired');
 			return sess(t);
 		}),
 		logout: vi.fn(async () => {}),
@@ -94,6 +98,97 @@ describe('http', () => {
 		expect(await callJson('/v1/x')).toEqual({});
 		vi.stubGlobal('fetch', async () => new Response(null, { status: 204 }));
 		expect(await callJson('/v1/x')).toBeNull();
+	});
+
+	// Review (Web low): API calls had no time limit, so one on a connection that had silently
+	// died (a phone moving between networks) waited for ever, holding up what waited on it.
+	describe('a time limit on API calls', () => {
+		afterEach(() => vi.useRealTimers());
+
+		/** A fetch that never answers, but gives up when its signal says so (as browsers do). */
+		const hanging = () =>
+			vi.fn(
+				(_u: string, init: RequestInit) =>
+					new Promise<Response>((_, rej) => {
+						const s = init.signal!;
+						const gone = () => rej(s.reason ?? new DOMException('aborted', 'AbortError'));
+						if (s.aborted) gone();
+						else s.addEventListener('abort', gone);
+					}),
+			);
+
+		test('a call that never answers fails after about 15 s, as a network error', async () => {
+			vi.useFakeTimers();
+			const f = hanging();
+			vi.stubGlobal('fetch', f);
+			const p = callJson('/v1/rpc', { method: 'POST' }).catch((e) => e);
+			await vi.advanceTimersByTimeAsync(API_TIMEOUT_MS - 1);
+			const signal = (f.mock.calls[0] as unknown as [string, RequestInit])[1].signal!;
+			expect(signal.aborted).toBe(false);
+			await vi.advanceTimersByTimeAsync(2);
+			const e = await p;
+			expect(e).toBeInstanceOf(RequestTimeout);
+			expect(e).toBeInstanceOf(TypeError);
+			expect(isNetworkError(e)).toBe(true);
+			expect(signal.aborted).toBe(true);
+			expect(API_TIMEOUT_MS).toBeGreaterThanOrEqual(10_000);
+			expect(API_TIMEOUT_MS).toBeLessThanOrEqual(20_000);
+		});
+
+		test('so does an answer whose body never ends (never read as an empty answer)', async () => {
+			vi.useFakeTimers();
+			vi.stubGlobal('fetch', async (_u: string, init: RequestInit) => {
+				const body = new ReadableStream({
+					start(c) {
+						c.enqueue(new TextEncoder().encode('{"result":'));
+						init.signal!.addEventListener('abort', () => c.error(new DOMException('aborted', 'AbortError')));
+					},
+				});
+				return new Response(body, { status: 200, headers: { 'content-type': 'application/json' } });
+			});
+			const p = callJson('/v1/rpc').catch((e) => e);
+			await vi.advanceTimersByTimeAsync(API_TIMEOUT_MS + 1);
+			expect(await p).toBeInstanceOf(RequestTimeout);
+		});
+
+		test('the caller’s own signal still aborts as before; a quick answer leaves no timer behind', async () => {
+			vi.useFakeTimers();
+			vi.stubGlobal('fetch', hanging());
+			const ctl = new AbortController();
+			const p = callJson('/v1/x', { signal: ctl.signal }).catch((e) => e);
+			ctl.abort();
+			const e = await p;
+			expect(e).not.toBeInstanceOf(RequestTimeout);
+			expect((e as Error).name).toBe('AbortError');
+			// Already aborted before the call: aborts at once.
+			const done = new AbortController();
+			done.abort();
+			expect(((await callJson('/v1/x', { signal: done.signal }).catch((x) => x)) as Error).name).toBe('AbortError');
+			vi.stubGlobal('fetch', async () => json(200, { ok: 1 }));
+			const before = vi.getTimerCount();
+			await callJson('/v1/x');
+			await callJson('/v1/x', { signal: new AbortController().signal });
+			vi.stubGlobal('fetch', async () => json(403, { error: 'no' }));
+			await callJson('/v1/x').catch(() => {});
+			expect(vi.getTimerCount()).toBe(before);
+		});
+
+		test('a longer limit can be asked for; streams and downloads never come through here', async () => {
+			vi.useFakeTimers();
+			vi.stubGlobal('fetch', hanging());
+			const p = callJson('/v1/x', {}, 40_000).catch((e) => e);
+			await vi.advanceTimersByTimeAsync(API_TIMEOUT_MS + 1);
+			let settled = false;
+			void p.then(() => (settled = true));
+			await Promise.resolve();
+			expect(settled).toBe(false);
+			await vi.advanceTimersByTimeAsync(40_000);
+			expect(await p).toBeInstanceOf(RequestTimeout);
+			const { readFileSync } = await import('node:fs');
+			for (const f of ['../static/player/reconnect.js', '../src/lib/offline/manager.svelte.ts']) {
+				expect(readFileSync(`${__dirname}/${f}`, 'utf8'), f).not.toMatch(/callJson/);
+			}
+		});
 	});
 
 	test('a non-JSON error body still gives a clean error', async () => {
@@ -191,11 +286,84 @@ describe('session', () => {
 		expect(states).not.toContain('signed-out');
 	});
 
-	test('only refusals sign out', () => {
-		for (const st of [400, 401, 403]) expect(refused(new ApiError(st, 'x'))).toBe(true);
-		for (const st of [408, 429, 500, 502, 503, 504]) expect(refused(new ApiError(st, 'x'))).toBe(false);
+	// Regression (review M9): any 4xx on refresh signed the user out, so a firewall's challenge
+	// (403 HTML) or a proxy's 400 or 404 page wiped the sign-in, the stored profile and the
+	// offline owner. Only the gateway's own refusal ends a sign-in (docs/PROTOCOL.md).
+	test('only the gateway’s own refusal signs out: a 401 carrying its JSON error', () => {
+		expect(refused(gatewayRefusal())).toBe(true);
+		expect(refused(gatewayRefusal('expired'))).toBe(true);
+		// A 401 without the gateway's error (a proxy's own sign-in page, say) is not one.
+		expect(refused(new ApiError(401, 'HTTP 401'))).toBe(false);
+		expect(refused(new ApiError(401, 'x', false, undefined, { error: 42 }))).toBe(false);
+		expect(refused(new ApiError(401, 'x', false, undefined, { message: 'nope' }))).toBe(false);
+		// Any other status, whatever its body says, is something in the way: retried.
+		for (const st of [400, 403, 404, 405, 407, 408, 410, 418, 429, 451, 500, 502, 503, 504]) {
+			expect(refused(new ApiError(st, 'x')), `${st}`).toBe(false);
+			expect(refused(new ApiError(st, 'x', false, undefined, { error: 'x' })), `${st} with an error`).toBe(false);
+		}
 		expect(refused(new TypeError('Failed to fetch'))).toBe(false);
 		expect(refused(new DOMException('aborted', 'AbortError'))).toBe(false);
+		for (const junk of [null, undefined, 401, 'refused', { status: 401, body: { error: 'x' } }]) expect(refused(junk)).toBe(false);
+	});
+
+	test('a proxy’s or CDN’s page of any status, as fetched, never signs out', async () => {
+		const page = (status: number) => new Response('<!doctype html><title>Checking your browser</title>', { status, headers: { 'content-type': 'text/html' } });
+		for (const status of [400, 401, 403, 404, 429, 502]) {
+			vi.stubGlobal('fetch', async () => page(status));
+			const e = await callJson('/v1/auth/refresh', { method: 'POST' }).catch((x) => x);
+			expect(e, `${status}`).toBeInstanceOf(ApiError);
+			expect(refused(e), `${status}`).toBe(false);
+		}
+		// The gateway's own answer does.
+		vi.stubGlobal('fetch', async () => json(401, { error: 'invalid credentials' }));
+		expect(refused(await callJson('/v1/auth/refresh', { method: 'POST' }).catch((x) => x))).toBe(true);
+		// A JSON 403 is not a refusal of the sign-in either.
+		vi.stubGlobal('fetch', async () => json(403, { error: 'forbidden' }));
+		expect(refused(await callJson('/v1/auth/refresh', { method: 'POST' }).catch((x) => x))).toBe(false);
+	});
+
+	test('a renewal answered by a firewall’s challenge page keeps the sign-in and retries with backoff', async () => {
+		vi.useFakeTimers();
+		const outcomes: (string | Error)[] = ['t1', new ApiError(403, 'HTTP 403'), new ApiError(404, 'HTTP 404'), 't2'];
+		const auth = fakeAuth([]);
+		auth.refresh = vi.fn(async () => {
+			const o = outcomes.shift();
+			if (o instanceof Error) throw o;
+			if (!o) throw gatewayRefusal();
+			return sess(o);
+		});
+		const flags = new Map<string, string>();
+		const store = { getItem: (k: string) => flags.get(k) ?? null, setItem: (k: string, v: string) => void flags.set(k, v), removeItem: (k: string) => void flags.delete(k) };
+		const s = new SessionManager(auth, store);
+		await s.restore();
+		expect(await s.renew()).toBe(false);
+		expect(s.status).toBe('signed-in');
+		expect(s.token).toBe('t1');
+		// The profile kept for offline mode is still there.
+		expect(flags.get(PROFILE_KEY)).toContain('alice');
+		await vi.advanceTimersByTimeAsync(RETRY_MS[0]!); // 404 now
+		expect(s.status).toBe('signed-in');
+		await vi.advanceTimersByTimeAsync(RETRY_MS[1]!);
+		expect(s.token).toBe('t2');
+		expect(auth.refresh).toHaveBeenCalledTimes(4);
+	});
+
+	test('a restore answered by a proxy’s page waits and retries instead of showing the sign-in form', async () => {
+		vi.useFakeTimers();
+		const outcomes: (string | Error)[] = [new ApiError(400, 'HTTP 400'), 't1'];
+		const auth = fakeAuth([]);
+		auth.refresh = vi.fn(async () => {
+			const o = outcomes.shift();
+			if (o instanceof Error) throw o;
+			return sess(o!);
+		});
+		const s = new SessionManager(auth, undefined);
+		const states: string[] = [];
+		s.subscribe((_, st) => states.push(st));
+		expect(await s.restore()).toBe(false);
+		await vi.advanceTimersByTimeAsync(RETRY_MS[0]!);
+		expect(s.status).toBe('signed-in');
+		expect(states).not.toContain('signed-out');
 	});
 
 	test('sign-out stops pending retries', async () => {
@@ -664,6 +832,87 @@ describe('events', () => {
 		expect(states.at(-1)).toBe('live');
 		expect(resyncs).toBe(1);
 		c.stop();
+	});
+
+	// Review (Web low): after an outage the controls stayed disabled for up to ~36 s once the
+	// server was back, waiting for the socket's backoff. A nudge (the browser back online, the
+	// page shown again, a request that got through) reconnects at once, with a floor.
+	test('a nudge while retrying reconnects at once, never more often than the floor', async () => {
+		vi.useFakeTimers();
+		FakeWs.all = [];
+		const s = new SessionManager(fakeAuth(['t1']));
+		await s.restore();
+		const states: string[] = [];
+		const c = new EventsClient(s, { onEvent: () => {}, onResync: () => {}, onState: (x) => states.push(x) }, (u) => new FakeWs(u) as unknown as WebSocket);
+		c.start();
+		// Several failed connections: the backoff has grown long.
+		for (let i = 0; i < 6; i++) {
+			await FakeWs.all.at(-1)!.onclose!({ code: 1006, reason: '' });
+			await vi.advanceTimersByTimeAsync(eventsBackoff(i, () => 1) + 1);
+		}
+		const before = FakeWs.all.length;
+		await FakeWs.all.at(-1)!.onclose!({ code: 1006, reason: '' });
+		expect(states.at(-1)).toBe('retrying');
+		// The last attempt was moments ago: the nudge waits for the floor, not the backoff.
+		c.nudge();
+		c.nudge();
+		c.nudge();
+		await vi.advanceTimersByTimeAsync(NUDGE_FLOOR_MS);
+		expect(FakeWs.all.length).toBe(before + 1);
+		FakeWs.all.at(-1)!.onopen!();
+		FakeWs.all.at(-1)!.onmessage!({ data: '{"subscribed":true}' });
+		expect(states.at(-1)).toBe('live');
+		c.stop();
+	});
+
+	test('a nudge long after the last attempt connects straight away', async () => {
+		vi.useFakeTimers();
+		FakeWs.all = [];
+		const s = new SessionManager(fakeAuth(['t1']));
+		await s.restore();
+		const c = new EventsClient(s, { onEvent: () => {}, onResync: () => {} }, (u) => new FakeWs(u) as unknown as WebSocket);
+		c.start();
+		for (let i = 0; i < 5; i++) {
+			await FakeWs.all.at(-1)!.onclose!({ code: 1006, reason: '' });
+			await vi.advanceTimersByTimeAsync(eventsBackoff(i, () => 1) + 1);
+		}
+		await FakeWs.all.at(-1)!.onclose!({ code: 1006, reason: '' });
+		const n = FakeWs.all.length;
+		await vi.advanceTimersByTimeAsync(NUDGE_FLOOR_MS * 3);
+		expect(FakeWs.all.length).toBe(n); // still waiting out its backoff
+		c.nudge();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(FakeWs.all.length).toBe(n + 1);
+		c.stop();
+	});
+
+	test('a nudge does nothing while live, connecting, renewing, stopped or signed out', async () => {
+		vi.useFakeTimers();
+		FakeWs.all = [];
+		const s = new SessionManager(fakeAuth(['t1']));
+		await s.restore();
+		const c = new EventsClient(s, { onEvent: () => {}, onResync: () => {} }, (u) => new FakeWs(u) as unknown as WebSocket);
+		c.nudge(); // not started
+		await vi.advanceTimersByTimeAsync(NUDGE_FLOOR_MS * 2);
+		expect(FakeWs.all).toHaveLength(0);
+		c.start();
+		c.nudge(); // connecting
+		FakeWs.all[0]!.onopen!();
+		FakeWs.all[0]!.onmessage!({ data: '{"subscribed":true}' });
+		c.nudge(); // live
+		await vi.advanceTimersByTimeAsync(NUDGE_FLOOR_MS * 2);
+		expect(FakeWs.all).toHaveLength(1);
+		c.stop();
+		c.nudge();
+		await vi.advanceTimersByTimeAsync(NUDGE_FLOOR_MS * 2);
+		expect(FakeWs.all).toHaveLength(1);
+		c.start();
+		expect(FakeWs.all).toHaveLength(2);
+		await s.signOut();
+		await FakeWs.all[1]!.onclose!({ code: 1006, reason: '' });
+		c.nudge();
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(FakeWs.all).toHaveLength(2);
 	});
 
 	test('an unauthorised close after the session was signed out stops', async () => {
