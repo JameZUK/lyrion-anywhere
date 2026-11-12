@@ -1,7 +1,8 @@
 // Session renewal, the RPC/artwork client and the events stream, against fakes.
 import { PROFILE_KEY, RETRY_MS, SIGNED_OUT_KEY, SessionManager, refused, type AuthApi } from '#lib/api/session';
 import { Api, artUrl } from '#lib/api/rpc';
-import { ApiError, callJson, CLIENT_HEADER } from '#lib/api/http';
+import { API_TIMEOUT_MS, ApiError, callJson, CLIENT_HEADER, RequestTimeout } from '#lib/api/http';
+import { isNetworkError } from '#lib/state/reachability';
 import { EventsClient, eventsBackoff, parseEventMessage } from '#lib/api/events';
 import { clientKind, defaultDeviceName, groupKey, LOCK_HOLD_MS, LOCK_WAIT_MS, login, PAGE_ID, refresh, REFRESH_LOCK, REFRESH_TIMEOUT_MS, RefreshTimeout, rememberedDevice, renameDevice, totpSetup, validDeviceName, withRefreshLock, type LockManagerLike } from '#lib/api/auth';
 import type { Session } from '#lib/api/auth';
@@ -97,6 +98,97 @@ describe('http', () => {
 		expect(await callJson('/v1/x')).toEqual({});
 		vi.stubGlobal('fetch', async () => new Response(null, { status: 204 }));
 		expect(await callJson('/v1/x')).toBeNull();
+	});
+
+	// Review (Web low): API calls had no time limit, so one on a connection that had silently
+	// died (a phone moving between networks) waited for ever, holding up what waited on it.
+	describe('a time limit on API calls', () => {
+		afterEach(() => vi.useRealTimers());
+
+		/** A fetch that never answers, but gives up when its signal says so (as browsers do). */
+		const hanging = () =>
+			vi.fn(
+				(_u: string, init: RequestInit) =>
+					new Promise<Response>((_, rej) => {
+						const s = init.signal!;
+						const gone = () => rej(s.reason ?? new DOMException('aborted', 'AbortError'));
+						if (s.aborted) gone();
+						else s.addEventListener('abort', gone);
+					}),
+			);
+
+		test('a call that never answers fails after about 15 s, as a network error', async () => {
+			vi.useFakeTimers();
+			const f = hanging();
+			vi.stubGlobal('fetch', f);
+			const p = callJson('/v1/rpc', { method: 'POST' }).catch((e) => e);
+			await vi.advanceTimersByTimeAsync(API_TIMEOUT_MS - 1);
+			const signal = (f.mock.calls[0] as unknown as [string, RequestInit])[1].signal!;
+			expect(signal.aborted).toBe(false);
+			await vi.advanceTimersByTimeAsync(2);
+			const e = await p;
+			expect(e).toBeInstanceOf(RequestTimeout);
+			expect(e).toBeInstanceOf(TypeError);
+			expect(isNetworkError(e)).toBe(true);
+			expect(signal.aborted).toBe(true);
+			expect(API_TIMEOUT_MS).toBeGreaterThanOrEqual(10_000);
+			expect(API_TIMEOUT_MS).toBeLessThanOrEqual(20_000);
+		});
+
+		test('so does an answer whose body never ends (never read as an empty answer)', async () => {
+			vi.useFakeTimers();
+			vi.stubGlobal('fetch', async (_u: string, init: RequestInit) => {
+				const body = new ReadableStream({
+					start(c) {
+						c.enqueue(new TextEncoder().encode('{"result":'));
+						init.signal!.addEventListener('abort', () => c.error(new DOMException('aborted', 'AbortError')));
+					},
+				});
+				return new Response(body, { status: 200, headers: { 'content-type': 'application/json' } });
+			});
+			const p = callJson('/v1/rpc').catch((e) => e);
+			await vi.advanceTimersByTimeAsync(API_TIMEOUT_MS + 1);
+			expect(await p).toBeInstanceOf(RequestTimeout);
+		});
+
+		test('the caller’s own signal still aborts as before; a quick answer leaves no timer behind', async () => {
+			vi.useFakeTimers();
+			vi.stubGlobal('fetch', hanging());
+			const ctl = new AbortController();
+			const p = callJson('/v1/x', { signal: ctl.signal }).catch((e) => e);
+			ctl.abort();
+			const e = await p;
+			expect(e).not.toBeInstanceOf(RequestTimeout);
+			expect((e as Error).name).toBe('AbortError');
+			// Already aborted before the call: aborts at once.
+			const done = new AbortController();
+			done.abort();
+			expect(((await callJson('/v1/x', { signal: done.signal }).catch((x) => x)) as Error).name).toBe('AbortError');
+			vi.stubGlobal('fetch', async () => json(200, { ok: 1 }));
+			const before = vi.getTimerCount();
+			await callJson('/v1/x');
+			await callJson('/v1/x', { signal: new AbortController().signal });
+			vi.stubGlobal('fetch', async () => json(403, { error: 'no' }));
+			await callJson('/v1/x').catch(() => {});
+			expect(vi.getTimerCount()).toBe(before);
+		});
+
+		test('a longer limit can be asked for; streams and downloads never come through here', async () => {
+			vi.useFakeTimers();
+			vi.stubGlobal('fetch', hanging());
+			const p = callJson('/v1/x', {}, 40_000).catch((e) => e);
+			await vi.advanceTimersByTimeAsync(API_TIMEOUT_MS + 1);
+			let settled = false;
+			void p.then(() => (settled = true));
+			await Promise.resolve();
+			expect(settled).toBe(false);
+			await vi.advanceTimersByTimeAsync(40_000);
+			expect(await p).toBeInstanceOf(RequestTimeout);
+			const { readFileSync } = await import('node:fs');
+			for (const f of ['../static/player/reconnect.js', '../src/lib/offline/manager.svelte.ts']) {
+				expect(readFileSync(`${__dirname}/${f}`, 'utf8'), f).not.toMatch(/callJson/);
+			}
+		});
 	});
 
 	test('a non-JSON error body still gives a clean error', async () => {
