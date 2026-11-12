@@ -28,6 +28,9 @@ sub prefs {
 	return ($prefs, qw(enabled listen public_url trusted_proxies trusted_networks client_ip_header gateway_path transcode ffmpeg_path download_cache_mb analysis));
 }
 
+# The page's checkboxes: a browser sends nothing for one that is not ticked.
+my %CHECKBOX = map { $_ => 1 } qw(enabled transcode analysis);
+
 sub escape_html {
 	my $s = shift // '';
 	$s =~ s/&/&amp;/g;
@@ -221,19 +224,23 @@ sub handler {
 		return $class->SUPER::handler($client, $params);
 	}
 	if ($params->{saveSettings}) {
-		my %before = map { $_ => $prefs->get($_) } qw(enabled listen public_url trusted_proxies trusted_networks client_ip_header gateway_path transcode ffmpeg_path download_cache_mb analysis);
+		my (undef, @names) = $class->prefs;
+		my %before = map { $_ => $prefs->get($_) } @names;
 		my ($clean, $errors, $notices, $keep) = clean($params);
-		# Invalid values are not saved; the others are.
-		for my $k (keys %$params) {
-			delete $params->{$k} if $k =~ /^pref_/ && !exists $clean->{$k};
+		# LMS's base handler sets every pref of the page to its pref_<name> param whether the
+		# form sent one or not (a missing one stores undef), and takes an unprefixed <name>
+		# param for a missing pref_<name>. So every pref gets its value here: the cleaned one,
+		# or, for a value refused or not sent, the saved one. An unticked checkbox is not
+		# sent, and means off.
+		delete $params->{$_} for grep { /^pref_/ } keys %$params;
+		for my $n (@names) {
+			delete $params->{$n};
+			my $k = "pref_$n";
+			$params->{$k} = exists $clean->{$k} ? $clean->{$k} : $CHECKBOX{$n} ? 0 : $before{$n};
 		}
-		$params->{$_} = $clean->{$_} for keys %$clean;
 		# A rejected http:// Public URL stays in its field (the template reads this, never a
 		# pref_* name, which LMS would save): the warning and its box stay on the page.
 		$params->{anywhere_keep_public_url} = $keep->{pref_public_url} if exists $keep->{pref_public_url};
-		$params->{pref_enabled} //= 0;   # an unticked checkbox is not submitted
-		$params->{pref_transcode} //= 0;
-		$params->{pref_analysis} //= 0;
 		# Messages can echo submitted text: escape before they reach the page.
 		# Notices are saved settings that won't work as they stand: shown after any errors.
 		my @lines = (@$errors, @$notices);

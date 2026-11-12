@@ -91,6 +91,85 @@ is($prefs->get('listen'), '127.0.0.1:9443', 'invalid listen not saved');
 unlike($params->{warning}, qr/<img|<b>/, 'warning text is escaped');
 like($params->{warning}, qr/&lt;b&gt;/);
 
+# --- a rejected or missing field keeps its saved value on real LMS (review 2026-11-12, M13).
+# LMS's base handler sets every pref the page lists to its pref_<name> param, present or not,
+# so a param the plugin dropped stored undef: a typo in Trusted proxies wiped the working
+# value while the page said "not saved". The stub now does what LMS does. -------------------
+{
+	require Plugins::LyrionAnywhere::Gateway;
+	no warnings 'redefine';
+	local *Plugins::LyrionAnywhere::Gateway::restart = sub { 1 };
+	local *Plugins::LyrionAnywhere::Gateway::stop = sub { };
+	use warnings 'redefine';
+	Plugins::LyrionAnywhere::Gateway::register_validators();
+	my $exe = "$Slim::Utils::Prefs::DIR/gw-m13";
+	open my $fh, '>', $exe or die; close $fh; chmod 0755, $exe;
+	mkdir "$Slim::Utils::Prefs::DIR/m13";
+	my $ff = "$Slim::Utils::Prefs::DIR/m13/ffmpeg";
+	open $fh, '>', $ff or die; close $fh; chmod 0755, $ff;
+	my %saved = (listen => '127.0.0.1:9450', public_url => 'https://music.example.com', trusted_proxies => '10.0.0.10',
+		trusted_networks => '10.8.0.0/24', client_ip_header => 'CF-Connecting-IP', gateway_path => $exe,
+		ffmpeg_path => $ff, download_cache_mb => 4096);
+	my %bad = (listen => 'example.com:80', public_url => 'https://music.example.com/path', trusted_proxies => '10.0.0.1, evil',
+		trusted_networks => '8.8.8.0/24', client_ip_header => 'X-Forwarded-For', gateway_path => 'relative/gw',
+		ffmpeg_path => '/bin/sh', download_cache_mb => '8');
+	my $reset = sub {
+		$prefs->set($_, $saved{$_}) for keys %saved;
+		$prefs->set(enabled => 1);
+		Plugins::LyrionAnywhere::Gateway::settings_saved();
+		is($prefs->get($_), $saved{$_}, "set up: $_ saved") for sort keys %saved;
+	};
+	for my $field (sort keys %bad) {
+		$reset->();
+		my $p = { saveSettings => 1, anywhere_form_token => $form, pref_enabled => 1,
+			(map { ("pref_$_" => $saved{$_}) } keys %saved), "pref_$field" => $bad{$field} };
+		Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+		is($prefs->get($field), $saved{$field}, "$field rejected: the saved value stays");
+		is($prefs->get($_), $saved{$_}, "$field rejected: $_ unchanged") for grep { $_ ne $field } sort keys %saved;
+		like($p->{warning} // '', qr/\S/, "$field rejected: the page says why");
+		is($p->{prefs}{"pref_$field"}, $saved{$field}, "$field rejected: the page shows the saved value");
+		is(Plugins::LyrionAnywhere::Gateway::read_authorised()->{$field}, $saved{$field}, "$field rejected: the record keeps it too");
+	}
+	# A field the form did not send at all (LMS sets undef for it).
+	for my $field (sort keys %saved) {
+		$reset->();
+		my $p = { saveSettings => 1, anywhere_form_token => $form, pref_enabled => 1,
+			map { ("pref_$_" => $saved{$_}) } grep { $_ ne $field } keys %saved };
+		Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+		is($prefs->get($field), $saved{$field}, "$field not sent: the saved value stays");
+	}
+	# LMS takes an unprefixed <name> param for a missing pref_<name>: never a way round the checks.
+	for my $field (sort keys %bad) {
+		$reset->();
+		my $p = { saveSettings => 1, anywhere_form_token => $form, pref_enabled => 1,
+			(map { ("pref_$_" => $saved{$_}) } grep { $_ ne $field } keys %saved), $field => $bad{$field} };
+		Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+		is($prefs->get($field), $saved{$field}, "unprefixed $field: not saved");
+	}
+	{
+		$reset->();
+		my $p = { saveSettings => 1, anywhere_form_token => $form, pref_enabled => 1,
+			(map { ("pref_$_" => $saved{$_}) } grep { $_ ne 'public_url' } keys %saved), public_url => 'http://music.example.com' };
+		Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+		is($prefs->get('public_url'), 'https://music.example.com', 'an unprefixed http:// Public URL does not skip the "Allow http://" box');
+	}
+	# An unticked checkbox is not sent: it means off, as before.
+	$reset->();
+	my $p = { saveSettings => 1, anywhere_form_token => $form, map { ("pref_$_" => $saved{$_}) } keys %saved };
+	Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+	is($prefs->get('enabled'), 0, 'Enabled unticked: off');
+	is($prefs->get('transcode'), 0, 'Transcoded downloads unticked: off');
+	is($prefs->get('analysis'), 0, 'Track analysis unticked: off');
+	is($prefs->get($_), $saved{$_}, "and $_ unchanged") for sort keys %saved;
+	$prefs->set($_, '') for qw(public_url trusted_proxies trusted_networks client_ip_header gateway_path ffmpeg_path);
+	$prefs->set(listen => '127.0.0.1:9443');
+	$prefs->set(download_cache_mb => 2048);
+	$prefs->set(enabled => 0);
+	$prefs->set(transcode => 1);
+	$prefs->set(analysis => 1);
+	Plugins::LyrionAnywhere::Gateway::settings_saved();
+}
+
 # The page gets the CSRF token for its script (and only through the template).
 require Plugins::LyrionAnywhere::Commands;
 my $token = Plugins::LyrionAnywhere::Commands::csrf_token();
@@ -202,7 +281,7 @@ is($params->{anywhere_csrf}, $token, 'also after saving');
 	Plugins::LyrionAnywhere::Settings->handler(undef, $p);
 	is($prefs->get('public_url'), '', 'without the box: not saved');
 	is($p->{anywhere_keep_public_url}, 'http://music.example.com', 'the typed address is handed to the page');
-	ok(!exists $Slim::Web::Settings::HANDLED[-1]{pref_public_url}, 'and not as a pref LMS would save');
+	is($Slim::Web::Settings::HANDLED[-1]{pref_public_url}, '', 'and not as a pref LMS would save: LMS is given the saved value');
 	like($p->{warning}, qr/not saved.*Allow http/, 'with the error');
 	$p = { saveSettings => 1, anywhere_form_token => $token, pref_public_url => 'http://music.example.com', anywhere_allow_http => 1 };
 	Plugins::LyrionAnywhere::Settings->handler(undef, $p);
