@@ -5,6 +5,7 @@ import android.app.Application
 import android.bluetooth.BluetoothClass
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
+import android.content.Context
 import android.content.Intent
 import android.os.Looper
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -35,7 +36,7 @@ private const val BUDS = "0A:1B:2C:3D:4E:60"
 /**
  * Car mode's Bluetooth side (Wave 2 §5.1): the permission is checked before anything is
  * read, only the two connection broadcasts are acted on, and a receiver is registered only
- * while permitted (and never exported).
+ * while permitted (exported, for the Bluetooth stack's uid: both are protected broadcasts).
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
@@ -127,6 +128,25 @@ class CarBluetoothTests {
         // The paired devices, for choosing one, sorted by name.
         shadowOf(adapter).setBondedDevices(setOf(car, buds))
         assertEquals(listOf("Example Car Kit", "Example Headphones"), CarBluetooth.bonded(app).map { it.name })
+    }
+
+    @Test
+    fun theReceiverHearsTheBluetoothStackAndOnlyTheTwoProtectedActions() {
+        // The ACL broadcasts are sent from the Bluetooth stack's uid, not the system's: a
+        // receiver registered not-exported never hears them on a device (review 2026-11-12).
+        shadowOf(app).grantPermissions(Manifest.permission.BLUETOOTH_CONNECT)
+        val w = CarBluetoothWatcher(app) {}
+        assertTrue(w.start())
+        val r = shadowOf(app).registeredReceivers.single { it.intentFilter.hasAction(BluetoothDevice.ACTION_ACL_CONNECTED) }
+        assertTrue("exported", r.flags and Context.RECEIVER_EXPORTED != 0)
+        assertEquals(0, r.flags and Context.RECEIVER_NOT_EXPORTED)
+        assertEquals(
+            setOf(BluetoothDevice.ACTION_ACL_CONNECTED, BluetoothDevice.ACTION_ACL_DISCONNECTED),
+            (0 until r.intentFilter.countActions()).map { r.intentFilter.getAction(it) }.toSet(),
+        )
+        assertNull("no sender permission to rely on", r.broadcastPermission)
+        w.stop()
+        assertTrue(shadowOf(app).registeredReceivers.none { it.intentFilter.hasAction(BluetoothDevice.ACTION_ACL_CONNECTED) })
     }
 
     @Test
