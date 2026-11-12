@@ -25,6 +25,9 @@ sub start_stub_gateway {
 	$prefs->set(gateway_path => $bin);
 	$prefs->set(listen => '127.0.0.1:9443');
 	$prefs->set(admin_port => $o{admin_port} // 9445);
+	$prefs->set(enabled => 1);
+	# As the settings page saves them: the gateway runs only with the page's recorded values.
+	Plugins::LyrionAnywhere::Gateway::settings_saved();
 	preferences('server')->set(httpport => 9000);
 	$Proc::Background::NEXT_PID = $o{pid};
 	Plugins::LyrionAnywhere::Gateway->start;

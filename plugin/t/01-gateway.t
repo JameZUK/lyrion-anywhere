@@ -14,6 +14,33 @@ is(Plugins::LyrionAnywhere::Gateway::platform('MSWin32', 'MSWin32-x64-multi-thre
 is(Plugins::LyrionAnywhere::Gateway::platform('MSWin32', 'x86_64-windows'), 'x86_64-windows');
 is(Plugins::LyrionAnywhere::Gateway::platform('freebsd', 'amd64-freebsd'), undef);
 
+# Regression (review 2026-11-12): every 32-bit ARM host got the ARMv7 build, which an ARMv6
+# CPU (Raspberry Pi 1, the first Pi Zero) kills with SIGILL at once. Perl's archname is the
+# same on both (Raspbian is armhf throughout), so the kernel's machine name decides.
+{
+	my $arm = 'arm-linux-gnueabihf-thread-multi-64int';
+	is(Plugins::LyrionAnywhere::Gateway::platform('linux', $arm, 'armv7l'), 'armhf-linux', 'ARMv7: the armhf build');
+	is(Plugins::LyrionAnywhere::Gateway::platform('linux', $arm, 'armv8l'), 'armhf-linux', 'an ARMv8 CPU in 32-bit mode: armhf');
+	is(Plugins::LyrionAnywhere::Gateway::platform('linux', $arm, 'aarch64'), 'armhf-linux', '32-bit Perl on a 64-bit kernel: armhf');
+	is(Plugins::LyrionAnywhere::Gateway::platform('linux', $arm, 'armv6l'), undef, 'ARMv6: nothing bundled runs there');
+	is(Plugins::LyrionAnywhere::Gateway::platform('linux', $arm, 'armv5tel'), undef, 'nor on ARMv5');
+	is(Plugins::LyrionAnywhere::Gateway::binary_path(basedir => '/p', os => 'linux', arch => $arm), '/p/Bin/armhf-linux/anywhere-gateway',
+		'an archname given alone is not checked against this machine');
+	like(Plugins::LyrionAnywhere::Gateway::cpu_problem($arm, 'armv6l'), qr/^this server's processor \(armv6l\) is too old for the gateway: it needs ARMv7/,
+		'the reason, with the gist first');
+	is(Plugins::LyrionAnywhere::Gateway::cpu_problem($arm, $_), undef, "no problem on $_") for qw(armv7l armv8l aarch64);
+	is(Plugins::LyrionAnywhere::Gateway::cpu_problem('aarch64-linux-gnu', 'armv6l'), undef, 'only a 32-bit ARM Perl is checked');
+	is(Plugins::LyrionAnywhere::Gateway::cpu_problem('x86_64-linux', ''), undef, 'nor anything else');
+	no warnings 'redefine';
+	local $Plugins::LyrionAnywhere::Gateway::ARCHNAME = $arm;
+	local *Plugins::LyrionAnywhere::Gateway::_machine = sub { 'armv6l' };
+	is(Plugins::LyrionAnywhere::Gateway::platform(), undef, 'this system an ARMv6 one: no platform');
+	is(Plugins::LyrionAnywhere::Gateway::binary_path(basedir => '/p'), undef, 'so no bundled binary');
+	like(Plugins::LyrionAnywhere::Gateway::cpu_problem(), qr/armv6l/, 'and the reason');
+	local *Plugins::LyrionAnywhere::Gateway::_machine = sub { 'armv7l' };
+	is(Plugins::LyrionAnywhere::Gateway::platform('linux'), 'armhf-linux', 'an ARMv7 one: armhf');
+}
+
 is(Plugins::LyrionAnywhere::Gateway::binary_path(basedir => '/p', os => 'linux', arch => 'x86_64-linux'),
    '/p/Bin/x86_64-linux/anywhere-gateway');
 is(Plugins::LyrionAnywhere::Gateway::binary_path(basedir => '/p', os => 'MSWin32', arch => 'x86_64-windows'),
@@ -353,13 +380,14 @@ SKIP: {
 		                    [0, 15, 1048577, '2048 ', "2048\n", '-1', '1e3', '2048MB', 'abc']],
 		transcode       => [['', 0, 1, '0', '1'], ['2', 'yes', "1\n", ['1']]],
 		analysis        => [['', 0, 1, '0', '1'], ['2', 'no', "0\n", '--no-analysis', ['0'], {}]],
+		enabled         => [['', 0, 1, '0', '1', undef], ['2', 'on', "1\n", ['1'], {}]],
 	);
 	for my $name (sort keys %cases) {
 		my ($good, $bad) = @{ $cases{$name} };
 		ok($v->($name, $_),  "pref $name accepts " . show($_)) for @$good;
 		ok(!$v->($name, $_), "pref $name refuses " . show($_)) for @$bad;
 	}
-	ok($v->('enabled', 1), 'prefs without a rule are accepted');
+	ok($v->('not_a_pref_of_ours', 'x'), 'prefs without a rule are accepted');
 }
 
 done_testing;

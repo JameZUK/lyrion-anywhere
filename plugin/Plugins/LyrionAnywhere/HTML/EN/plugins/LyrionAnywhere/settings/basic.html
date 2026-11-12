@@ -15,6 +15,15 @@
 	turn on password protection in Settings &rsaquo; Advanced &rsaquo; Security.
 </p>
 
+[% IF anywhere_host_refused %]
+[%# Opened under a name that is not this server's (DNS rebinding guard, Settings.pm): no settings, no token, no script. %]
+<div id="aw-host-refused" class="anywhere aw-panel" role="alert">
+	<h3>Open this page at the server&rsquo;s address</h3>
+	<p>This page was opened as <strong>[% anywhere_refused_host | html %]</strong>, which is not this server&rsquo;s address or one of its names, so it shows no settings and saves nothing. That stops another web site from pointing a name of its own at this server and reading the page (DNS rebinding).</p>
+	<p>It opens at this server&rsquo;s IP address[% IF anywhere_address_url %], for example <a href="[% anywhere_address_url | html %]">[% anywhere_address_url | html %]</a>[% END %], at localhost, and at the server&rsquo;s own name[% IF anywhere_own_names %] ([% anywhere_own_names | html %])[% END %].</p>
+	<p>If you always reach this server under [% anywhere_refused_host | html %] (a name on your network, or a reverse proxy), open the page at the IP address once and add the name under Advanced &rsaquo; Other names for this page.</p>
+</div>
+[% ELSE %]
 <input type="hidden" name="anywhere_form_token" value="[% anywhere_csrf | html %]">
 
 [% WRAPPER setting title="Gateway" desc="Run the Lyrion Anywhere gateway." %]
@@ -55,11 +64,17 @@
 	<p id="aw-tunnel-override-header" class="aw-note aw-warning" hidden></p>
 [% END %]
 
-<details class="aw-advanced"[% IF prefs.pref_gateway_path %] open[% END %]>
-	<summary>Advanced (for developers)</summary>
+<details class="aw-advanced"[% IF prefs.pref_gateway_path OR prefs.pref_settings_hosts OR (prefs.pref_admin_port AND prefs.pref_admin_port != 9445) %] open[% END %]>
+	<summary>Advanced</summary>
 [% WRAPPER setting title="Gateway path" desc="Development only: an absolute path to a gateway binary. Used only when LMS was started with ANYWHERE_ALLOW_GATEWAY_PATH=1 in its environment; otherwise the bundled, checked binary runs. Leave empty to use the bundled one." %]
 	<input type="text" class="stdedit" name="pref_gateway_path" value="[% prefs.pref_gateway_path | html %]">
 	[% IF prefs.pref_gateway_path AND NOT anywhere_gateway_path_allowed %]<br><span class="aw-note">Ignored: ANYWHERE_ALLOW_GATEWAY_PATH=1 is not set.</span>[% END %]
+[% END %]
+[% WRAPPER setting title="Admin port" desc="The port on 127.0.0.1 where this plugin manages the gateway (never reachable from other machines). Change it only if another program on this server uses 9445. Leave empty for 9445." %]
+	<input type="number" class="stdedit" name="pref_admin_port" value="[% prefs.pref_admin_port | html %]" min="1" max="65535" step="1" placeholder="9445">
+[% END %]
+[% WRAPPER setting title="Other names for this page" desc="This page opens only at this server's IP address, at localhost and at the server's own name, so that another web site cannot point a name of its own at this server and read the page (DNS rebinding). If you open these settings under another name, such as lms.example.lan or a reverse proxy's name, list it here (comma-separated)." %]
+	<input type="text" class="stdedit" name="pref_settings_hosts" value="[% prefs.pref_settings_hosts | html %]" placeholder="lms.example.lan" autocomplete="off" spellcheck="false">
 [% END %]
 </details>
 
@@ -190,5 +205,6 @@
 
 <script src="/plugins/LyrionAnywhere/settings/qr.js?v=[% anywhere_assets | uri %]"></script>
 <script src="/plugins/LyrionAnywhere/settings/anywhere.js?v=[% anywhere_assets | uri %]"></script>
+[% END %]
 
 [% PROCESS settings/footer.html %]

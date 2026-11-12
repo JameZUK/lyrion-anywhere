@@ -15,6 +15,7 @@ use Digest::SHA;
 use File::Spec::Functions qw(abs2rel catdir catfile file_name_is_absolute splitpath);
 use File::Basename ();
 use File::Copy ();
+use Fcntl ();
 use Socket qw(inet_pton AF_INET AF_INET6);
 use POSIX ();
 use Time::HiRes ();
@@ -57,6 +58,7 @@ my $launched_admin;        # the admin address the running gateway was started w
 my @dying;                 # gateways sent SIGTERM and not yet reaped: { proc, pid, kill_at, killed }
 my $orphan_tries = 0;      # signals sent to a gateway left behind by an earlier LMS
 my $settings_notice = '';  # prefs changed outside the settings page and put back, for the status
+my $notice_is_problem = 0; # ... or the page's record of them cannot be used
 
 # Where process information comes from (Linux). Tests point it at a fake tree.
 our $PROC_ROOT = '/proc';
@@ -65,11 +67,32 @@ sub _now { time() }        # the clock (tests replace it)
 
 # --- pure helpers -------------------------------------------------------------------
 
-# Directory name under Bin/ for this OS and CPU.
+# This system's Perl architecture (tests set another), and its CPU as the kernel names it
+# (uname -m: armv6l, armv7l, aarch64, x86_64 ...).
+our $ARCHNAME = $Config{archname};
+sub _machine { my $m = eval { (POSIX::uname())[4] }; return $m // '' }
+
+# Why the bundled gateway cannot run on this CPU, or undef. The 32-bit ARM build is ARMv7:
+# an ARMv6 CPU (Raspberry Pi 1 and Zero) dies on its first ARMv7 instruction, so it is
+# never started there. $arch is Perl's archname and $machine uname's, both this system's
+# unless given.
+sub cpu_problem {
+	my ($arch, $machine) = @_;
+	my $here = !defined $arch;
+	$arch //= $ARCHNAME;
+	$machine //= $here ? _machine() : '';
+	return undef unless $arch =~ /^arm/i && $arch !~ /^arm64/i;
+	return undef unless $machine =~ /^armv([0-9]+)/i && $1 < 7;
+	return "this server's processor ($machine) is too old for the gateway: it needs ARMv7 or later, "
+		. 'such as a Raspberry Pi 2 or newer or a Pi Zero 2 (the Raspberry Pi 1 and the first Pi Zero are ARMv6)';
+}
+
+# Directory name under Bin/ for this OS and CPU (undef if none is bundled for it).
 sub platform {
-	my ($os, $arch) = @_;
-	$os   //= $^O;
-	$arch //= $Config{archname};
+	my ($os, $arch, $machine) = @_;
+	$os //= $^O;
+	return undef if cpu_problem($arch, $machine);
+	$arch //= $ARCHNAME;
 	my $cpu = $arch =~ /^(x86_64|amd64)/i ? 'x86_64'
 	        : $arch =~ /^(aarch64|arm64)/i ? 'aarch64'
 	        : $arch =~ /^arm/i             ? 'armhf'
@@ -177,9 +200,23 @@ sub valid_client_ip_header {
 	return $h =~ /^[A-Za-z0-9-]{1,64}\z/ && !$RESERVED_HEADER{lc $h} ? 1 : 0;
 }
 
+# A Public URL's origin: http(s), a host name or IPv4 address, or an IPv6 address in brackets
+# (no zone id, no IPv4 tail, which browsers write differently), and an optional port.
 sub valid_origin {
-	my $o = shift // return 0;
-	return $o =~ m{^https?://[a-z0-9.-]+(?::\d{1,5})?\z}i && length($o) <= 255;
+	my $o = shift;
+	return 0 if !defined $o || ref $o || length($o) > 255;
+	return 1 if $o =~ m{\Ahttps?://[a-z0-9.-]+(?::[0-9]{1,5})?\z}i;
+	return 0 unless $o =~ m{\Ahttps?://\[([0-9A-Fa-f:]+)\](?::[0-9]{1,5})?\z}i;
+	return _v6_words($1) ? 1 : 0;
+}
+
+# An origin as a browser writes it in an Origin header, which the gateway compares exactly:
+# an IPv6 address lower case, with the longest run of zeros compressed.
+sub origin_form {
+	my $o = shift;
+	return $o unless valid_origin($o);
+	$o =~ s{\A(https?)://\[([0-9A-Fa-f:]+)\]}{lc($1) . '://[' . _format_words(_v6_words($2)) . ']'}ie;
+	return $o;
 }
 
 # --- trusted networks (docs/plans/trusted-networks.md, SPEC D28) ------------------------
@@ -369,6 +406,70 @@ sub private_http_origin {
 	my $origin = 'http://' . ($v4 // '[' . _format_words(_v6_words($v6)) . ']');
 	$origin .= ':' . (0 + $port) if defined $port && $port != 80;
 	return $origin;
+}
+
+# --- the settings page's Host (DNS rebinding; review 2026-11-12, M14) --------------------
+#
+# A web page can point a name of its own at this server's LAN address (DNS rebinding), and
+# the browser then treats LMS's pages as that site's own: it could read the settings page
+# and its token. LMS never checks the Host header, so the settings page and the commands that
+# carry its token do: they work only under an IP address, localhost, this machine's own host
+# name, or a name the admin listed on the page (Other names for this page). A rebinding page
+# always arrives under its own name, never one of those.
+
+my $LABEL = qr/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?/;
+
+# A DNS name in lower case: letters, digits and hyphens in dot-separated labels.
+sub valid_host_name {
+	my $n = shift;
+	return 0 if !defined $n || ref $n || length($n) > 253;
+	return $n =~ /\A$LABEL(?:\.$LABEL)*\z/ ? 1 : 0;
+}
+
+# The Other names setting: comma/space separated host names (empty is fine).
+sub valid_settings_hosts {
+	my $s = shift // '';
+	return 0 if ref $s || $s =~ /[\r\n\x00]/ || length($s) > 2048;
+	return (grep { !valid_host_name(_plain_host($_)) } split_list($s)) ? 0 : 1;
+}
+
+sub _plain_host { my $n = lc(shift // ''); $n =~ s/\.\z//; return $n }
+
+sub settings_host_list { map { _plain_host($_) } split_list(shift) }
+
+# The host part of a Host header: (name, is_ip_literal), lower case, without the port or a
+# final dot; () when it is not a well-formed Host.
+sub host_of {
+	my $h = shift;
+	return () if !defined $h || ref $h || length($h) > 300;
+	if ($h =~ /\A\[([0-9A-Fa-f:.]+)\](?::[0-9]{1,5})?\z/) {
+		return _v6_words($1) ? (lc $1, 1) : ();
+	}
+	return () unless $h =~ /\A([A-Za-z0-9.-]+)(?::[0-9]{1,5})?\z/;
+	my $name = _plain_host($1);
+	return ($name, 1) if _v4_words($name);
+	return valid_host_name($name) ? ($name, 0) : ();
+}
+
+# This machine's own names: its host name, that name's first label, and the label under
+# .local (mDNS). The host name comes from the system (or is given, for tests).
+sub own_host_names {
+	my $h = @_ ? shift : eval { require Sys::Hostname; Sys::Hostname::hostname() };
+	$h = _plain_host($h);
+	return () unless valid_host_name($h);
+	my ($short) = split /\./, $h;
+	my %n = map { $_ => 1 } ($h, $short, "$short.local");
+	return sort keys %n;
+}
+
+# Is a request with this Host header one this server's settings page may answer? @names are
+# the names allowed besides IP literals and localhost.
+sub page_host_allowed {
+	my ($header, @names) = @_;
+	my ($host, $ip) = host_of($header);
+	return 0 unless defined $host;
+	return 1 if $ip || $host eq 'localhost';
+	return (grep { $_ eq $host } @names) ? 1 : 0;
 }
 
 # The gateway's argument list. Returns (\@argv) or (undef, $error).
@@ -565,10 +666,11 @@ sub data_dir {
 	return catdir(Slim::Utils::Prefs::dir(), 'lyrion-anywhere');
 }
 
-# The admin API address to start the gateway with. Only a plain port number is ever used.
-# The admin secret is never sent to this directly: see admin_target().
+# The admin API address to start the gateway with: the given port (the settings page's
+# recorded one), else the pref. Only a plain port number is ever used. The admin secret is
+# never sent to this directly: see admin_target().
 sub admin_listen {
-	my $port = $prefs->get('admin_port');
+	my $port = @_ ? shift : $prefs->get('admin_port');
 	if (defined $port && $port ne '' && !valid_port($port)) {
 		$log->warn('ignoring invalid admin_port pref; using ' . ADMIN_PORT);
 		$port = undef;
@@ -667,6 +769,7 @@ sub stderr_tail {
 # Validators for every pref, so changes through LMS's `pref` command get the same checks
 # as the settings page.
 my %VALIDATE = (
+	enabled         => sub { my $v = shift // ''; !ref $v && $v =~ /^[01]?\z/ },
 	listen          => \&valid_hostport,
 	public_url      => sub { my $v = shift // ''; $v eq '' || valid_origin($v) },
 	trusted_proxies => \&valid_proxy_list,
@@ -678,6 +781,7 @@ my %VALIDATE = (
 	download_cache_mb => \&valid_cache_mb,
 	transcode       => sub { my $v = shift // ''; !ref $v && $v =~ /^[01]?\z/ },
 	analysis        => sub { my $v = shift // ''; !ref $v && $v =~ /^[01]?\z/ },
+	settings_hosts  => \&valid_settings_hosts,
 );
 
 sub valid_pref {
@@ -701,7 +805,16 @@ sub register_validators {
 # syntax check only. So the page, the one authorised writer, also keeps a copy of them in
 # the data directory (0700, file 0600), which `pref` cannot reach. The gateway always runs
 # with the copy's values; a pref that differs is put back, logged and shown in the status.
-my @GUARDED = qw(listen public_url trusted_proxies trusted_networks client_ip_header gateway_path ffmpeg_path download_cache_mb);
+# Enabled is one of them: whether the gateway (and a registered tunnel) runs at all is the
+# page's decision, so a forged `pref …:enabled 1` and `restartserver` never bring it back
+# after an admin turned remote access off (review 2026-11-12, M12).
+my @GUARDED = qw(enabled listen public_url trusted_proxies trusted_networks client_ip_header admin_port gateway_path
+	transcode ffmpeg_path download_cache_mb analysis settings_hosts);
+
+# Guarded prefs newer than the copy's format: a copy without one takes this value, never the
+# current pref, since no value the page saved can predate the setting (a page could have
+# set the pref beforehand, ready for the upgrade). Older settings keep their current value.
+my %INTRODUCED_WITH = (settings_hosts => '');
 
 sub guarded_prefs { @GUARDED }
 sub settings_file { catfile(data_dir(), SETTINGS_FILE) }
@@ -723,14 +836,26 @@ sub _decode_value {
 	return $v;
 }
 
-# The copy as { name => value }, or undef if there is none (or it is not one of ours).
+# The copy as { name => value }. In list context (values, problem): (undef, undef) when there
+# is no copy at all, (undef, why) when there is something there that cannot be used (not a
+# plain file, unreadable, or not one of ours). In scalar context, the values or undef.
 sub read_authorised {
 	my $file = shift // settings_file();
-	return undef if -l $file;
-	open my $fh, '<:raw', $file or return undef;
+	my ($v, $why) = _read_authorised($file);
+	return wantarray ? ($v, $why) : $v;
+}
+
+sub _read_authorised {
+	my $file = shift;
+	unless (lstat $file) {
+		return (undef, undef) if $!{ENOENT};
+		return (undef, "cannot be read ($!)");
+	}
+	return (undef, 'is not a plain file') if -l _ || !-f _;
+	open my $fh, '<:raw', $file or return (undef, "cannot be read ($!)");
 	my $head = <$fh> // '';
 	$head =~ s/\r?\n\z//;
-	if ($head ne SETTINGS_MAGIC) { close $fh; return undef }
+	if ($head ne SETTINGS_MAGIC) { close $fh; return (undef, 'is not a record this plugin wrote') }
 	my %known = map { $_ => 1 } @GUARDED;
 	my %v;
 	while (my $line = <$fh>) {
@@ -739,7 +864,7 @@ sub read_authorised {
 		$v{$1} = _decode_value($2);
 	}
 	close $fh;
-	return \%v;
+	return (\%v, undef);
 }
 
 # Write the copy: the given values, or the current prefs. Returns 1 on success.
@@ -771,19 +896,40 @@ sub record_authorised {
 	return 1;
 }
 
-# The settings page saved: its values are now the authorised ones.
+# The settings page saved: its values are now the authorised ones. Returns 1 if they were
+# recorded.
 sub settings_saved {
-	record_authorised();
-	$settings_notice = '';
+	my $ok = record_authorised();
+	($settings_notice, $notice_is_problem) = ('', 0) if $ok;
+	return $ok;
 }
 
 # The values to run with: the copy's, with any pref changed outside the page put back.
-# First run (no copy yet): the current values are accepted and recorded.
+# First run (no copy at all): the current values are accepted and recorded. A copy that is
+# there but cannot be used (unreadable, not a plain file, not ours) is not a first run: the
+# prefs may have been changed behind the page's back, so nothing is accepted from them.
+# Returns (\%values), or (undef, message) in that case: the gateway is not started until the
+# settings page is saved again (which records what it shows) or the file is put right.
 sub authorised_values {
 	my %live = map { $_ => $prefs->get($_) } @GUARDED;
-	my $copy = read_authorised();
+	my ($copy, $why) = read_authorised();
+	if (!$copy && $why) {
+		my $msg = 'the settings page\'s saved values cannot be used: ' . settings_file() . " $why. "
+			. 'The gateway is not started until they can. Check the settings on the Lyrion Anywhere settings page and '
+			. 'save them, which records them again.';
+		$log->error($msg) unless $settings_notice eq $msg;
+		$settings_notice = $msg;
+		$notice_is_problem = 1;
+		return (undef, $msg);
+	}
+	if ($notice_is_problem) { $settings_notice = ''; $notice_is_problem = 0 }
 	unless ($copy) {
-		$log->info('recording the current gateway settings as the settings page\'s') if -e settings_file();
+		# Those settings only ever come from the page, which records the others first.
+		for my $n (sort keys %INTRODUCED_WITH) {
+			next if _encode_value($live{$n}) eq _encode_value($INTRODUCED_WITH{$n});
+			$live{$n} = $INTRODUCED_WITH{$n};
+			$prefs->set($n, $live{$n});
+		}
 		record_authorised(\%live);
 		$settings_notice = '';
 		return \%live;
@@ -791,9 +937,15 @@ sub authorised_values {
 	my (%use, @changed, $missing);
 	for my $n (@GUARDED) {
 		if (!exists $copy->{$n}) {
-			# A setting this copy predates: the current value stands.
-			$use{$n} = $live{$n};
+			# A setting this copy predates: the current value stands, or for a setting newer
+			# than the page's record of the others, its default.
 			$missing = 1;
+			if (exists $INTRODUCED_WITH{$n}) {
+				$use{$n} = $INTRODUCED_WITH{$n};
+				push @changed, $n if _encode_value($live{$n}) ne _encode_value($use{$n});
+				next;
+			}
+			$use{$n} = $live{$n};
 			next;
 		}
 		$use{$n} = $copy->{$n};
@@ -815,7 +967,9 @@ sub authorised_values {
 sub _options {
 	my $server = preferences('server');
 	my $cli    = preferences('plugin.cli');
-	my $auth   = authorised_values();
+	my ($auth, $unusable) = authorised_values();
+	# A record that cannot be used: the prefs are shown in the status, never run with.
+	$auth ||= { map { $_ => $prefs->get($_) } @GUARDED };
 	my $public = $auth->{public_url} || '';
 	$public = '' unless valid_origin($public);
 	# Stored values are checked again: one that is no longer valid (e.g. ffmpeg removed) is
@@ -824,12 +978,14 @@ sub _options {
 	$ffmpeg = '' unless valid_ffmpeg_path($ffmpeg);
 	my $cache = $auth->{download_cache_mb} // '';
 	$cache = '' unless valid_cache_mb($cache);
-	my $transcode = $prefs->get('transcode');
-	my $analysis = $prefs->get('analysis');
+	my $transcode = $auth->{transcode};
+	my $analysis = $auth->{analysis};
 	my $ip_header = $auth->{client_ip_header} // '';
 	$ip_header = '' unless valid_client_ip_header($ip_header);
 	my $override = gateway_override($auth->{gateway_path});
 	return (
+		settings_error    => $unusable,
+		enabled           => $auth->{enabled} ? 1 : 0,
 		dev_binary        => $override ? 1 : 0,
 		client_ip_header  => $ip_header,
 		ffmpeg            => $ffmpeg,
@@ -838,7 +994,7 @@ sub _options {
 		download_cache_mb => $cache,
 		binary          => binary_path(basedir => $basedir, override => $override),
 		listen          => $auth->{listen} || '127.0.0.1:9443',
-		admin_listen    => admin_listen(),
+		admin_listen    => admin_listen($auth->{admin_port}),
 		data_dir        => data_dir(),
 		http_port       => $server->get('httpport') || 9000,
 		cli_port        => ($cli && $cli->get('cliport')) || 9090,
@@ -852,16 +1008,32 @@ sub _options {
 	);
 }
 
+# May the settings page (or a command carrying its token) answer a request with this Host
+# header? Names listed on the page count only as the page recorded them.
+sub settings_host_allowed {
+	my $header = shift;
+	my ($auth) = authorised_values();
+	my @listed = $auth ? settings_host_list($auth->{settings_hosts}) : ();
+	return page_host_allowed($header, own_host_names(), @listed);
+}
+
 # Where the plugin lives (for the bundled binary). Set at load, so status is right at once.
 sub set_basedir {
 	my ($class, $dir) = @_;
 	$basedir = $dir;
 }
 
+# LMS has started: run the gateway if the settings page last saved it turned on. The pref
+# alone never decides it (see @GUARDED).
 sub init {
 	my ($class, $dir) = @_;
 	$class->set_basedir($dir);
-	$class->start if $prefs->get('enabled');
+	my ($auth, $why) = authorised_values();
+	if (!$auth) {
+		$last_error = $why;
+		return;
+	}
+	$class->start if $auth->{enabled};
 }
 
 sub start {
@@ -906,13 +1078,19 @@ sub stop_for_shutdown {
 	Slim::Utils::Timers::killTimers(undef, \&_reap);
 }
 
-# Restart, but only if remote access is turned on: a disabled gateway is stopped and stays
-# stopped. Returns 1 if the gateway was started, 0 if not.
+# Restart, but only if the settings page last saved remote access turned on: a disabled
+# gateway is stopped and stays stopped. Returns 1 if the gateway was started; (0, why) if
+# not, with why set when the page's saved values cannot be used.
 sub restart {
 	my $class = shift;
 	$class->stop;
 	$attempt = 0;
-	unless ($prefs->get('enabled')) {
+	my ($auth, $why) = authorised_values();
+	if (!$auth) {
+		$last_error = $why;
+		return (0, $why);
+	}
+	unless ($auth->{enabled}) {
 		$log->info('not restarting the gateway: remote access is turned off');
 		return 0;
 	}
@@ -992,14 +1170,14 @@ sub _stop_orphan {
 sub state {
 	my %o = _options();
 	return {
-		enabled   => $prefs->get('enabled') ? 1 : 0,
+		enabled   => $o{enabled},
 		running   => ($proc && eval { $proc->alive }) ? 1 : 0,
 		pid       => $proc ? eval { $proc->pid } : undef,
 		binary    => $o{binary},
 		binary_ok => ($o{binary} && -x $o{binary}) ? 1 : 0,
 		data_dir  => $o{data_dir},
 		listen    => $o{listen},
-		error     => $last_error,
+		error     => $o{settings_error} || $last_error,
 		uptime    => ($proc && $started_at) ? _now() - $started_at : 0,
 		settings_notice => $settings_notice,
 	};
@@ -1019,6 +1197,22 @@ sub _launch {
 	}
 	$orphan_tries = 0;
 	my %o = _options();
+	if ($o{settings_error}) {
+		# Logged by authorised_values(); retried by _check, so a fixed record is picked up.
+		$last_error = $o{settings_error};
+		return;
+	}
+	unless ($o{enabled}) {
+		# Turned off on the settings page (whatever the pref says now): never started.
+		$log->info('not starting the gateway: remote access is turned off');
+		$wanted = 0;
+		return;
+	}
+	if (!$o{dev_binary} && (my $why = cpu_problem())) {
+		$last_error = $why;
+		$log->error("cannot start gateway: $why");
+		return;
+	}
 	my ($argv, $err) = command_line(%o);
 	if (!$argv) {
 		$last_error = $err;
@@ -1065,16 +1259,18 @@ sub _launch {
 # bad flag, a port in use) can be shown in the status. The child inherits file descriptor
 # 2; the plugin's own is put back straight away. This works on descriptors, not Perl
 # handles: LMS ties STDERR to its log, and re-opening a tied handle dies. If anything here
-# fails, the gateway starts anyway, without the capture.
+# fails, the gateway starts anyway, without the capture. The file and the saved copy of fd 2
+# are close-on-exec, so the gateway inherits neither (review 2026-11-12): only its own fd 2.
 sub _spawn {
 	my ($argv, $errfile) = @_;
-	my ($fd, $saved);
+	my ($file, $saved);
 	if ($errfile) {
 		eval {
-			$fd = POSIX::open($errfile, POSIX::O_WRONLY() | POSIX::O_CREAT() | POSIX::O_TRUNC(), 0600);
-			$saved = POSIX::dup(2) if defined $fd;
-			if (!defined $saved || !defined POSIX::dup2($fd, 2)) {
-				POSIX::close($saved) if defined $saved;
+			# Perl's own sysopen marks the descriptor close-on-exec (it is above $^F).
+			sysopen($file, $errfile, POSIX::O_WRONLY() | POSIX::O_CREAT() | POSIX::O_TRUNC(), 0600) or die "$errfile: $!\n";
+			$saved = _cloexec_dup(2);
+			if (!$saved || !defined POSIX::dup2(fileno($file), 2)) {
+				close $saved if $saved;
 				$saved = undef;
 			}
 			1;
@@ -1082,13 +1278,31 @@ sub _spawn {
 	}
 	my $p = eval { Proc::Background->new({ die_upon_destroy => 1 }, @$argv) };
 	my $err = $@;
-	if (defined $saved) {
-		POSIX::dup2($saved, 2);
-		POSIX::close($saved);
+	if ($saved) {
+		POSIX::dup2(fileno($saved), 2);
+		close $saved;
 	}
-	POSIX::close($fd) if defined $fd;
+	close $file if $file;
 	$@ = $err;
 	return $p;
+}
+
+# A copy of descriptor $fd, as a Perl handle that owns it, marked close-on-exec; or undef.
+sub _cloexec_dup {
+	my $fd = shift;
+	my $copy = POSIX::dup($fd);
+	return undef unless defined $copy;
+	my $h;
+	unless (open($h, '>&=', $copy)) {
+		POSIX::close($copy);
+		return undef;
+	}
+	my $flags = fcntl($h, Fcntl::F_GETFD(), 0);
+	unless (defined $flags && fcntl($h, Fcntl::F_SETFD(), $flags | Fcntl::FD_CLOEXEC())) {
+		close $h;
+		return undef;
+	}
+	return $h;
 }
 
 sub _check {

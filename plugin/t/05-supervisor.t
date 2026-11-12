@@ -151,6 +151,15 @@ Plugins::LyrionAnywhere::Gateway::settings_saved();   # as the settings page wou
 	is($Proc::Background::OBJECTS[-1]{stderr}, "$st[0]:$st[1]", "the gateway's stderr is that file");
 	my @mine = (POSIX::fstat(2))[0, 1];
 	isnt("$mine[0]:$mine[1]", "$st[0]:$st[1]", "the plugin's own stderr is put back");
+	# Regression (review 2026-11-12): the file's own descriptor and the saved copy of the
+	# plugin's stderr were inherited by the gateway as two extra open descriptors.
+	SKIP: {
+		my $before = Proc::Background::inheritable();
+		skip 'needs /proc/self/fdinfo (Linux)', 2 unless $before;
+		is_deeply($Proc::Background::OBJECTS[-1]{inherit}, $before,
+			'the gateway inherits no descriptor beyond 0-2 that the plugin did not already have');
+		is_deeply(Proc::Background::inheritable(), $before, 'and none is left open in LMS afterwards');
+	}
 	open my $fh, '>>', $file or die;
 	print $fh "line $_\n" for 1 .. 8;
 	print $fh "Error: address in use \e[31m(127.0.0.1:9443)\n";

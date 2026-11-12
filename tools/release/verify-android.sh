@@ -38,8 +38,11 @@ gh release download "android-v$v" -R "$repo" -D . --clobber
 echo "== checksums"
 sha256sum -c SHA256SUMS
 echo "== build provenance (silent when good)"
+# Built by this repository's CI workflow, on GitHub's own runners, from this tag: an
+# attestation from any other workflow in the repository, or for another ref, does not count.
 for f in *.apk *.aab; do
-	gh attestation verify "$f" -R "$repo"
+	gh attestation verify "$f" -R "$repo" --signer-workflow "$repo/.github/workflows/ci.yml" \
+		--source-ref "refs/tags/android-v$v" --deny-self-hosted-runners
 done
 echo "== signing certificate"
 for f in *.apk; do

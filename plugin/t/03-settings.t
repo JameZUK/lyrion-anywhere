@@ -6,6 +6,9 @@ BEGIN { package main; use constant WEBUI => 1; }
 use Plugins::LyrionAnywhere::Settings;
 use Slim::Utils::Prefs;
 sub show { my $s = $_[0] // 'undef'; $s = ref $s if ref $s; $s =~ s/([^\x20-\x7e])/sprintf('\\x{%x}', ord $1)/ge; $s }
+# The settings page handler, as LMS calls it for a page opened at the server's address (LMS
+# puts the request's Host header in `host`; see t/13-settings-host.t for other names).
+sub page { my $p = shift; $p->{host} //= '10.0.0.10:9000'; Plugins::LyrionAnywhere::Settings->handler(undef, $p); $p }
 
 my $clean = \&Plugins::LyrionAnywhere::Settings::clean;
 my ($out, $err) = $clean->({
@@ -86,19 +89,98 @@ $prefs->set(enabled => 0);
 require Plugins::LyrionAnywhere::Commands;
 my $form = Plugins::LyrionAnywhere::Commands::csrf_token();   # what the page's form sends back
 my $params = { saveSettings => 1, anywhere_form_token => $form, pref_listen => '<img src=x onerror=alert(1)>', pref_trusted_proxies => '<b>x</b>' };
-Plugins::LyrionAnywhere::Settings->handler(undef, $params);
+page($params);
 is($prefs->get('listen'), '127.0.0.1:9443', 'invalid listen not saved');
 unlike($params->{warning}, qr/<img|<b>/, 'warning text is escaped');
 like($params->{warning}, qr/&lt;b&gt;/);
+
+# --- a rejected or missing field keeps its saved value on real LMS (review 2026-11-12, M13).
+# LMS's base handler sets every pref the page lists to its pref_<name> param, present or not,
+# so a param the plugin dropped stored undef: a typo in Trusted proxies wiped the working
+# value while the page said "not saved". The stub now does what LMS does. -------------------
+{
+	require Plugins::LyrionAnywhere::Gateway;
+	no warnings 'redefine';
+	local *Plugins::LyrionAnywhere::Gateway::restart = sub { 1 };
+	local *Plugins::LyrionAnywhere::Gateway::stop = sub { };
+	use warnings 'redefine';
+	Plugins::LyrionAnywhere::Gateway::register_validators();
+	my $exe = "$Slim::Utils::Prefs::DIR/gw-m13";
+	open my $fh, '>', $exe or die; close $fh; chmod 0755, $exe;
+	mkdir "$Slim::Utils::Prefs::DIR/m13";
+	my $ff = "$Slim::Utils::Prefs::DIR/m13/ffmpeg";
+	open $fh, '>', $ff or die; close $fh; chmod 0755, $ff;
+	my %saved = (listen => '127.0.0.1:9450', public_url => 'https://music.example.com', trusted_proxies => '10.0.0.10',
+		trusted_networks => '10.8.0.0/24', client_ip_header => 'CF-Connecting-IP', gateway_path => $exe,
+		ffmpeg_path => $ff, download_cache_mb => 4096);
+	my %bad = (listen => 'example.com:80', public_url => 'https://music.example.com/path', trusted_proxies => '10.0.0.1, evil',
+		trusted_networks => '8.8.8.0/24', client_ip_header => 'X-Forwarded-For', gateway_path => 'relative/gw',
+		ffmpeg_path => '/bin/sh', download_cache_mb => '8');
+	my $reset = sub {
+		$prefs->set($_, $saved{$_}) for keys %saved;
+		$prefs->set(enabled => 1);
+		Plugins::LyrionAnywhere::Gateway::settings_saved();
+		is($prefs->get($_), $saved{$_}, "set up: $_ saved") for sort keys %saved;
+	};
+	for my $field (sort keys %bad) {
+		$reset->();
+		my $p = { saveSettings => 1, anywhere_form_token => $form, pref_enabled => 1,
+			(map { ("pref_$_" => $saved{$_}) } keys %saved), "pref_$field" => $bad{$field} };
+		page($p);
+		is($prefs->get($field), $saved{$field}, "$field rejected: the saved value stays");
+		is($prefs->get($_), $saved{$_}, "$field rejected: $_ unchanged") for grep { $_ ne $field } sort keys %saved;
+		like($p->{warning} // '', qr/\S/, "$field rejected: the page says why");
+		is($p->{prefs}{"pref_$field"}, $saved{$field}, "$field rejected: the page shows the saved value");
+		is(Plugins::LyrionAnywhere::Gateway::read_authorised()->{$field}, $saved{$field}, "$field rejected: the record keeps it too");
+	}
+	# A field the form did not send at all (LMS sets undef for it).
+	for my $field (sort keys %saved) {
+		$reset->();
+		my $p = { saveSettings => 1, anywhere_form_token => $form, pref_enabled => 1,
+			map { ("pref_$_" => $saved{$_}) } grep { $_ ne $field } keys %saved };
+		page($p);
+		is($prefs->get($field), $saved{$field}, "$field not sent: the saved value stays");
+	}
+	# LMS takes an unprefixed <name> param for a missing pref_<name>: never a way round the checks.
+	for my $field (sort keys %bad) {
+		$reset->();
+		my $p = { saveSettings => 1, anywhere_form_token => $form, pref_enabled => 1,
+			(map { ("pref_$_" => $saved{$_}) } grep { $_ ne $field } keys %saved), $field => $bad{$field} };
+		page($p);
+		is($prefs->get($field), $saved{$field}, "unprefixed $field: not saved");
+	}
+	{
+		$reset->();
+		my $p = { saveSettings => 1, anywhere_form_token => $form, pref_enabled => 1,
+			(map { ("pref_$_" => $saved{$_}) } grep { $_ ne 'public_url' } keys %saved), public_url => 'http://music.example.com' };
+		page($p);
+		is($prefs->get('public_url'), 'https://music.example.com', 'an unprefixed http:// Public URL does not skip the "Allow http://" box');
+	}
+	# An unticked checkbox is not sent: it means off, as before.
+	$reset->();
+	my $p = { saveSettings => 1, anywhere_form_token => $form, map { ("pref_$_" => $saved{$_}) } keys %saved };
+	page($p);
+	is($prefs->get('enabled'), 0, 'Enabled unticked: off');
+	is($prefs->get('transcode'), 0, 'Transcoded downloads unticked: off');
+	is($prefs->get('analysis'), 0, 'Track analysis unticked: off');
+	is($prefs->get($_), $saved{$_}, "and $_ unchanged") for sort keys %saved;
+	$prefs->set($_, '') for qw(public_url trusted_proxies trusted_networks client_ip_header gateway_path ffmpeg_path);
+	$prefs->set(listen => '127.0.0.1:9443');
+	$prefs->set(download_cache_mb => 2048);
+	$prefs->set(enabled => 0);
+	$prefs->set(transcode => 1);
+	$prefs->set(analysis => 1);
+	Plugins::LyrionAnywhere::Gateway::settings_saved();
+}
 
 # The page gets the CSRF token for its script (and only through the template).
 require Plugins::LyrionAnywhere::Commands;
 my $token = Plugins::LyrionAnywhere::Commands::csrf_token();
 $params = {};
-Plugins::LyrionAnywhere::Settings->handler(undef, $params);
+page($params);
 is($params->{anywhere_csrf}, $token, 'settings page is given the token');
 $params = { saveSettings => 1, anywhere_form_token => $token, pref_listen => '127.0.0.1:9443' };
-Plugins::LyrionAnywhere::Settings->handler(undef, $params);
+page($params);
 is($params->{anywhere_csrf}, $token, 'also after saving');
 
 # --- CSRF: LMS's own form token is checked only if its "CSRF protection" setting is raised
@@ -128,7 +210,7 @@ is($params->{anywhere_csrf}, $token, 'also after saving');
 		my ($name, $given) = @$case;
 		my $p = { %forged, (defined $given ? (anywhere_form_token => $given) : ()) };
 		@Slim::Web::Settings::HANDLED = ();
-		Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+		page($p);
 		is($prefs->get('enabled'), 0, "$name: Enabled not changed");
 		is($prefs->get('listen'), '127.0.0.1:9443', "$name: listen address not changed");
 		is($prefs->get('public_url'), 'https://music.example.com', "$name: public URL not changed");
@@ -140,13 +222,13 @@ is($params->{anywhere_csrf}, $token, 'also after saving');
 	}
 	is($restarts + $stops, 0, 'the gateway was not touched');
 	# With the page's token the same form saves.
-	Plugins::LyrionAnywhere::Settings->handler(undef, { %forged, anywhere_form_token => $token, pref_listen => '127.0.0.1:9444' });
+	page({ %forged, anywhere_form_token => $token, pref_listen => '127.0.0.1:9444' });
 	is($prefs->get('listen'), '127.0.0.1:9444', 'with the token: saved');
 	is($prefs->get('enabled'), 1);
 	is($restarts, 1, 'and the gateway restarted');
 	# Just showing the page (no save) needs no token.
 	my $p = {};
-	Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+	page($p);
 	ok(!$p->{warning}, 'viewing the page: no warning');
 	$prefs->set(enabled => 0);
 	$prefs->set(listen => '127.0.0.1:9443');
@@ -199,18 +281,18 @@ is($params->{anywhere_csrf}, $token, 'also after saving');
 	Plugins::LyrionAnywhere::Gateway::settings_saved();
 	my $p = { saveSettings => 1, anywhere_form_token => $token, pref_public_url => 'http://music.example.com' };
 	@Slim::Web::Settings::HANDLED = ();
-	Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+	page($p);
 	is($prefs->get('public_url'), '', 'without the box: not saved');
 	is($p->{anywhere_keep_public_url}, 'http://music.example.com', 'the typed address is handed to the page');
-	ok(!exists $Slim::Web::Settings::HANDLED[-1]{pref_public_url}, 'and not as a pref LMS would save');
+	is($Slim::Web::Settings::HANDLED[-1]{pref_public_url}, '', 'and not as a pref LMS would save: LMS is given the saved value');
 	like($p->{warning}, qr/not saved.*Allow http/, 'with the error');
 	$p = { saveSettings => 1, anywhere_form_token => $token, pref_public_url => 'http://music.example.com', anywhere_allow_http => 1 };
-	Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+	page($p);
 	is($prefs->get('public_url'), 'http://music.example.com', 'with the box: saved');
 	ok(!exists $p->{anywhere_keep_public_url}, 'nothing to put back');
 	like($p->{warning}, qr/Public URL saved as http:\/\/music\.example\.com\. Connections to it are unencrypted/, 'and the page says it was saved');
 	$p = {};
-	Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+	page($p);
 	ok(!exists $p->{anywhere_keep_public_url}, 'viewing the page: nothing kept');
 	$prefs->set(public_url => '');
 
@@ -259,13 +341,13 @@ is($params->{anywhere_csrf}, $token, 'also after saving');
 	) {
 		my ($name, $req) = @$case;
 		my $p = { %$req, anywhere_keep_public_url => 'https://music.attacker.example' };
-		Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+		page($p);
 		ok(!exists $p->{anywhere_keep_public_url}, "$name: a hand-back value in the request is dropped");
 		is($prefs->get('public_url'), '', "$name: and nothing is saved from it");
 	}
 	# A refused address of its own is still handed back after the request's value is dropped.
 	my $p = { saveSettings => 1, anywhere_form_token => $token, pref_public_url => 'http://music.example.com', anywhere_keep_public_url => 'https://music.attacker.example' };
-	Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+	page($p);
 	is($p->{anywhere_keep_public_url}, 'http://music.example.com', 'the handler hands back only what it refused itself');
 }
 {
@@ -362,12 +444,12 @@ is($params->{anywhere_csrf}, $token, 'also after saving');
 	$prefs->set(public_url => 'https://music.example.com');
 	Plugins::LyrionAnywhere::Gateway::settings_saved();
 	my $params = {};
-	Plugins::LyrionAnywhere::Settings->handler(undef, $params);
+	page($params);
 	is($params->{anywhere_public_url}, 'https://music.example.com', 'page is given the public URL');
 	$prefs->set(public_url => '');
 	Plugins::LyrionAnywhere::Gateway::settings_saved();
 	$params = {};
-	Plugins::LyrionAnywhere::Settings->handler(undef, $params);
+	page($params);
 	is($params->{anywhere_public_url}, '', 'empty when unset');
 	open my $fh, '<', 'Plugins/LyrionAnywhere/HTML/EN/plugins/LyrionAnywhere/settings/basic.html' or die;
 	my $html = do { local $/; <$fh> };
@@ -531,12 +613,12 @@ my $vectors = do {
 	$prefs->set(listen => '10.8.0.1:9443');
 	Plugins::LyrionAnywhere::Gateway::settings_saved();
 	my $p = { saveSettings => 1, anywhere_form_token => $form, pref_trusted_networks => '10.9.0.0/24, <script>alert(1)</script>' };
-	Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+	page($p);
 	is($prefs->get('trusted_networks'), '10.8.0.0/24', 'a bad list is not saved: the old value stays');
 	unlike($p->{warning}, qr/<script>/, 'the message is escaped');
 	like($p->{warning}, qr/Trusted networks not saved: &quot;&lt;script&gt;/, 'and names the entry');
 	$p = { saveSettings => 1, anywhere_form_token => $form, pref_trusted_networks => '10.9.0.0/24', pref_listen => '127.0.0.1:9443' };
-	Plugins::LyrionAnywhere::Settings->handler(undef, $p);
+	page($p);
 	is($prefs->get('trusted_networks'), '10.9.0.0/24', 'a good list is saved');
 	is($prefs->get('listen'), '127.0.0.1:9443', 'with the loopback listen address');
 	like($p->{warning}, qr/cannot reach/, 'and the notice shown');
@@ -558,6 +640,39 @@ my $vectors = do {
 		&& index($html, 'title="Trusted networks"') < index($html, 'title="Client address header"'), 'after Trusted proxies');
 	my (undef, @names) = Plugins::LyrionAnywhere::Settings::prefs();
 	ok(grep({ $_ eq 'trusted_networks' } @names), 'a pref of the page');
+}
+
+# --- a Public URL with an IPv6 address in brackets (review 2026-11-12): pairing links accept
+# http://[fd00::1]:9443, so the setting must too, written as browsers write it in Origin ------
+{
+	$prefs->set(public_url => '');
+	my %ok = (
+		'http://[fd00::1]:9443'          => 'http://[fd00::1]:9443',
+		'http://[FD00:0:0:0::1]:9443/'   => 'http://[fd00::1]:9443',
+		'https://[fd12:3456:789a::10]'   => 'https://[fd12:3456:789a::10]',
+		'HTTP://[fe80:0000::1]'          => 'http://[fe80::1]',
+		'https://[2001:db8::1]:8443'     => 'https://[2001:db8::1]:8443',
+	);
+	for my $in (sort keys %ok) {
+		my ($o, $e) = $clean->({ pref_public_url => $in, anywhere_allow_http => 1 });
+		is_deeply($e, [], "Public URL accepted: $in");
+		is($o->{pref_public_url}, $ok{$in}, "stored as a browser writes the origin: $ok{$in}");
+		ok(Plugins::LyrionAnywhere::Gateway::valid_origin($ok{$in}), 'and valid for the gateway\'s command line');
+	}
+	is(Plugins::LyrionAnywhere::Gateway::private_http_origin('http://[fd00::1]:9443'), ($clean->({ pref_public_url => 'http://[FD00::1]:9443', anywhere_allow_http => 1 }))[0]{pref_public_url},
+		'the same origin the pairing link uses');
+	for my $bad ('http://[fd00::1', 'http://fd00::1', 'http://[fd00::1]:9443/path', 'http://[fe80::1%25eth0]', 'http://[fe80::1%eth0]:9443',
+	             'http://[::ffff:10.0.0.1]', 'http://[fd00::g]', 'http://[1:2:3:4:5:6:7:8:9]', 'http://[fd00::1]:123456', 'http://[]',
+	             'http://[fd00::1]x') {
+		my ($o, $e) = $clean->({ pref_public_url => $bad, anywhere_allow_http => 1 });
+		ok(!exists $o->{pref_public_url} && @$e, 'Public URL refused: ' . show($bad));
+		ok(!Plugins::LyrionAnywhere::Gateway::valid_origin($bad), 'and never valid for the gateway: ' . show($bad));
+	}
+	ok(!Plugins::LyrionAnywhere::Gateway::valid_origin($_), 'not an origin: ' . show($_))
+		for ("http://[fd00::1]\n", "http://[fd00::1]:9443\n", ['http://[fd00::1]'], undef, 'http://[' . ('1:' x 120) . '1]');
+	my ($argv) = Plugins::LyrionAnywhere::Gateway::command_line(binary => '/srv/gw', listen => '10.8.0.1:9443', admin_listen => '127.0.0.1:9445',
+		data_dir => '/srv/data', http_port => 9000, cli_port => 9090, allowed_origins => ['http://[fd00::1]:9443']);
+	ok($argv && grep({ $_ eq 'http://[fd00::1]:9443' } @$argv), 'the gateway is started with it as an allowed origin');
 }
 
 # --- the Public URL over http:// to a private address (pairing links and QR codes) --------
