@@ -176,6 +176,36 @@ fn random_packets_for_every_toc_never_panic() {
     check(&failures);
 }
 
+/// Packets longer than the 1,500 bytes upstream allowed but within RFC 6716 (frames of up
+/// to 1,275 bytes, 48 to a packet) decode; random ones of every frame count up to 61,440
+/// bytes never panic.
+#[test]
+fn long_packets_within_the_rfc_decode_and_never_panic() {
+    let mut r = Rng(0x10_a6);
+    // 60 ms: three 20 ms CELT FB frames of 700 bytes (2,102 bytes, about 280 kb/s).
+    let mut dec = OpusDecoder::new(48_000, 2).unwrap();
+    let mut p = vec![(31 << 3) | 0x04 | 3, 3];
+    p.extend(r.bytes(3 * 700));
+    let mut pcm = vec![0f32; MAX_OUT];
+    let decoded = dec.decode_float(&p, &mut pcm, false);
+    assert!(matches!(decoded, Ok(2880)), "{decoded:?}");
+    let mut failures = Vec::new();
+    for round in 0..200 {
+        // CELT 2.5 ms (configs 16, 20, 24, 28) up to 48 frames, or 20 ms up to 6.
+        let config = [16u8, 20, 24, 28, 31][round % 5];
+        let most = if config == 31 { 6 } else { 48 };
+        let frames = 1 + r.below(most);
+        let size = r.below(1276);
+        let mut p = vec![(config << 3) | ((round as u8 & 1) << 2) | 3, frames as u8];
+        p.extend(r.bytes(frames * size));
+        if panics(&mut dec, &p) {
+            failures.push(p);
+            dec = OpusDecoder::new(48_000, 2).unwrap();
+        }
+    }
+    check(&failures);
+}
+
 /// Real packets of each mode decode, and truncated or bit-flipped copies never panic.
 #[test]
 fn truncated_and_bit_flipped_real_packets_never_panic() {

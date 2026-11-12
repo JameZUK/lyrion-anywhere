@@ -1,7 +1,16 @@
 use crate::Error;
 
 pub(crate) const MAX_FRAMES: usize = 48;
-pub(crate) const MAX_PACKET_SIZE: usize = 1500;
+/// Longest frame (RFC 6716 §3.2.1; §3.4 R2): explicit lengths can't say more, and an
+/// implied one (code 0, code 1, CBR code 3, the last frame of code 2 and VBR code 3) that
+/// would be longer makes the packet invalid, as libopus treats it.
+pub(crate) const MAX_FRAME_SIZE: usize = 1275;
+/// Longest packet accepted (Lyrion Anywhere; upstream refused anything over 1,500 bytes,
+/// which turned away legal 40 and 60 ms packets above about 200 kb/s). 48 frames (120 ms
+/// of 2.5 ms frames) of [`MAX_FRAME_SIZE`] with every header byte fit in 61,296 bytes, so
+/// anything longer is padding; Ogg Opus demuxers treat packets over 61,440 bytes (per
+/// stream) as invalid (RFC 7845 §6), and so does this.
+pub(crate) const MAX_PACKET_SIZE: usize = 61_440;
 pub(crate) const MAX_DURATION_SAMPLES_48K: usize = 5760; // 120 ms @ 48 kHz
 
 #[derive(Debug, Clone, Copy)]
@@ -155,6 +164,10 @@ pub(crate) fn parse_packet(packet: &[u8]) -> Result<ParsedPacket<'_>, Error> {
         }
         _ => return Err(Error::BadPacket),
     };
+
+    if frames[..frame_count].iter().any(|f| f.len() > MAX_FRAME_SIZE) {
+        return Err(Error::BadPacket);
+    }
 
     let total_samples_48k = samples_per_frame_48k.saturating_mul(frame_count);
     if total_samples_48k > MAX_DURATION_SAMPLES_48K {
@@ -335,6 +348,54 @@ mod tests {
         let pp = parse_packet(&packet).unwrap();
         assert_eq!(pp.frame_count, 1);
         assert_eq!(pp.frames()[0], &[0x42, 0x43, 0x44]);
+    }
+
+    /// Lyrion Anywhere: packets were refused over 1,500 bytes, but RFC 6716 allows frames of
+    /// up to 1,275 bytes and 48 of them in a packet (120 ms of 2.5 ms frames), so a 40 or
+    /// 60 ms packet above about 200 kb/s failed. Every legal packet parses now; a frame over
+    /// 1,275 bytes, or a packet padded past 61,440 bytes, is refused.
+    #[test]
+    fn packets_up_to_the_rfc_limits_parse() {
+        // 48 CBR frames of 1,275 bytes (CELT NB 2.5 ms, config 16): 120 ms.
+        let mut p = vec![(16 << 3) | 3, 48];
+        p.extend(std::iter::repeat_n(0x55, 48 * MAX_FRAME_SIZE));
+        let pp = parse_packet(&p).unwrap();
+        assert_eq!(pp.frame_count, 48);
+        assert!(pp.frames().iter().all(|f| f.len() == MAX_FRAME_SIZE));
+        // Three 20 ms frames of 700 bytes (CELT FB, config 31): 2,102 bytes, 60 ms.
+        let mut p = vec![(31 << 3) | 3, 3];
+        p.extend(std::iter::repeat_n(0x33, 3 * 700));
+        assert_eq!(parse_packet(&p).unwrap().frame_count, 3);
+        // VBR, the last frame implicit.
+        let mut p = vec![(31 << 3) | 3, 0x80 | 2, 252, 255];
+        p.extend(std::iter::repeat_n(0x11, 1272 + 1275));
+        let pp = parse_packet(&p).unwrap();
+        assert_eq!((pp.frames()[0].len(), pp.frames()[1].len()), (1272, 1275));
+        // One byte over in each place a frame length is implied.
+        let too_long = MAX_FRAME_SIZE + 1;
+        let mut code0 = vec![31 << 3];
+        code0.extend(std::iter::repeat_n(0, too_long));
+        let mut code1 = vec![(31 << 3) | 1];
+        code1.extend(std::iter::repeat_n(0, 2 * too_long));
+        let mut code2 = vec![(31 << 3) | 2, 10];
+        code2.extend(std::iter::repeat_n(0, 10 + too_long));
+        let mut cbr = vec![(16 << 3) | 3, 2];
+        cbr.extend(std::iter::repeat_n(0, 2 * too_long));
+        let mut vbr = vec![(16 << 3) | 3, 0x80 | 2, 5];
+        vbr.extend(std::iter::repeat_n(0, 5 + too_long));
+        for p in [code0, code1, code2, cbr, vbr] {
+            assert!(matches!(parse_packet(&p), Err(Error::BadPacket)), "{}", p.len());
+        }
+        // Padding past the packet limit.
+        let mut padded = vec![(16 << 3) | 3, 0x40 | 1];
+        let pad = MAX_PACKET_SIZE;
+        padded.extend(std::iter::repeat_n(255, pad / 254));
+        padded.push((pad % 254) as u8);
+        padded.extend(std::iter::repeat_n(0, 10 + pad));
+        assert!(matches!(
+            parse_packet(&padded),
+            Err(Error::PacketTooLarge { .. })
+        ));
     }
 
     #[test]

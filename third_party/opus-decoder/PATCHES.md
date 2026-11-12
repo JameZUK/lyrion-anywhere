@@ -1,6 +1,6 @@
 # Local patches to opus-decoder 0.1.1
 
-This is the published `opus-decoder` 0.1.1 crate (MIT OR Apache-2.0, see `LICENSE-MIT` and `LICENSE-APACHE`; it ports algorithms from libopus, BSD 3-Clause). Lyrion Anywhere uses it through `[patch.crates-io]` in the workspace `Cargo.toml` until a fixed release is published, then this copy should be removed.
+This is the published `opus-decoder` 0.1.1 crate (MIT OR Apache-2.0, see `LICENSE-MIT` and `LICENSE-APACHE`; it ports algorithms from libopus, BSD 3-Clause, whose notice is in `COPYING-libopus`). Lyrion Anywhere uses it through `[patch.crates-io]` in the workspace `Cargo.toml` until a fixed release is published, then this copy should be removed.
 
 ## `celt/vq.rs`: `extract_collapse_mask` overflow
 
@@ -50,3 +50,19 @@ Decoding is unchanged: the same PCM and final range, bit for bit, at every outpu
 **Tested by:** `tests/no_io.rs` (added), which fails if `OpenOptions`, `std::fs`, `std::io::Write`, `File::create`, `File::open`, `/Users/` or `#region agent log` appears in the library sources outside their test modules and doc comments.
 
 **Found by:** Lyrion Anywhere's code review of 15 October 2026 (M22). Worth reporting upstream.
+
+## `packet.rs`: packets up to RFC 6716's limits
+
+Packets over 1,500 bytes were refused (`MAX_PACKET_SIZE`), but RFC 6716 allows frames of up to 1,275 bytes and up to 48 of them in a packet (120 ms of 2.5 ms frames). So a 40 or 60 ms packet above about 200 kb/s failed, and after 64 such packets in a row Lyrion Anywhere's core stopped the stream.
+
+The patch accepts packets of up to 61,440 bytes: 48 frames of 1,275 bytes with all their header bytes fit in 61,296, so anything longer is padding, and RFC 7845 §6 has Ogg Opus demuxers treat a packet over 61,440 bytes per stream as invalid. In its place it applies RFC 6716's own rule, as libopus does: a frame whose length is implied (code 0, code 1, CBR code 3, the last frame of code 2 and of VBR code 3) may not be longer than 1,275 bytes. Explicit frame lengths can't say more than that.
+
+**Tested by:** `packets_up_to_the_rfc_limits_parse` in `packet.rs` (48 frames of 1,275 bytes, a 2,102-byte 60 ms packet, and one byte over in each place a length is implied) and `long_packets_within_the_rfc_decode_and_never_panic` in `tests/robustness.rs` (a 2,102-byte packet decodes; random packets of every frame count up to the limit never panic).
+
+**Found by:** Lyrion Anywhere's code review of 15 October 2026 (still open on 12 November).
+
+## `COPYING-libopus`: libopus's licence notice
+
+The crate ports libopus function by function, and libopus is under the BSD 3-Clause licence, which asks that redistributed source keep its copyright notice, conditions and disclaimer. Upstream links to it but does not include it. `COPYING-libopus` is libopus's `COPYING` file, unchanged (as shipped with libopus 1.6.1).
+
+**Found by:** Lyrion Anywhere's code review of 15 October 2026.

@@ -217,6 +217,7 @@ at your option.
 
 This crate ports algorithms from [libopus](https://gitlab.xiph.org/xiph/opus),
 which is licensed under the [BSD 3-Clause License](https://gitlab.xiph.org/xiph/opus/-/blob/master/COPYING).
+Lyrion Anywhere: libopus's notice is reproduced in [`COPYING-libopus`](COPYING-libopus).
 
 ## Contributing
 
