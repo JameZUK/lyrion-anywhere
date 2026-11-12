@@ -4,6 +4,7 @@ import { fireEvent, render, screen } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import AddDevice from '#lib/components/AddDevice.svelte';
 import { ApiError } from '#lib/api/http';
+import { RenewedFirst } from '#lib/api/session';
 import { createPairingCode, type PairingCode } from '#lib/api/auth';
 import { decodeQr } from './helpers/qr-decode.mjs';
 
@@ -88,9 +89,12 @@ describe('Add another device', () => {
 	});
 
 	test('refusals read clearly, and a hostile reply shows nothing', async () => {
+		// A wrong password is 403 (review M10); a 401 is the token, never "Password not right".
 		for (const [err, want] of [
-			[new ApiError(401, 'invalid credentials'), 'Password not right.'],
+			[new ApiError(403, 'the password is wrong'), 'Password not right.'],
 			[new ApiError(429, 'too many attempts; try again later'), 'Too many codes'],
+			[new ApiError(401, 'invalid credentials'), 'Your sign-in has ended'],
+			[new RenewedFirst(), 'renewed first'],
 		] as const) {
 			const { container, unmount } = render(AddDevice, { create: () => Promise.reject(err), server: 'https://music.example.com' });
 			await submit(container, 'wrong password!');

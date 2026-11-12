@@ -1,6 +1,7 @@
 // Changing one's own password (Settings › Account): the checks made before sending, and
 // what each refusal says. The gateway's policy is the authority; these only save a trip.
 import { ApiError } from '#lib/api/http';
+import { RenewedFirst } from '#lib/api/session';
 import type { OwnDevice } from '#lib/api/auth';
 import { ago } from './ago';
 
@@ -47,6 +48,8 @@ function sentence(s: string): string {
 
 /** What went wrong, for the person changing their password. */
 export function changeError(err: unknown): { message: string; needCode?: boolean } {
+	// The token had expired: renewed, and the passwords not sent again (SessionManager.authedOnce).
+	if (err instanceof RenewedFirst) return { message: err.message };
 	if (err instanceof ApiError) {
 		if (err.status === 403 && err.totpRequired) return { message: 'Your account has two-step verification on: enter the code from your authenticator app.', needCode: true };
 		if (err.status === 403) return { message: 'The current password or two-step code isn’t right.' };

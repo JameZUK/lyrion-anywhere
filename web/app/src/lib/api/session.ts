@@ -378,4 +378,35 @@ export class SessionManager {
 			return fn(this.token);
 		}
 	}
+
+	/**
+	 * Run a call that carries a password or a two-step code. The gateway answers wrong
+	 * credentials with 403, never 401 (docs/PROTOCOL.md), so a 401 is about the token: it is
+	 * renewed for the next try, but the call is not sent again by itself. What the person
+	 * typed is sent once per tap, and fails with {@link RenewedFirst} instead.
+	 */
+	async authedOnce<T>(fn: (token: string) => Promise<T>): Promise<T> {
+		const gen = await this.#ready();
+		const token = this.token;
+		try {
+			return await fn(token);
+		} catch (e) {
+			if (!(e instanceof ApiError) || e.status !== 401) throw e;
+			const ok = this.token === token ? await this.renew() : true;
+			if (!this.current || gen !== this.#gen) throw e;
+			if (!ok) throw new TypeError('Can’t reach your music server.');
+			throw new RenewedFirst();
+		}
+	}
+}
+
+/**
+ * A call carrying a password or code met an expired token. The token has been renewed, and
+ * nothing was checked or changed: the person tries again (see SessionManager.authedOnce).
+ */
+export class RenewedFirst extends Error {
+	constructor() {
+		super('Your sign-in had to be renewed first, so nothing was changed. Try again.');
+		this.name = 'RenewedFirst';
+	}
 }
