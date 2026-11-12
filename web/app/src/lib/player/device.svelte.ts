@@ -198,6 +198,8 @@ class DevicePlayer {
 	/** Who wants visualiser frames (Wave 2 §4.1); the worker analyses only while someone does. */
 	#visualWatchers = new Set<(frame: Float32Array) => void>();
 	#ctx: AudioContext | null = null;
+	/** A context being built to replace `#ctx` (see #createAudio); a stop closes it too. */
+	#building: AudioContext | null = null;
 	#unsubscribe: (() => void) | null = null;
 	#detailAt = 0;
 	#keepAlive = new KeepAlive(asset('silence.wav'));
@@ -587,10 +589,15 @@ class DevicePlayer {
 	}
 
 	/** Apply LMS's volume (or full scale) at the output, after anything queued. */
+	/** The gains the output applies now: LMS's volume as planned, and the sleep fade. */
+	#gains(): [number, number] {
+		const [l, r] = outputGains(this.volumePlan, this.#lmsGains);
+		return [l * this.#fade, r * this.#fade];
+	}
+
 	#applyVolume() {
 		const plan = this.volumePlan;
-		const [l, r] = outputGains(plan, this.#lmsGains);
-		const gains: [number, number] = [l * this.#fade, r * this.#fade];
+		const gains = this.#gains();
 		if (this.#media) this.#elementVolume?.set(elementVolume(gains));
 		else this.#node?.port.postMessage({ gain: gains });
 		if (plan && !plan.follow) this.#holdLmsAtFull();
@@ -967,6 +974,8 @@ class DevicePlayer {
 		this.#holding = false;
 		this.#ctx?.close().catch(() => {});
 		this.#ctx = null;
+		this.#building?.close().catch(() => {});
+		this.#building = null;
 		this.state = final === 'error' ? 'error' : this.state === 'off' ? 'off' : 'stopped';
 	}
 
@@ -984,21 +993,19 @@ class DevicePlayer {
 	}
 
 	/**
-	 * A new AudioContext at `rate`, replacing (and first closing) the current one. Returns
-	 * null, with the new context closed again, if the device was stopped meanwhile.
-	 * Callers run one at a time (see #onRate).
+	 * A new AudioContext at `rate`, replacing the current one once it is ready: the current
+	 * one plays on (and stays, should this one fail) until then. Returns null, with the new
+	 * context closed again, if the device was stopped meanwhile. Callers run one at a time
+	 * (see #onRate).
 	 */
 	async #createAudio(rate: number, gen: number): Promise<MessagePort | null> {
 		const live = () => gen === this.#gen;
-		const old = this.#ctx;
-		this.#ctx = null;
-		if (old) await old.close().catch(() => {});
-		if (!live()) return null;
 		// The core outputs at the track's own rate; the browser resamples to the hardware.
 		const ctx = new AudioContext({ sampleRate: rate, latencyHint: 'playback' });
-		this.#ctx = ctx;
+		this.#building = ctx;
 		const abandon = () => {
 			if (this.#ctx === ctx) this.#ctx = null;
+			if (this.#building === ctx) this.#building = null;
 			ctx.close().catch(() => {});
 			return null;
 		};
@@ -1014,8 +1021,6 @@ class DevicePlayer {
 		if (!live()) return abandon();
 		const node = new AudioWorkletNode(ctx, 'anywhere-sink', { outputChannelCount: [2] });
 		node.connect(ctx.destination);
-		this.#node = node;
-		node.port.postMessage({ gain: outputGains(this.volumePlan, this.#lmsGains), instant: true });
 		const channel = new MessageChannel();
 		node.port.postMessage({ port: channel.port1 }, [channel.port1]);
 		// Without a tap, resume() waits for one: don't let that hold up starting.
@@ -1023,6 +1028,13 @@ class DevicePlayer {
 		if (this.#auto) await Promise.race([resumed, new Promise((r) => setTimeout(r, 500))]);
 		else await resumed;
 		if (!live()) return abandon();
+		// Ready: it takes over from the old one, at the volume in force now.
+		const old = this.#ctx;
+		this.#ctx = ctx;
+		if (this.#building === ctx) this.#building = null;
+		this.#node = node;
+		node.port.postMessage({ gain: this.#gains(), instant: true });
+		if (old && old !== ctx) old.close().catch(() => {});
 		return channel.port2;
 	}
 
@@ -1050,8 +1062,11 @@ class DevicePlayer {
 		});
 		this.#audioQueue = job.catch((e) => {
 			if (gen !== this.#gen) return;
-			this.#audioRate = 0; // let the worker's next request try again
+			// The old output stays (see #createAudio). The worker asks for this rate again after
+			// a pause; without word of the failure it would wait for this one for ever.
+			if (this.#audioRate === rate) this.#audioRate = 0;
 			this.#note(`audio output failed at ${rate} Hz: ${(e as Error).message}`);
+			this.#worker?.postMessage({ cmd: 'rate-failed', rate });
 		});
 		return this.#audioQueue;
 	}

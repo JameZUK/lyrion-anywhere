@@ -155,24 +155,50 @@ export class Outbox {
   }
 }
 
+/** Pauses (ms) before asking again for a rate the page failed to build; then the last, repeatedly. */
+export const RATE_RETRY_MS = [1000, 2000, 5000, 10_000, 30_000];
+
 /**
  * Asks the page for an AudioContext at the core's output rate once per change, not on every
- * 20 ms tick: each request makes the page build a new context.
+ * 20 ms tick: each request makes the page build a new context. A rate the page failed to
+ * build (its worklet didn't load, say) is asked for again after a pause, which grows while
+ * it keeps failing; a different rate is asked for at once.
  */
 export class RateRequest {
   constructor() {
     this.requested = 0;
+    this.failedRate = 0;
+    this.retryAt = 0;
+    this.failures = 0;
   }
 
-  /** Ask for `rate`, given the page's context runs at `ready`? */
-  want(rate, ready) {
+  /** Ask for `rate` now (`now` in ms), given the page's context runs at `ready`? */
+  want(rate, ready, now = 0) {
     if (!rate || rate === ready || rate === this.requested) return false;
+    if (rate === this.failedRate && now < this.retryAt) return false;
     this.requested = rate;
     return true;
   }
 
+  /** The page could not build an output at `rate` (at `now`): ask again after a pause. */
+  failed(rate, now) {
+    if (!rate || rate !== this.requested) return; // not the request in hand
+    this.requested = 0;
+    this.failedRate = rate;
+    this.retryAt = now + RATE_RETRY_MS[Math.min(this.failures, RATE_RETRY_MS.length - 1)];
+    this.failures++;
+  }
+
+  /** The page's output now runs at the rate asked for: the pauses start again from the shortest. */
+  ready() {
+    this.failedRate = 0;
+    this.retryAt = 0;
+    this.failures = 0;
+  }
+
   reset() {
     this.requested = 0;
+    this.ready();
   }
 }
 

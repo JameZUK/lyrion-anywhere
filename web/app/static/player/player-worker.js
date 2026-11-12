@@ -272,6 +272,10 @@ onmessage = async (e) => {
     attachSink(msg.port);
   } else if (msg.cmd === 'rate-ready') {
     readyRate = msg.rate;
+    rateRequest.ready();
+  } else if (msg.cmd === 'rate-failed') {
+    // The page could not build an output at that rate (and kept the old one): ask again later.
+    rateRequest.failed(msg.rate, now());
   } else if (msg.cmd === 'clock') {
     // Web Audio mode: which context time is heard when (from getOutputTimestamp).
     presentation.setClock(msg.ctx, msg.at, msg.rate);
@@ -701,7 +705,7 @@ function workletTick() {
   const rate = player.output_rate();
   if (rate && rate !== readyRate) {
     // The main thread (re)creates the AudioContext at this rate: ask once, then wait.
-    if (rateRequest.want(rate, readyRate)) postMessage({ rate });
+    if (rateRequest.want(rate, readyRate, now())) postMessage({ rate });
   } else if (rate) {
     const target = rate * WORKLET_AHEAD_SECS;
     while (pulled - played < target) {

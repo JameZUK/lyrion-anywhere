@@ -48,6 +48,8 @@ class FakeWorker {
 }
 
 let addModuleGate: Promise<void> | null = null;
+/** Rates whose worklet fails to load (as when the network drops just then). */
+const failRates = new Set<number>();
 /** False: a context without `audioWorklet`, as on a plain-http page. */
 let worklets = true;
 /** Like a browser without a user gesture yet: contexts start suspended until one. */
@@ -59,7 +61,15 @@ class FakeAudioContext {
 	destination = {};
 	// On the prototype, as in a browser (capability detection looks there).
 	get audioWorklet() {
-		return worklets ? { addModule: async () => addModuleGate ?? undefined } : undefined;
+		const rate = this.sampleRate;
+		return worklets
+			? {
+					addModule: async () => {
+						await (addModuleGate ?? undefined);
+						if (failRates.has(rate)) throw new Error('the worklet did not load');
+					},
+				}
+			: undefined;
 	}
 	constructor(o: { sampleRate: number }) {
 		this.sampleRate = o.sampleRate;
@@ -108,6 +118,7 @@ beforeEach(() => {
 	FakeWorker.all = [];
 	FakeAudioContext.all = [];
 	addModuleGate = null;
+	failRates.clear();
 	worklets = true;
 	gesture = { needed: false, given: false };
 	session.current = { access_token: 't1' };
@@ -182,6 +193,49 @@ test('rate requests are built one at a time; an overtaken one is dropped', async
 	await settle();
 	expect(open().map((c) => c.sampleRate)).toEqual([48000]);
 	expect(w.cmds('rate-ready').map((m) => m.rate)).toEqual([44100, 48000]);
+});
+
+// Regression (review, Web low): a failed sample-rate switch closed the old context first and
+// was never tried again (the worker asks once per rate), so the device went silent for good.
+test('a failed rate switch keeps the old output, and tells the worker so it asks again', async () => {
+	const w = await started();
+	failRates.add(96000);
+	w.say({ rate: 96000 });
+	await settle();
+	expect(open().map((c) => c.sampleRate)).toEqual([44100]); // the old one is still there
+	expect(w.cmds('rate-failed')).toEqual([{ cmd: 'rate-failed', rate: 96000 }]);
+	expect(w.cmds('start-sink')).toHaveLength(0);
+	expect(device.log.some((l) => l.includes('audio output failed at 96000 Hz'))).toBe(true);
+	// The worker asks again (after its pause); this time it works, and only then is the old one closed.
+	failRates.clear();
+	w.say({ rate: 96000 });
+	await settle();
+	expect(open().map((c) => c.sampleRate)).toEqual([96000]);
+	expect(w.cmds('start-sink')).toHaveLength(1);
+	expect(w.cmds('rate-ready').at(-1)).toEqual({ cmd: 'rate-ready', rate: 96000 });
+});
+
+test('while a new output is built, the old one keeps playing', async () => {
+	const w = await started();
+	let release!: () => void;
+	addModuleGate = new Promise((r) => (release = r));
+	w.say({ rate: 96000 });
+	await settle();
+	expect(open().map((c) => c.sampleRate)).toEqual([44100, 96000]);
+	release();
+	addModuleGate = null;
+	await settle();
+	expect(open().map((c) => c.sampleRate)).toEqual([96000]);
+});
+
+test('stopping while a new output is being built closes both, even if its worklet never loads', async () => {
+	const w = await started();
+	addModuleGate = new Promise(() => {}); // never loads
+	w.say({ rate: 96000 });
+	await settle();
+	expect(open()).toHaveLength(2);
+	device.stop();
+	expect(open()).toHaveLength(0);
 });
 
 test('stopping closes the context, and a late rate request builds nothing', async () => {
