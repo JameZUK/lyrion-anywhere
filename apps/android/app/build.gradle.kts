@@ -116,17 +116,30 @@ android {
 }
 
 /**
- * The androidx.startup initialisers in the MERGED manifest must be exactly [expected]. A new
- * one arriving with a library (WorkManager's did) runs before Application.onCreate and has
- * crashed the app at launch; the source manifest alone can't show what the merge adds.
+ * What ships, checked on the MERGED manifest: the source manifest alone can't show what the
+ * libraries' manifests add.
+ * - The androidx.startup initialisers must be exactly [expected]. A new one arriving with a
+ *   library (WorkManager's did) runs before Application.onCreate and has crashed the app at
+ *   launch.
+ * - The exported components must be exactly [exported], each guarded by the permission given
+ *   ("" for none). Anything exported is reachable by every other app: a library that exports
+ *   something new, or drops a guard, fails the build until it is reviewed.
+ * - The permissions asked for must be exactly [permissions], and the app declares none of its
+ *   own but signature-level ones. `${applicationId}` stands for the package.
  */
-abstract class VerifyStartupInitialisers : DefaultTask() {
+abstract class VerifyMergedManifest : DefaultTask() {
     @get:InputFile
     @get:PathSensitive(PathSensitivity.NONE)
     abstract val mergedManifest: RegularFileProperty
 
     @get:Input
     abstract val expected: SetProperty<String>
+
+    @get:Input
+    abstract val exported: MapProperty<String, String>
+
+    @get:Input
+    abstract val permissions: SetProperty<String>
 
     /** Touched when the check passes, so it is skipped while nothing changes. */
     @get:OutputFile
@@ -142,7 +155,11 @@ abstract class VerifyStartupInitialisers : DefaultTask() {
             }
             .newDocumentBuilder()
             .parse(mergedManifest.get().asFile)
-        val providers = doc.getElementsByTagName("provider").let { list -> (0 until list.length).map { list.item(it) as org.w3c.dom.Element } }
+        fun elements(tag: String) = doc.getElementsByTagName(tag).let { list -> (0 until list.length).map { list.item(it) as org.w3c.dom.Element } }
+        val pkg = doc.documentElement.getAttribute("package")
+        fun portable(name: String) = if (pkg.isNotEmpty()) name.replace(pkg, "\${applicationId}") else name
+
+        val providers = elements("provider")
         val startup = providers.filter { it.getAttributeNS(android, "name") == "androidx.startup.InitializationProvider" }
         check(startup.size == 1) { "expected one androidx.startup.InitializationProvider in the merged manifest, found ${startup.size}" }
         val metas = startup.single().getElementsByTagName("meta-data")
@@ -156,14 +173,88 @@ abstract class VerifyStartupInitialisers : DefaultTask() {
                 "at launch: remove it with tools:node=\"remove\" (see AndroidManifest.xml) or review it and " +
                 "update this list."
         }
-        marker.get().asFile.writeText(found.sorted().joinToString("\n"))
+
+        val components = listOf("activity", "activity-alias", "service", "receiver", "provider").flatMap(::elements)
+        val open = components.filter { it.getAttributeNS(android, "exported") == "true" }
+            .associate { it.getAttributeNS(android, "name") to it.getAttributeNS(android, "permission") }
+        check(open == exported.get()) {
+            "exported components in the merged manifest changed (name to the permission guarding it).\n" +
+                "  expected: ${exported.get().toSortedMap()}\n  found:    ${open.toSortedMap()}\nEvery other app can " +
+                "reach an exported component: review what a library added, then remove it with " +
+                "tools:node=\"remove\" or update this list."
+        }
+
+        val asked = (elements("uses-permission") + elements("uses-permission-sdk-23"))
+            .map { portable(it.getAttributeNS(android, "name")) }
+            .toSet()
+        check(asked == permissions.get()) {
+            "permissions in the merged manifest changed.\n  expected: ${permissions.get().sorted()}\n" +
+                "  found:    ${asked.sorted()}\nA library asked for a permission: review it, then remove it " +
+                "with tools:node=\"remove\" or update this list."
+        }
+        val legacy = elements("uses-permission").single { it.getAttributeNS(android, "name") == "android.permission.BLUETOOTH" }
+        check(legacy.getAttributeNS(android, "maxSdkVersion") == "30") { "the old BLUETOOTH permission must stop at Android 11 (maxSdkVersion 30)" }
+        for (p in elements("permission")) {
+            check(p.getAttributeNS(android, "protectionLevel") == "signature") {
+                "the app declares ${p.getAttributeNS(android, "name")} below signature level: other apps could hold it"
+            }
+        }
+        marker.get().asFile.writeText(
+            (found.sorted() + open.toSortedMap().map { (k, v) -> "$k $v" } + asked.sorted()).joinToString("\n"),
+        )
     }
 }
+
+/** Exported, and what guards each ("" for nothing: the app checks its callers itself). */
+val exportedComponents: Map<String, String> = mapOf(
+    // The launcher, voice "play …" and pairing links (only their text is read).
+    "io.github.jamezuk.lyrionanywhere.MainActivity" to "",
+    // Media library for cars: every caller is checked in onConnect (CallerPolicy).
+    "io.github.jamezuk.lyrionanywhere.playback.PlaybackService" to "",
+    // The launcher's widget host: only the update broadcast, which at worst redraws.
+    "io.github.jamezuk.lyrionanywhere.widget.NowPlayingWidgetReceiver" to "",
+    "io.github.jamezuk.lyrionanywhere.widget.NowPlayingLargeWidgetReceiver" to "",
+    "io.github.jamezuk.lyrionanywhere.widget.PlayPauseTileService" to "android.permission.BIND_QUICK_SETTINGS_TILE",
+    // Libraries' own, each behind a permission only the system holds.
+    "androidx.media3.session.BluetoothValidationActivity" to "android.permission.BLUETOOTH_PRIVILEGED",
+    "androidx.glance.appwidget.GlanceRemoteViewsService" to "android.permission.BIND_REMOTEVIEWS",
+    "androidx.work.impl.background.systemjob.SystemJobService" to "android.permission.BIND_JOB_SERVICE",
+    "androidx.work.impl.diagnostics.DiagnosticsReceiver" to "android.permission.DUMP",
+    "androidx.profileinstaller.ProfileInstallReceiver" to "android.permission.DUMP",
+)
+
+/**
+ * Debug builds only: Compose's tooling (previews) and test manifests, from the UI module's
+ * debug dependencies. Never in a release.
+ */
+val debugOnlyExported: Map<String, String> = mapOf(
+    "androidx.compose.ui.tooling.PreviewActivity" to "",
+    "androidx.activity.ComponentActivity" to "",
+)
+
+val askedPermissions: Set<String> = setOf(
+    "android.permission.INTERNET",
+    "android.permission.CAMERA",
+    "android.permission.FOREGROUND_SERVICE",
+    "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+    "android.permission.WAKE_LOCK",
+    "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
+    "android.permission.POST_NOTIFICATIONS",
+    "android.permission.BLUETOOTH_CONNECT",
+    "android.permission.BLUETOOTH",
+    // :playback (bit-perfect USB output), :data (Wi-Fi or mobile data).
+    "android.permission.MODIFY_AUDIO_SETTINGS",
+    "android.permission.ACCESS_NETWORK_STATE",
+    // WorkManager's (brought by Glance), for work the app never schedules; normal, install-time.
+    "android.permission.RECEIVE_BOOT_COMPLETED",
+    // AndroidX core's guard for receivers registered not-exported on Android 12 and older.
+    "\${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",
+)
 
 androidComponents {
     onVariants { variant ->
         val name = variant.name.replaceFirstChar { it.uppercase() }
-        val verify = tasks.register<VerifyStartupInitialisers>("verify${name}StartupInitialisers") {
+        val verify = tasks.register<VerifyMergedManifest>("verify${name}MergedManifest") {
             mergedManifest.set(variant.artifacts.get(com.android.build.api.artifact.SingleArtifact.MERGED_MANIFEST))
             expected.set(
                 setOf(
@@ -172,7 +263,9 @@ androidComponents {
                     "androidx.profileinstaller.ProfileInstallerInitializer",
                 ),
             )
-            marker.set(layout.buildDirectory.file("startup-initialisers/${variant.name}.txt"))
+            exported.set(if (variant.buildType == "debug") exportedComponents + debugOnlyExported else exportedComponents)
+            permissions.set(askedPermissions)
+            marker.set(layout.buildDirectory.file("merged-manifest-check/${variant.name}.txt"))
         }
         // Every APK, bundle and lint run of the variant checks it (CI runs lintDebug and
         // assembleDebug; releases run assembleRelease/bundleRelease).
