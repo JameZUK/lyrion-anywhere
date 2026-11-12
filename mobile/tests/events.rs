@@ -251,3 +251,74 @@ async fn a_gateway_that_keeps_refusing_gets_backoff_not_a_refresh_loop() {
     assert!(sockets <= 5, "{sockets} connections in about three seconds");
     assert!(store.saves() <= 6, "{} secure-store saves", store.saves());
 }
+
+/// A fake gateway whose event socket subscribes and then closes at once (a gateway or
+/// proxy restarting in a loop). Counts the sockets.
+async fn dropping_gateway() -> (Arc<AtomicUsize>, std::net::SocketAddr) {
+    use axum::extract::ws::{Message, WebSocketUpgrade};
+    use axum::routing::{any, post};
+
+    let sockets = Arc::new(AtomicUsize::new(0));
+    let count = sockets.clone();
+    let app = axum::Router::new()
+        .route(
+            "/v1/auth/refresh",
+            post(|| async {
+                axum::Json(serde_json::json!({
+                    "access_token": "access-1", "refresh_token": "refresh-1", "expires_in": 900,
+                    "user": {"username": "alice", "role": "listener"},
+                    "device": {"id": 1, "name": "Phone", "mac": "02:4c:41:00:00:01"},
+                }))
+            }),
+        )
+        .route(
+            "/v1/events",
+            any(move |ws: WebSocketUpgrade| {
+                let count = count.clone();
+                async move {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    ws.on_upgrade(|mut s| async move {
+                        let _ = s.recv().await;
+                        let _ = s.send(Message::Text(r#"{"subscribed":true}"#.into())).await;
+                        let _ = s.send(Message::Close(None)).await;
+                    })
+                }
+            }),
+        );
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+    (sockets, addr)
+}
+
+/// Review 2026-11-12: every subscription reset the backoff, so a gateway that subscribes
+/// and then drops the socket at once was reconnected to about every second for ever (each
+/// time a new subscription on the gateway). Only a socket that stays up a while resets it
+/// now: the waits grow as for any other failure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_gateway_that_drops_every_subscription_gets_a_growing_backoff() {
+    let (sockets, addr) = dropping_gateway().await;
+    let store = MemStore::with(StoredCredentials {
+        refresh_token: "refresh-start".into(),
+        device_id: 1,
+    });
+    let server = Server::new(format!("http://{addr}")).unwrap();
+    let s = Session::new(server, store, "Phone".into()).unwrap();
+    let c = Arc::new(Collector::default());
+    let _sub = Events::new(s.clone()).subscribe(c.clone()).await;
+    let delays = |c: &Collector| -> Vec<u64> {
+        c.states()
+            .iter()
+            .filter_map(|s| match s {
+                EventsState::Retrying { delay_ms } => Some(*delay_ms),
+                _ => None,
+            })
+            .collect()
+    };
+    wait_for("two waits", || delays(&c).len() >= 2).await;
+    let d = delays(&c);
+    assert!(c.live_count() >= 2, "it did subscribe each time");
+    // About 1 s, then about 2 s (±20 %): the second wait is longer, not reset.
+    assert!(d[0] <= 1200 && d[1] >= 1600, "waits {d:?}");
+    assert!(sockets.load(Ordering::SeqCst) <= 3);
+}
