@@ -8,9 +8,17 @@
 //!   A refresh runs to completion in its own task even if the caller is cancelled, so a
 //!   rotated token is never lost to a cancelled coroutine (presenting the old one later
 //!   would look like theft and revoke the device).
+//!   That task runs on the process's long-lived runtime ([`transport::background`]), not on
+//!   the caller's: the player engine and the downloader have private runtimes that are
+//!   dropped when they stop, and a rotation cancelled with one lost its new token.
 //! - Refreshes are single-flight: concurrent callers share one.
-//! - Only a **refusal** (4xx) of a refresh signs the user out. A network failure keeps the
-//!   sign-in, and the caller can retry later.
+//! - Only the gateway's own **refusal** (its 401) of a refresh signs the user out. A network
+//!   failure, or a page from something in the way, keeps the sign-in, and the caller can
+//!   retry later. A refusal saying the sign-in expired (`"reason": "expired"`) is reported
+//!   as a plain sign-out, so the app keeps its downloads; any other is a revocation.
+//! - The secure store is written outside the state lock (a Keystore write can take a
+//!   while), one sign-in change at a time, and the result is applied only if no other
+//!   sign-in or sign-out came in meanwhile.
 
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -73,8 +81,10 @@ pub trait SecureStore: Send + Sync {
 /// Told when the sign-in ends.
 #[uniffi::export(with_foreign)]
 pub trait SessionObserver: Send + Sync {
-    /// `revoked`: the server refused the sign-in (revoked, expired or signed out
-    /// elsewhere), as opposed to the user signing out here.
+    /// `revoked`: the server revoked this device's sign-in (an admin or another of the
+    /// user's devices signed it out, or its token was reused); its downloads should go
+    /// (SPEC §8.5). False when the user signed out here, or the sign-in simply expired
+    /// (the server says so): the downloads stay for the next sign-in.
     fn on_signed_out(&self, revoked: bool);
 }
 
@@ -96,6 +106,11 @@ struct State {
     /// Bumped by every sign-in and sign-out, so a refresh started before one can't apply
     /// its result afterwards.
     generation: u64,
+    /// The refresh token of a sign-in the gateway said had expired (memory only): the
+    /// next password sign-in sends it, which proves this is the same device and gives it
+    /// its own lockout allowance. Only after an "expired" answer, which only a gateway
+    /// that takes it gives; cleared by any sign-in or sign-out.
+    expired_refresh: Option<String>,
 }
 
 pub(crate) struct Core {
@@ -106,8 +121,14 @@ pub(crate) struct Core {
     /// What the gateway is told this client runs on (the phone's model, e.g. "Pixel 8").
     platform: String,
     state: Mutex<State>,
+    /// Held while the secure store is written (never with `state`), so sign-in changes
+    /// reach the store one at a time and in order.
+    persist: Mutex<()>,
     refresh_lock: Arc<tokio::sync::Mutex<()>>,
     observer: Mutex<Option<Arc<dyn SessionObserver>>>,
+    /// Artwork fetches in flight for this server, shared by every [`crate::Art`] made
+    /// for this session (the downloader's cover cache included).
+    art_slots: Arc<tokio::sync::Semaphore>,
 }
 
 /// A sign-in to one server. Create one per server; it restores a saved sign-in from the
@@ -377,12 +398,20 @@ impl Core {
     /// `generation`: for a refresh, the sign-in it belongs to (refused if it has ended);
     /// `None` for a new sign-in, which supersedes everything before it.
     fn adopt(&self, t: Issued, generation: Option<u64>) -> Result<SignedIn, ApiError> {
-        let mut st = self.state.lock().unwrap();
-        match generation {
-            Some(g) if g != st.generation => return Err(ApiError::Unauthorised),
-            Some(_) => {}
-            None => st.generation += 1,
-        }
+        // One sign-in change at a time reaches the store; the state lock is not held
+        // while the store (the Keystore, through Kotlin) is written.
+        let _persist = self.persist.lock().unwrap_or_else(|e| e.into_inner());
+        let mine = {
+            let mut st = self.state.lock().unwrap();
+            match generation {
+                Some(g) if g != st.generation => return Err(ApiError::Unauthorised),
+                Some(g) => g,
+                None => {
+                    st.generation += 1;
+                    st.generation
+                }
+            }
+        };
         // A store failure keeps the sign-in for this run of the app only. Whatever was
         // stored before is now stale: clear it, or the next start would present a rotated
         // token, which the gateway takes as theft and revokes the device.
@@ -396,6 +425,12 @@ impl Core {
         {
             let _ = self.store.clear();
         }
+        let mut st = self.state.lock().unwrap();
+        // Every other change waits for `persist`, so this holds; checked all the same, as
+        // applying tokens to a sign-in that has ended would sign it back in.
+        if st.generation != mine {
+            return Err(ApiError::Unauthorised);
+        }
         let lifetime = Duration::from_secs(t.expires_in);
         st.access = Some(Access {
             token: t.access,
@@ -407,21 +442,28 @@ impl Core {
         st.refresh = Some(t.refresh);
         st.device_id = Some(t.who.device.id);
         st.who = Some(t.who.clone());
+        st.expired_refresh = None;
         Ok(t.who)
     }
 
     /// End the sign-in locally (`generation`: only if it is still that sign-in).
-    fn forget(&self, revoked: bool, generation: Option<u64>) {
+    /// `expired_refresh`: the refresh token the gateway refused as expired, kept in memory
+    /// for the next password sign-in (see [`State::expired_refresh`]).
+    fn forget(&self, revoked: bool, expired_refresh: Option<String>, generation: Option<u64>) {
         {
-            let mut st = self.state.lock().unwrap();
-            if generation.is_some_and(|g| g != st.generation) {
-                return;
+            let _persist = self.persist.lock().unwrap_or_else(|e| e.into_inner());
+            {
+                let mut st = self.state.lock().unwrap();
+                if generation.is_some_and(|g| g != st.generation) {
+                    return;
+                }
+                st.generation += 1;
+                st.access = None;
+                st.refresh = None;
+                st.who = None;
+                st.expired_refresh = expired_refresh;
+                // device_id is kept in memory, so signing in again keeps the same player.
             }
-            st.generation += 1;
-            st.access = None;
-            st.refresh = None;
-            st.who = None;
-            // device_id is kept in memory, so signing in again keeps the same player.
             let _ = self.store.clear();
         }
         self.notify_signed_out(revoked);
@@ -456,28 +498,31 @@ impl Core {
             (st.refresh.clone(), st.generation)
         };
         let refresh = refresh.ok_or(ApiError::Unauthorised)?;
-        // Run the rotation in its own task: if our caller is cancelled half-way, the new
-        // refresh token is still stored.
+        // Run the rotation in its own task on the long-lived runtime: if our caller is
+        // cancelled half-way, or its runtime dropped (the engine's, the downloader's), the
+        // new refresh token is still stored.
         let core = self.clone();
-        let task = tokio::spawn(async move {
+        let task = transport::background().spawn(async move {
             let _guard = guard;
-            let answer = transport::send_refresh(
-                core.post("v1/auth/refresh", &json!({ "refresh_token": refresh })),
+            let answer = transport::send_auth(
+                core.post("v1/auth/refresh", &json!({ "refresh_token": &refresh })),
             )
             .await
-            .and_then(|v| parse_issued(&v));
+            .and_then(|v| parse_issued(&v).map_err(transport::AuthFailure::Failed));
             match answer {
                 Ok(t) => {
                     let token = t.access.clone();
                     core.adopt(t, Some(generation)).map(|_| token)
                 }
-                // Only the gateway's own 401 means this device's sign-in has ended (signing
-                // out also deletes downloads); see `transport::send_refresh`.
-                Err(ApiError::Unauthorised) => {
-                    core.forget(true, Some(generation));
+                // Only the gateway's own 401 means this device's sign-in has ended; see
+                // `transport::send_auth`. The observer hears before this call returns:
+                // revoked, the app deletes the downloads; expired (the gateway says so), it
+                // keeps them (M18), and the next password sign-in names the expired token.
+                Err(transport::AuthFailure::Ended { expired }) => {
+                    core.forget(!expired, expired.then_some(refresh), Some(generation));
                     Err(ApiError::Unauthorised)
                 }
-                Err(e) => Err(e),
+                Err(transport::AuthFailure::Failed(e)) => Err(e),
             }
         });
         task.await
@@ -537,6 +582,40 @@ impl Core {
     pub(crate) fn http(&self) -> &Http {
         &self.http
     }
+
+    pub(crate) fn art_slots(&self) -> &tokio::sync::Semaphore {
+        &self.art_slots
+    }
+
+    /// Tell the gateway this device signs out (`POST /v1/auth/logout`). True when it is
+    /// signed out there: the gateway confirmed, or refused a renewal of its sign-in (it had
+    /// already ended). An access token the gateway no longer knows (it restarted, say) is
+    /// renewed and the sign-out sent once more (M11). Anything else (no connection, a
+    /// proxy's page) is false: the device may still be signed in there.
+    async fn sign_out_remotely(self: &Arc<Self>) -> bool {
+        let send = |token: &str| {
+            transport::send_auth(self.post("v1/auth/logout", &json!({})).bearer_auth(token))
+        };
+        let token = match self.access_token().await {
+            Ok(t) => t,
+            // Nothing to sign out with, or the gateway refused its renewal: ended there.
+            Err(ApiError::Unauthorised) => return true,
+            Err(_) => return false,
+        };
+        match send(&token).await {
+            Ok(_) => true,
+            Err(transport::AuthFailure::Ended { .. }) => match self.renew(Some(&token)).await {
+                // Refused with a fresh token too: the gateway has signed this device out.
+                Ok(fresh) => matches!(
+                    send(&fresh).await,
+                    Ok(_) | Err(transport::AuthFailure::Ended { .. })
+                ),
+                Err(ApiError::Unauthorised) => true,
+                Err(_) => false,
+            },
+            Err(transport::AuthFailure::Failed(_)) => false,
+        }
+    }
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -566,8 +645,10 @@ impl Session {
                 platform: client_platform(&clean_device_name(&device_name)),
                 device_name: clean_device_name(&device_name),
                 state: Mutex::new(state),
+                persist: Mutex::new(()),
                 refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
                 observer: Mutex::new(None),
+                art_slots: Arc::new(tokio::sync::Semaphore::new(crate::art::IN_FLIGHT)),
             }),
         }))
     }
@@ -631,8 +712,16 @@ impl Session {
             }
             body["totp"] = json!(code);
         }
-        if let Some(id) = self.core.state.lock().unwrap().device_id {
-            body["device_id"] = json!(id);
+        {
+            let st = self.core.state.lock().unwrap();
+            if let Some(id) = st.device_id {
+                body["device_id"] = json!(id);
+                // After the gateway said this device's sign-in expired (so it takes the
+                // field): the expired token proves it is the same device.
+                if let Some(t) = &st.expired_refresh {
+                    body["refresh_token"] = json!(t);
+                }
+            }
         }
         let v = self.core.sign_in("v1/auth/login", body).await?;
         self.core.adopt(parse_issued(&v)?, None)
@@ -656,25 +745,15 @@ impl Session {
     }
 
     /// Sign out: revoke this device on the server, and forget the sign-in here whatever
-    /// happens. Returns whether the server confirmed it (false when it couldn't be reached;
-    /// the device then stays listed until it expires or an admin revokes it).
+    /// happens. Returns whether the server confirmed it, or had already ended the sign-in.
+    /// False when it couldn't be reached or something else answered (a proxy's page): the
+    /// device then stays listed until it expires or is signed out from "Your devices".
     pub async fn logout(&self) -> Result<bool, ApiError> {
-        let confirmed = match self.core.access_token().await {
-            Ok(token) => {
-                let req = self
-                    .core
-                    .post("v1/auth/logout", &json!({}))
-                    .bearer_auth(&token);
-                match transport::send_json(req).await {
-                    Ok(_) => true,
-                    // Already revoked: as good as done.
-                    Err(e) => e.is_refusal(),
-                }
-            }
-            Err(ApiError::Unauthorised) => true,
-            Err(_) => false,
-        };
-        self.core.forget(false, None);
+        let generation = self.core.state.lock().unwrap().generation;
+        let confirmed = self.core.sign_out_remotely().await;
+        // This sign-in, unless the gateway ended it on the way (a refused renewal): then
+        // it is forgotten already, and the observer was told once, as it was.
+        self.core.forget(false, None, Some(generation));
         Ok(confirmed)
     }
 

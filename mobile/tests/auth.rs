@@ -541,3 +541,419 @@ async fn a_redirect_to_another_host_is_never_followed() {
         "nothing reached the other host"
     );
 }
+
+// --- Sign-out, expiry and rotation edge cases (review 2026-11-12) ------------------------
+
+/// M11 regression: an access token the gateway no longer accepts (it restarted, so the
+/// tokens it held in memory are gone) made the sign-out's 401 count as done: the token was
+/// deleted here and the device stayed signed in on the server for up to 90 days. The
+/// sign-out now renews the token and asks again, so the device is revoked there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn logout_with_a_stale_access_token_still_revokes_the_device() {
+    let h = Harness::start().await;
+    let (s, store) = h.alice().await;
+    let id = s.current().unwrap().device.id;
+    let listed = |h: &Harness| {
+        h.accounts
+            .list_devices()
+            .unwrap()
+            .iter()
+            .any(|d| d.id == id)
+    };
+    assert!(listed(&h));
+    let observer = Arc::new(Observer::default());
+    s.set_observer(observer.clone());
+    s.debug_invalidate_access_token();
+    assert_eq!(s.logout().await, Ok(true));
+    assert!(!listed(&h), "the device is signed out on the server");
+    assert!(store.get().is_none() && !s.has_sign_in());
+    assert_eq!(*observer.signed_out.lock().unwrap(), vec![false]);
+}
+
+/// M11: only the gateway's own answer confirms a sign-out. A proxy's or CDN's page (in the
+/// way during maintenance) or no answer at all is "not confirmed"; the sign-in is
+/// forgotten here all the same.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sign_out_answered_by_something_else_is_not_confirmed() {
+    for (status, body) in [
+        (401, "<html>Unauthorized</html>"),
+        (401, ""),
+        (403, "<html>Attention required</html>"),
+        (404, "Not found"),
+        (400, r#"{"message":"bad request"}"#),
+        (502, "Bad gateway"),
+        (503, r#"{"error":"busy; try again shortly"}"#),
+    ] {
+        let fake = FakeAuth::start().await;
+        let (s, store) = fake.saved_session();
+        s.restore().await.unwrap();
+        fake.answer_logout(status, body);
+        assert_eq!(s.logout().await, Ok(false), "{status} {body}");
+        assert!(store.get().is_none() && !s.has_sign_in(), "{status}");
+        assert_eq!(
+            fake.state.logouts.lock().unwrap().len(),
+            1,
+            "{status}: asked once"
+        );
+    }
+}
+
+/// M11: the gateway's own 401 to a sign-out is renewed and asked once more; a sign-in the
+/// gateway has already ended (its refusal of the renewal, or of the retried sign-out) is
+/// as good as signed out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sign_out_the_gateway_refuses_is_renewed_and_asked_again() {
+    let refused = gateway_refusal(None);
+    // The renewal works and the second sign-out is taken.
+    let fake = FakeAuth::start().await;
+    let (s, _) = fake.saved_session();
+    s.restore().await.unwrap();
+    fake.answer_logout_once(401, &refused);
+    assert_eq!(s.logout().await, Ok(true));
+    let logouts = fake.state.logouts.lock().unwrap().clone();
+    assert_eq!(logouts.len(), 2, "asked again: {logouts:?}");
+    assert_ne!(logouts[0], logouts[1], "with a renewed token");
+
+    // The renewal is refused: the gateway had already signed this device out (revoked
+    // it). The app hears that once, as a revocation.
+    let fake = FakeAuth::start().await;
+    let (s, store) = fake.saved_session();
+    s.restore().await.unwrap();
+    let observer = Arc::new(Observer::default());
+    s.set_observer(observer.clone());
+    fake.answer_logout(401, &refused);
+    fake.refuse_refresh(401, &refused);
+    assert_eq!(s.logout().await, Ok(true));
+    assert_eq!(fake.state.logouts.lock().unwrap().len(), 1);
+    assert_eq!(*observer.signed_out.lock().unwrap(), vec![true]);
+    assert!(store.get().is_none() && !s.has_sign_in());
+
+    // Refused with a fresh token too: signed out there.
+    let fake = FakeAuth::start().await;
+    let (s, _) = fake.saved_session();
+    s.restore().await.unwrap();
+    fake.answer_logout(401, &refused);
+    assert_eq!(s.logout().await, Ok(true));
+    assert_eq!(
+        fake.state.logouts.lock().unwrap().len(),
+        2,
+        "once more only"
+    );
+
+    // The renewal can't reach the gateway: not confirmed.
+    let fake = FakeAuth::start().await;
+    let (s, _) = fake.saved_session();
+    s.restore().await.unwrap();
+    fake.answer_logout(401, &refused);
+    fake.refuse_refresh(502, "Bad gateway");
+    assert_eq!(s.logout().await, Ok(false));
+}
+
+/// M18: a sign-in the gateway says has expired (`"reason": "expired"` on its refusal of a
+/// refresh) is a plain sign-out: the app keeps the downloads (`revoked: false`). Before,
+/// every refusal was a revocation, and a phone used offline past the sign-in's lifetime lost
+/// its downloads on reconnecting.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_expired_sign_in_signs_out_but_is_not_a_revocation() {
+    let fake = FakeAuth::start().await;
+    let (s, store) = fake.saved_session();
+    let observer = Arc::new(Observer::default());
+    s.set_observer(observer.clone());
+    fake.refuse_refresh(401, &gateway_refusal(Some("expired")));
+    assert_eq!(s.restore().await, Err(ApiError::Unauthorised));
+    assert!(store.get().is_none() && !s.has_sign_in());
+    assert_eq!(*observer.signed_out.lock().unwrap(), vec![false]);
+
+    // Found expired while signed in (renewing for a call): the same.
+    let fake = FakeAuth::start().await;
+    let (s, store) = fake.saved_session();
+    let observer = Arc::new(Observer::default());
+    s.set_observer(observer.clone());
+    s.restore().await.unwrap();
+    fake.refuse_refresh(401, &gateway_refusal(Some("expired")));
+    assert_eq!(s.refresh().await, Err(ApiError::Unauthorised));
+    assert!(store.get().is_none());
+    assert_eq!(*observer.signed_out.lock().unwrap(), vec![false]);
+}
+
+/// M18: every other refusal of the gateway's own (no reason, or any other) is a revocation,
+/// as before; and a refusal that isn't the gateway's (a proxy's 401 page) ends nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn any_other_refusal_of_a_refresh_is_a_revocation() {
+    for reason in [
+        None,
+        Some("revoked"),
+        Some("reused"),
+        Some("Expired"),
+        Some(""),
+    ] {
+        let fake = FakeAuth::start().await;
+        let (s, store) = fake.saved_session();
+        let observer = Arc::new(Observer::default());
+        s.set_observer(observer.clone());
+        fake.refuse_refresh(401, &gateway_refusal(reason));
+        assert_eq!(s.restore().await, Err(ApiError::Unauthorised), "{reason:?}");
+        assert!(store.get().is_none(), "{reason:?}");
+        assert_eq!(
+            *observer.signed_out.lock().unwrap(),
+            vec![true],
+            "{reason:?}"
+        );
+    }
+    // Not the gateway's: the sign-in is kept, whatever the page says.
+    let fake = FakeAuth::start().await;
+    let (s, store) = fake.saved_session();
+    let observer = Arc::new(Observer::default());
+    s.set_observer(observer.clone());
+    fake.refuse_refresh(401, r#"<html>{"reason":"expired"}</html>"#);
+    assert!(matches!(
+        s.restore().await,
+        Err(ApiError::Server { status: 401, .. })
+    ));
+    assert!(store.get().is_some() && s.has_sign_in());
+    assert!(observer.signed_out.lock().unwrap().is_empty());
+}
+
+/// After the gateway says a sign-in expired, the next password sign-in names the expired
+/// refresh token beside the device id (the gateway takes it as proof of the device, with
+/// its own lockout allowance). Only then: never after a revocation, never on a first
+/// sign-in, and not again once signed in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sign_in_after_expiry_names_the_expired_token() {
+    let fake = FakeAuth::start().await;
+    let (s, _) = fake.saved_session();
+    fake.refuse_refresh(401, &gateway_refusal(Some("expired")));
+    assert_eq!(s.restore().await, Err(ApiError::Unauthorised));
+    *fake.state.refuse_refresh.lock().unwrap() = None;
+    s.login("alice".into(), PW.into(), None).await.unwrap();
+    s.logout().await.unwrap();
+    s.login("alice".into(), PW.into(), None).await.unwrap();
+    let logins = fake.state.logins.lock().unwrap().clone();
+    assert_eq!(logins.len(), 2);
+    assert_eq!(logins[0]["refresh_token"], "refresh-start");
+    assert_eq!(logins[0]["device_id"], 1);
+    assert!(logins[1].get("refresh_token").is_none(), "{}", logins[1]);
+
+    // A wrong password keeps it for the next attempt (and a two-step retry).
+    let fake = FakeAuth::start().await;
+    let (s, _) = fake.saved_session();
+    fake.refuse_refresh(401, &gateway_refusal(Some("expired")));
+    let _ = s.restore().await;
+    assert_eq!(
+        s.login("alice".into(), "not the password".into(), None)
+            .await,
+        Err(ApiError::Unauthorised)
+    );
+    s.login("alice".into(), PW.into(), None).await.unwrap();
+    let logins = fake.state.logins.lock().unwrap().clone();
+    assert_eq!(logins.len(), 2);
+    assert!(logins.iter().all(|l| l["refresh_token"] == "refresh-start"));
+
+    // Revoked: the token proves nothing and is never sent.
+    let fake = FakeAuth::start().await;
+    let (s, _) = fake.saved_session();
+    fake.refuse_refresh(401, &gateway_refusal(None));
+    let _ = s.restore().await;
+    *fake.state.refuse_refresh.lock().unwrap() = None;
+    s.login("alice".into(), PW.into(), None).await.unwrap();
+    let logins = fake.state.logins.lock().unwrap().clone();
+    assert!(logins[0].get("refresh_token").is_none(), "{}", logins[0]);
+    assert_eq!(logins[0]["device_id"], 1);
+
+    // A first sign-in on this phone: nothing to name.
+    let fake = FakeAuth::start().await;
+    let s = Session::new(fake.server(), MemStore::new(), "Test phone".into()).unwrap();
+    s.login("alice".into(), PW.into(), None).await.unwrap();
+    let logins = fake.state.logins.lock().unwrap().clone();
+    assert!(logins[0].get("refresh_token").is_none() && logins[0].get("device_id").is_none());
+}
+
+/// M17 regression: a rotation started on a runtime that is then dropped (the player
+/// engine's or the downloader's, when it stops or the network changes) still completes,
+/// and its new token is stored. Before, the rotation ran on that runtime and died with it
+/// after the gateway had rotated: the old token stayed stored, and presenting it again
+/// would look like theft and revoke the device.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rotation_outlives_the_runtime_that_started_it() {
+    let fake = FakeAuth::start().await;
+    let hold = Arc::new(tokio::sync::Notify::new());
+    *fake.state.hold_refresh.lock().unwrap() = Some(hold.clone());
+    let (s, store) = fake.saved_session();
+    let (s2, state) = (s.clone(), fake.state.clone());
+    tokio::task::spawn_blocking(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let asked = async {
+                while state.refreshes.load(Ordering::SeqCst) == 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            };
+            tokio::select! {
+                r = s2.refresh() => panic!("a held refresh answered: {r:?}"),
+                () = asked => {}
+            }
+        });
+        // The engine stops: its runtime goes, with whatever it was running.
+        drop(rt);
+    })
+    .await
+    .unwrap();
+    hold.notify_one();
+    wait_for("the rotated token stored", || {
+        store.get().is_some_and(|c| c.refresh_token == "refresh-1")
+    })
+    .await;
+    assert_eq!(s.debug_refresh_token().as_deref(), Some("refresh-1"));
+    // The sign-in carries on with it.
+    *fake.state.hold_refresh.lock().unwrap() = None;
+    assert_eq!(s.me().await.unwrap().user.username, "alice");
+    assert_eq!(fake.state.refreshes.load(Ordering::SeqCst), 1);
+}
+
+/// M17: the shared connection pool no longer holds connections made on a private runtime.
+/// A request the engine made through it, followed by its thread being busy (nothing drives
+/// its runtime), left a pooled connection that the app's next request then waited on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_busy_private_runtime_never_stalls_the_shared_pool() {
+    let fake = FakeAuth::start().await;
+    let (s, _) = fake.saved_session();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let (done, finished) = tokio::sync::oneshot::channel();
+    let s2 = s.clone();
+    let engine = std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // The first requests to this server: any pooled connection is made here.
+        rt.block_on(async {
+            s2.restore().await.unwrap();
+            s2.me().await.unwrap();
+        });
+        let _ = done.send(());
+        // Busy: the runtime is alive, but nothing drives it.
+        let _ = released.recv();
+        drop(rt);
+    });
+    finished.await.unwrap();
+    let r = tokio::time::timeout(std::time::Duration::from_secs(5), s.me()).await;
+    release.send(()).unwrap();
+    engine.join().unwrap();
+    assert!(matches!(r, Ok(Ok(_))), "{r:?}");
+}
+
+/// A secure store whose saves wait at a gate, as a slow Keystore would.
+#[derive(Default)]
+struct SlowStore {
+    creds: std::sync::Mutex<Option<StoredCredentials>>,
+    closed: std::sync::Mutex<bool>,
+    opened: std::sync::Condvar,
+    saving: std::sync::atomic::AtomicBool,
+}
+
+impl SlowStore {
+    fn set_closed(&self, closed: bool) {
+        *self.closed.lock().unwrap() = closed;
+        self.opened.notify_all();
+    }
+}
+
+impl anywhere_mobile::SecureStore for SlowStore {
+    fn load(&self) -> Result<Option<StoredCredentials>, anywhere_mobile::StoreError> {
+        Ok(self.creds.lock().unwrap().clone())
+    }
+    fn save(&self, c: StoredCredentials) -> Result<(), anywhere_mobile::StoreError> {
+        self.saving.store(true, Ordering::SeqCst);
+        let mut closed = self.closed.lock().unwrap();
+        while *closed {
+            closed = self.opened.wait(closed).unwrap();
+        }
+        drop(closed);
+        *self.creds.lock().unwrap() = Some(c);
+        self.saving.store(false, Ordering::SeqCst);
+        Ok(())
+    }
+    fn clear(&self) -> Result<(), anywhere_mobile::StoreError> {
+        *self.creds.lock().unwrap() = None;
+        Ok(())
+    }
+}
+
+/// Review 2026-11-12: `adopt()` and `forget()` wrote the secure store while holding the
+/// session's state lock, so a slow Keystore write stalled every call that looks at the
+/// sign-in (each request's token, `current()`, `has_sign_in()`). They write it outside the
+/// lock now, and a sign-out that comes in meanwhile still leaves nothing stored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_slow_secure_store_never_blocks_the_session() {
+    let h = Harness::start().await;
+    let store = Arc::new(SlowStore::default());
+    let s = Session::new(h.server(), store.clone(), "Test phone".into()).unwrap();
+    s.login("alice".into(), PW.into(), None).await.unwrap();
+    // A rotation started from a thread of its own (the engine's, say), so that a store
+    // write blocking where it runs can't stall this test's runtime.
+    let rotate = |s: Arc<Session>| {
+        std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(s.refresh())
+        })
+    };
+    store.set_closed(true);
+    let rotation = rotate(s.clone());
+    let st = store.clone();
+    wait_for("the save to start", move || {
+        st.saving.load(Ordering::SeqCst)
+    })
+    .await;
+    let s3 = s.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send((s3.current().is_some(), s3.has_sign_in()));
+    });
+    let looked = rx.recv_timeout(std::time::Duration::from_secs(3));
+    store.set_closed(false);
+    rotation.join().unwrap().unwrap();
+    assert_eq!(
+        looked,
+        Ok((true, true)),
+        "the session answers while the store is busy"
+    );
+    assert_eq!(
+        store
+            .creds
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|c| c.refresh_token.clone()),
+        s.debug_refresh_token(),
+        "what is stored is what is used"
+    );
+
+    // A sign-out while a rotation is being saved: nothing is left stored after both.
+    store.set_closed(true);
+    let rotation = rotate(s.clone());
+    let st = store.clone();
+    wait_for("the save to start", move || {
+        st.saving.load(Ordering::SeqCst)
+    })
+    .await;
+    let s3 = s.clone();
+    let signing_out = std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(s3.logout())
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    store.set_closed(false);
+    let _ = rotation.join().unwrap();
+    assert_eq!(signing_out.join().unwrap(), Ok(true));
+    assert!(store.creds.lock().unwrap().is_none());
+    assert!(!s.has_sign_in() && s.current().is_none());
+}

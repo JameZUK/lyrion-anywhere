@@ -20,7 +20,6 @@ use std::sync::Arc;
 
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use serde_json::Value;
-use tokio::sync::Semaphore;
 
 use crate::error::ApiError;
 use crate::session::Session;
@@ -28,8 +27,9 @@ use crate::transport;
 
 /// The default size cap: a large cover is well under 2 MiB.
 pub const DEFAULT_MAX_BYTES: u64 = 8 * 1024 * 1024;
-/// LMS resizes artwork on its single thread: don't flood it.
-const IN_FLIGHT: usize = 6;
+/// LMS resizes artwork on its single thread: don't flood it. The cap is per session, so
+/// every [`Art`] made for it shares it (the downloader's cover cache included).
+pub(crate) const IN_FLIGHT: usize = 6;
 const MAX_KEY: usize = 2048;
 
 /// A cover by LMS cover id or track id.
@@ -220,7 +220,6 @@ pub struct ArtImage {
 pub struct Art {
     session: Arc<Session>,
     max_bytes: u64,
-    in_flight: Semaphore,
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -246,12 +245,12 @@ impl Art {
         {
             return Err(ApiError::invalid("bad artwork key"));
         }
-        let _slot = self
-            .in_flight
+        let core = self.session.core().clone();
+        let _slot = core
+            .art_slots()
             .acquire()
             .await
             .map_err(|_| ApiError::network("closed"))?;
-        let core = self.session.core().clone();
         let limit = self.max_bytes;
         core.authed(|token| {
             let req = core.http().get(url.clone()).bearer_auth(&token);
@@ -289,11 +288,7 @@ impl Art {
 impl Art {
     /// With a different size cap (tests).
     pub fn with_limit(session: Arc<Session>, max_bytes: u64) -> Arc<Self> {
-        Arc::new(Art {
-            session,
-            max_bytes,
-            in_flight: Semaphore::new(IN_FLIGHT),
-        })
+        Arc::new(Art { session, max_bytes })
     }
 }
 

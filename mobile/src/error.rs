@@ -101,20 +101,6 @@ impl ApiError {
             _ => ApiError::Server { status, detail },
         }
     }
-
-    /// A refusal by the server (sign out), as opposed to a failure to reach it (keep the
-    /// sign-in and retry).
-    pub(crate) fn is_refusal(&self) -> bool {
-        matches!(
-            self,
-            ApiError::Unauthorised
-                | ApiError::Forbidden { .. }
-                | ApiError::InvalidInput { .. }
-                | ApiError::NotFound { .. }
-                | ApiError::Conflict { .. }
-                | ApiError::TwoStepRequired
-        )
-    }
 }
 
 /// The server's error text, cut down to something short and printable.
@@ -210,8 +196,6 @@ mod tests {
             ApiError::from_status(400, Some("no such device"), false, None),
             ApiError::InvalidInput { .. }
         ));
-        assert!(ApiError::NotFound { detail: "x".into() }.is_refusal());
-        assert!(!ApiError::WrongAccount.is_refusal());
     }
 
     #[test]
@@ -229,18 +213,5 @@ mod tests {
             ApiError::Server { detail, .. } => assert_eq!(detail, "HTTP 500"),
             other => panic!("{other:?}"),
         }
-    }
-
-    #[test]
-    fn only_refusals_end_a_sign_in() {
-        assert!(ApiError::Unauthorised.is_refusal());
-        assert!(!ApiError::network("x").is_refusal());
-        assert!(
-            !ApiError::RateLimited {
-                retry_after_secs: 1
-            }
-            .is_refusal()
-        );
-        assert!(!ApiError::bad_response("x").is_refusal());
     }
 }
