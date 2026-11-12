@@ -28,7 +28,7 @@ self.onunhandledrejection = (e) => {
   else postMessage({ log: `unexpected error: ${why(e.reason)}` });
 };
 const VQ = V && /^[\w.-]{1,64}$/.test(V) ? `?v=${V}` : '';
-const { AuthWait, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, StreamInfo, backoffMs, factsSeq, closeAction, describeSeek, downloadStream, loadCore, qualityMessage, routeMessage, sanitiseQuality, signInMessage, socketSilent } =
+const { AuthWait, Backoff, CLOSE, FlushWatch, Outbox, RateRequest, SeekTimer, StreamInfo, factsSeq, closeAction, describeSeek, downloadStream, loadCore, qualityMessage, routeMessage, sanitiseQuality, signInMessage, socketSilent } =
   await import(`./reconnect.js${VQ}`);
 const { Presentation } = await import(`./presentation.js${VQ}`);
 const { VisualTap } = await import(`./visual.js${VQ}`);
@@ -75,7 +75,8 @@ let stream = null; // { id, n, controller }
 let streamId = 0;
 let tickTimer = null;
 let open = false;
-let attempt = 0;
+// Starts again only once a connection has lived a while after its greeting (see Backoff).
+const backoff = new Backoff();
 let disconnectedAt = 0;
 // When the socket last brought anything (LMS polls every 5 s): a silent one has died.
 let lastHeard = 0;
@@ -416,7 +417,7 @@ function onGreeting(g) {
   open = true;
   lastHeard = now();
   void learnFeatures();
-  attempt = 0;
+  backoff.greeted(now());
   // A fresh session (not a resumed one): what the page did here meanwhile must be retold.
   const fresh = !g.resumed || !player;
   if (fresh) {
@@ -534,7 +535,7 @@ function onClose(code, reason) {
   }
   let resume = action === 'resume' && session !== '' && now() - disconnectedAt < RESUME_FOR_MS;
   if (!resume) session = '';
-  const delay = backoffMs(attempt++);
+  const delay = backoff.next(now());
   postMessage({ connection: resume ? 'reconnecting' : 'restarting' });
   setTimeout(() => connect(resume), delay);
 }

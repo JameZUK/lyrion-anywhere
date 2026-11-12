@@ -55,6 +55,54 @@ test('backoff grows, is capped, and is jittered', () => {
   assert.ok(backoffMs(2, () => 0) >= 1600 && backoffMs(2, () => 1) <= 2400);
 });
 
+// Review M20: the backoff started again at every greeting, so a gateway that greets and then
+// closes at once (LMS refusing the player, say) was reconnected about every 1.5 s for ever,
+// each time a new LMS session. As in the native apps, it starts again only once a connection
+// has lived a while after its greeting.
+test('greet-then-close: the backoff keeps growing; it starts again only after a connection lived 5 s', async () => {
+  const { Backoff, STABLE_AFTER_MS } = await import('../../static/player/reconnect.js');
+  assert.equal(STABLE_AFTER_MS, 5000, 'the same rule as the mobile engine');
+  const mid = () => 0.5;
+  const b = new Backoff();
+  let t = 0;
+  const delays = [];
+  for (let i = 0; i < 6; i++) {
+    t += 300; // the socket opens and is greeted…
+    b.greeted(t);
+    t += 200; // …and closed again at once
+    const d = b.next(t, mid);
+    delays.push(d);
+    t += d;
+  }
+  assert.deepEqual(delays, [500, 1000, 2000, 4000, 5000, 5000]);
+  // A connection that lived long enough: the next drop is retried quickly again.
+  b.greeted(t);
+  t += STABLE_AFTER_MS;
+  assert.equal(b.next(t, mid), 500);
+  // Just short of it is not enough.
+  b.greeted(t);
+  t += STABLE_AFTER_MS - 1;
+  assert.equal(b.next(t, mid), 1000);
+  // Closes with no greeting at all (nothing listening) grow as before.
+  const c = new Backoff();
+  assert.deepEqual([c.next(0, mid), c.next(10, mid), c.next(20, mid)], [500, 1000, 2000]);
+  // A greeting counts once: a later close without a new greeting is not "lived" again.
+  const g = new Backoff();
+  g.greeted(0);
+  assert.equal(g.next(10_000, mid), 500);
+  assert.equal(g.next(20_000, mid), 1000);
+});
+
+test('the worker resets its backoff by the connection’s age, never at the greeting', () => {
+  const src = readFileSync(new URL('../../static/player/player-worker.js', import.meta.url), 'utf8');
+  const greeting = src.slice(src.indexOf('function onGreeting('), src.indexOf('function onFrames('));
+  assert.doesNotMatch(greeting, /attempt\s*=\s*0/);
+  assert.match(greeting, /backoff\.greeted\(now\(\)\)/);
+  assert.doesNotMatch(src, /backoffMs\(attempt\+\+\)/);
+  const close = src.slice(src.indexOf('function onClose('), src.indexOf('function send('));
+  assert.match(close, /const delay = backoff\.next\(now\(\)\);/);
+});
+
 test('stream failures: retry network trouble, fail on definitive answers', () => {
   assert.equal(streamFailureAction(0), 'retry');
   assert.equal(streamFailureAction(502), 'retry');

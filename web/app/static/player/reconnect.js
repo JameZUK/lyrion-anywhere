@@ -58,6 +58,37 @@ export function backoffMs(attempt, random = Math.random) {
 }
 
 /**
+ * A connection that has lived this long after its greeting counts as working, and the
+ * backoff starts again (the same rule as the native apps' engine).
+ */
+export const STABLE_AFTER_MS = 5000;
+
+/**
+ * The player socket's reconnect backoff. It starts again only once a connection has lived
+ * {@link STABLE_AFTER_MS} after its greeting, never at the greeting itself: a gateway that greets
+ * and closes at once (LMS refusing the player, say) is not reconnected every second or so for
+ * ever, each time a new LMS session.
+ */
+export class Backoff {
+  constructor() {
+    this.attempt = 0;
+    this.greetedAt = null;
+  }
+
+  /** The gateway greeted this connection at `t` (ms). */
+  greeted(t) {
+    this.greetedAt = t;
+  }
+
+  /** The socket closed at `t` (ms): how long to wait before trying again. */
+  next(t, random = Math.random) {
+    if (this.greetedAt !== null && t - this.greetedAt >= STABLE_AFTER_MS) this.attempt = 0;
+    this.greetedAt = null;
+    return backoffMs(this.attempt++, random);
+  }
+}
+
+/**
  * After a failed stream fetch with HTTP `status` (or 0 for a network error):
  * 'retry' the download from the current offset, 'renew' the access token and then retry
  * (a 401 the first time: it has most likely just expired), or 'fail' the track.
