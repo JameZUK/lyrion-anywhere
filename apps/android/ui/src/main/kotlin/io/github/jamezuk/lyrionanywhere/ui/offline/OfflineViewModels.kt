@@ -217,10 +217,15 @@ class OfflineAlbumViewModel(
     companion object {
         /** The album's tracks by number, then title. Pure. */
         fun albumOf(s: OfflineState, ref: String): OfflineAlbumUi {
-            val tracks = s.tracks.filter { refOf(it) == ref }
-                .sortedWith(compareBy<OfflineTrack> { it.trackNumber ?: UInt.MAX_VALUE }.thenBy { it.title })
+            val tracks = s.tracks.filter { refOf(it) == ref }.sortedWith(ALBUM_ORDER)
             return OfflineAlbumUi(s.albums.firstOrNull { it.albumRef == ref }, tracks)
         }
+
+        /** Every album's tracks, in [albumOf]'s order, by album reference: one pass. Pure. */
+        fun byAlbum(s: OfflineState): Map<String, List<OfflineTrack>> =
+            s.tracks.groupBy(::refOf).mapValues { (_, tracks) -> tracks.sortedWith(ALBUM_ORDER) }
+
+        private val ALBUM_ORDER = compareBy<OfflineTrack> { it.trackNumber ?: UInt.MAX_VALUE }.thenBy { it.title }
 
         fun refOf(t: OfflineTrack): String = if (t.albumId != null) "a${t.albumId}" else "t${t.key.take(16)}"
     }

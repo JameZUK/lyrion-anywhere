@@ -317,7 +317,7 @@ class AutoArtCatalogueTest {
         asked += keys
         keys.map { k -> k?.takeIf { !it.contains("none") }?.let { Uri.parse("content://$AUTHORITY/art/${"%032x".format(it.hashCode())}") } }
     }
-    private val tree = AutoCatalogue(source, { it::class.simpleName ?: "?" }, codec, art)
+    private val tree = AutoCatalogue(source, { it::class.simpleName ?: "?" }, codec, art = art)
 
     @Test
     fun albumsCarryTheirCoverFromTheAppsProviderOnly() = runTest {

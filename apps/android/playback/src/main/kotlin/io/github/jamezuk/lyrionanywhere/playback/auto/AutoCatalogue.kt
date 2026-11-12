@@ -20,6 +20,9 @@ import io.github.jamezuk.lyrionanywhere.core.parseNode
 import io.github.jamezuk.lyrionanywhere.data.ApiResult
 import io.github.jamezuk.lyrionanywhere.data.LibraryRepository
 import io.github.jamezuk.lyrionanywhere.data.PlayersRepository
+import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** The browse tree's grammar and layout: the Rust browse model (`mobile/src/auto.rs`),
  *  behind a seam so the tree can be tested on the JVM. */
@@ -111,6 +114,8 @@ class AutoCatalogue(
     private val source: AutoSource,
     private val labels: AutoLabels,
     private val codec: NodeCodec = RustNodeCodec,
+    /** Where the downloads are searched: never the main thread, which the session calls in on. */
+    private val compute: CoroutineContext = Dispatchers.Default,
     /** Album covers as URIs of the app's own provider (none: no art). */
     private val art: AutoArtUris? = null,
 ) {
@@ -266,16 +271,16 @@ class AutoCatalogue(
         return true
     }
 
-    private fun downloadedMatches(q: String): List<MediaItem> {
+    private suspend fun downloadedMatches(q: String): List<MediaItem> = withContext(compute) {
         val needle = q.lowercase()
-        val byRef = source.downloadedAlbums().associateBy { it.albumRef }
-        return byRef.keys.flatMap { ref ->
-            source.downloadedTracks(ref).withIndex()
+        val refs = source.downloadedAlbums().mapTo(LinkedHashSet()) { it.albumRef }
+        refs.asSequence().flatMap { ref ->
+            source.downloadedTracks(ref).withIndex().asSequence()
                 .filter { (_, t) -> listOf(t.title, t.artist, t.album).any { it.lowercase().contains(needle) } }
                 .mapNotNull { (i, t) ->
                     item(BrowseNode.DownloadedTrack(ref, i.toUInt()), t.title, t.artist, browsable = false, playable = true, MediaMetadata.MEDIA_TYPE_MUSIC)
                 }
-        }.take(MAX_RESULTS)
+        }.take(MAX_RESULTS).toList()
     }
 
     private suspend fun favourites(itemId: String?, start: Int, count: Int): List<MediaItem>? =
