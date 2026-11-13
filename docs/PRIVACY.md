@@ -2,7 +2,7 @@
 
 **Lyrion Anywhere** (the Android app, the web app and the gateway plugin for Lyrion Music Server) is free software for listening to **your own** music library on **your own** server. This policy says what each part keeps, where, and for how long.
 
-*Last updated: 13 October 2026.*
+*Last updated: 13 November 2026.*
 
 ## In short
 
@@ -18,7 +18,7 @@ All of this is in the app's private storage. Other apps can't read it, and none 
 | What | Why | How long |
 |---|---|---|
 | **Your server's address** | To connect | Until you sign out of that server |
-| **Your sign-in:** the refresh token and the server's id for this phone | To stay signed in | Until you sign out or the server revokes the device |
+| **Your sign-in:** the refresh token and the server's id for this phone | To stay signed in | Until you sign out or the server revokes the device. A sign-in that expired is deleted from storage; its token is held in memory until the app closes, and sent once with your next password sign-in on this server, to show the phone is one of yours |
 | **Settings:** sound, downloads, default player, library choice, the last user signed in on this server (for offline mode) | Your preferences | Until you uninstall, or sign out (the offline owner) |
 | **Output names for EQ:** the name of a USB DAC or Bluetooth device you gave its own EQ profile | So the right profile switches in when that output plays | Until you remove that EQ, or uninstall |
 | **Car mode's car:** if you choose *This device*, that Bluetooth device's name and address | So car mode opens for that car only | Until you choose another option, or uninstall |
@@ -71,7 +71,7 @@ The gateway runs on your server, next to Lyrion Music Server. Its data stays the
 |---|---|---|
 | **Accounts** | Username, role (admin or listener), a password hash (argon2id; the password itself is never stored), the two-step secret if you turn it on, download permission and player grants | Until an admin deletes the account |
 | **Devices** | Per signed-in device: its name, its LMS player id (a made-up MAC address), when it was created and last seen, its **last IP address**, its **client type** and platform (for example "android" and "Pixel 8"), and its browser or app **User-Agent** | While the device is active. A revoked device's address and User-Agent are erased at once, and the device itself is deleted 30 days after revocation |
-| **Sign-ins** | Hashes of refresh tokens (never the tokens) and of pairing codes | Until they expire (90 days of inactivity by default; the admin can change it) or are used |
+| **Sign-ins** | Hashes of refresh tokens (never the tokens) and of pairing codes | Until they are used or the device is signed out or revoked. The hash of a refresh token that expired unused (90 days of inactivity by default; the admin can change it) is kept for a further year, so the phone can be told its sign-in expired rather than was revoked, and keep its downloads |
 | **Play keys** | For plays sent from offline listening: a random key per play, the track id and when it was played, so a play retried after a lost answer is never counted twice | 91 days, at most 50,000 per user |
 | **Audit log** | Security events: sign-ins and failures (with the client's address), new and revoked devices, renames, settings changes, plays recorded (a count) | One year, at most the newest 100,000 entries |
 | **Track analysis cache** | Waveform and loudness of tracks, named by a salted hash of the file | Until the cache is full (least recently used go first) |
@@ -89,6 +89,7 @@ The gateway runs on your server, next to Lyrion Music Server. Its data stays the
 ## Deleting your data
 
 - **Sign out** (Settings → Sign out): the phone deletes its sign-in, sends any plays still waiting, and keeps or deletes your downloads as you choose. The server revokes the device, erasing its address and User-Agent.
+- **Expired** (the phone was not used with the server for longer than a sign-in lasts): the phone deletes its sign-in and keeps its downloads; sign in again to use them online.
 - **Revoked by the server** (an admin revokes the device, or too many devices signed in): the phone deletes its sign-in and all its downloads the next time it connects. The replay cache is deleted as soon as the server refuses the phone's player.
 - **Sign out** also deletes the replay cache and every stream being played, whatever you choose for downloads.
 - **Uninstall:** Android deletes everything the app stored.

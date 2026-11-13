@@ -2,7 +2,7 @@
 
 Dated entries, newest first.
 
-## 2026-11-12: full review for security, stability and reliability, and its fixes (unreleased)
+## 2026-11-12: full review for security, stability and reliability, and its fixes; plugin 0.8.0, Android 1.18.0
 
 The whole tree was reviewed (gateway, core, plugin, web, mobile, Android, CI): one high, 21 medium and about 45 low findings. No way round sign-in, the command allow-list, or the checks on what the gateway fetches was found. Every fix has a test that failed before it. The protocol stays at 2; the two changes clients can see (below) need no new version, since the web app ships with the gateway and the Android app has no screens for the endpoints concerned.
 
@@ -30,6 +30,8 @@ The whole tree was reviewed (gateway, core, plugin, web, mobile, Android, CI): o
 
 **Releases and CI**
 - Android release builds are unsigned and signed afterwards in a job of their own that runs no build code; only publishing jobs can write; provenance checks pin the workflow, the tag and GitHub's runners. This path is not yet proven by a real release.
+
+**Also in these releases:** HSTS comes from the gateway alone, so the nginx and Caddy examples no longer add it (a proxy that still does sends the header twice, which browsers accept); rusqlite 0.42, whose bundled SQLite is past RUSTSEC-2026-0459, and rustix 1.1.6 (RUSTSEC-2026-0486). The `cloudflared` pin is unchanged from 0.7.7.
 
 **Not verified here:** behaviour that needs a real browser, phone or car (cross-tab sign-out, the worker's start failure, Bluetooth car mode, the media-service start from another app), and the new release-signing jobs.
 

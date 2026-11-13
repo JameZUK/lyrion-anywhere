@@ -1,0 +1,1 @@
+Security and reliability fixes from a full review. Signing in again no longer needs an app restart; downloads survive an expired sign-in (with plugin 0.8.0); signing out always reaches the server; car mode opens when the car's Bluetooth connects; hostile streams are refused; covers are kept per server. Needs plugin 0.7.3 or later, as 1.17.0 did.
