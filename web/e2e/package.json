@@ -4,6 +4,6 @@
   "description": "Playwright for the browser checks in web/app/tests/e2e. Kept out of web/app so the release build installs nothing it does not ship.",
   "license": "GPL-2.0-or-later",
   "dependencies": {
-    "playwright": "1.60.0"
+    "playwright": "1.65.0"
   }
 }
