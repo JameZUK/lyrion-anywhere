@@ -4,7 +4,7 @@
 #
 # Base images are pinned by digest (tag kept for reading); Dependabot proposes updates.
 
-FROM rust:1.98-alpine3.22@sha256:a1796ca6fa216d6727b5f61c69e4c665b120b1a4dcb969639e2f25f1ed309456 AS build
+FROM rust:1.100-alpine3.22@sha256:8e71319e2fb470aa2d6335a8376a104ceea1957f86ec91b7efcbb9b4732973ae AS build
 RUN apk add --no-cache musl-dev zig=0.14.1-r0 \
  && rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
       armv7-unknown-linux-musleabihf wasm32-unknown-unknown \
