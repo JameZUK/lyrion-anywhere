@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { ApiError } from '#lib/api/http';
 	import { loginError } from '#lib/account/login';
+	import { CODE_PATTERN } from '#lib/account/code-pattern';
 	import { session } from '#lib/state/app.svelte';
 	import InsecureNotice from './InsecureNotice.svelte';
 
@@ -57,7 +58,7 @@
 					bind:value={code}
 					inputmode="numeric"
 					autocomplete="one-time-code"
-					pattern="[0-9]{6}"
+					pattern={CODE_PATTERN}
 					maxlength="6"
 					required
 				/>

@@ -2,6 +2,10 @@
 
 Dated entries, newest first.
 
+## 2026-11-16: web sign-in refused every two-step code
+
+- **Web: "Match the requested format" on the authenticator code** at sign-in and in Change password. The fields' `pattern` was written in the markup as `[0-9]{6}`; in Svelte `{6}` is an expression, so the browser was given `[0-9]6` and refused every six-digit code before anything was sent. The patterns now live in one module (`code-pattern.ts`) and are passed by name; the two fields in Settings › Account that had escaped the braces by hand use it too. Tests: the patterns as a browser applies them (codes pass, everything else is refused), and a source check that no `pattern` is written as a literal in Svelte markup.
+
 ## 2026-11-12: full review for security, stability and reliability, and its fixes; plugin 0.8.0, Android 1.18.0
 
 The whole tree was reviewed (gateway, core, plugin, web, mobile, Android, CI): one high, 21 medium and about 45 low findings. No way round sign-in, the command allow-list, or the checks on what the gateway fetches was found. Every fix has a test that failed before it. The protocol stays at 2; the two changes clients can see (below) need no new version, since the web app ships with the gateway and the Android app has no screens for the endpoints concerned.

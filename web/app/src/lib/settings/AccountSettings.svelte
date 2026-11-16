@@ -7,6 +7,7 @@
 	import * as auth from '#lib/api/auth';
 	import { ApiError } from '#lib/api/http';
 	import { credentialsError } from '#lib/account/credentials';
+	import { CODE_PATTERN_SPACED } from '#lib/account/code-pattern';
 	import { downloads, offlinePlayer, plays } from '#lib/offline/index.svelte';
 	import { forgetOwner } from '#lib/offline/settings';
 	import { signOutHere } from '#lib/account/sign-out';
@@ -167,14 +168,14 @@
 				{/if}
 				<code class="key">{auth.groupKey(setup.secret)}</code>
 				<form onsubmit={confirmTotp} class="form">
-					<label class="field"><span>Authenticator code</span><input bind:value={code} inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{'{'}6,7{'}'}" maxlength="7" required /></label>
+					<label class="field"><span>Authenticator code</span><input bind:value={code} inputmode="numeric" autocomplete="one-time-code" pattern={CODE_PATTERN_SPACED} maxlength="7" required /></label>
 					<button class="btn primary" type="submit" disabled={totpBusy}>Confirm</button>
 				</form>
 			{:else}
 				<p class="muted">Two-step verification is on. To turn it off, enter your password and a code.</p>
 				<form onsubmit={disableTotp} class="form">
 					<label class="field"><span>Password</span><input type="password" bind:value={password} autocomplete="current-password" required /></label>
-					<label class="field"><span>Authenticator code</span><input bind:value={code} inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{'{'}6,7{'}'}" maxlength="7" required /></label>
+					<label class="field"><span>Authenticator code</span><input bind:value={code} inputmode="numeric" autocomplete="one-time-code" pattern={CODE_PATTERN_SPACED} maxlength="7" required /></label>
 					<button class="btn" type="submit" disabled={totpBusy}>Turn off</button>
 				</form>
 			{/if}

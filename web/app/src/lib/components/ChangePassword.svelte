@@ -4,6 +4,7 @@
 	// other devices that stay signed in: each holds its own sign-in, not the password.
 	import type { OwnDevice, PasswordChange, PasswordChanged } from '#lib/api/auth';
 	import { MIN_PASSWORD, changeError, deviceDetail, formProblem } from '#lib/account/change-password';
+	import { CODE_PATTERN_SPACED } from '#lib/account/code-pattern';
 
 	let {
 		username,
@@ -73,7 +74,7 @@
 	>
 	<label class="field"><span>New password again</span><input type="password" name="confirm-password" bind:value={confirm} autocomplete="new-password" required data-confirm /></label>
 	{#if needCode}
-		<label class="field"><span>Authenticator code</span><input bind:value={code} inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="7" required data-code /></label>
+		<label class="field"><span>Authenticator code</span><input bind:value={code} inputmode="numeric" autocomplete="one-time-code" pattern={CODE_PATTERN_SPACED} maxlength="7" required data-code /></label>
 	{/if}
 	<p class="muted small" id="new-password-rule">At least {MIN_PASSWORD} characters.</p>
 	<label class="check">
