@@ -332,7 +332,7 @@ The proxy terminates HTTPS and passes requests, including WebSockets, to the gat
 
 - **Set `X-Forwarded-For` to the client's address** (replacing or appending both work). The gateway uses it for sign-in lockouts, reading from the right, so a client can't choose its own by sending the header itself.
 - **Pass WebSocket upgrades** and allow long-lived connections (players and audio streams stay open for hours).
-- **Add no Content-Security-Policy of its own.** The gateway sets its own strict headers, HSTS included (on HTTPS that arrives through the proxy), so the proxy need not add it.
+- **Add no Content-Security-Policy of its own.** The gateway sets its own strict headers, HSTS included (on HTTPS that arrives through the proxy), so the proxy must not add a second one: browsers use only the first of two. To keep a policy of your own, have the proxy hide the gateway's (nginx: `proxy_hide_header Strict-Transport-Security;`).
 
 ### 4.1 nginx
 
