@@ -66,7 +66,13 @@ Opt-in tests against a real LMS use a dedicated, muted test player and read thei
 
 The web app over plain `http://` to a trusted network (SPEC D28) has an opt-in browser check, never run in CI: start a gateway bound to a private address with `--trusted-network` and `--static-dir web/app/build` in front of a throwaway LMS, then run `web/app/tests/e2e/insecure-context.mjs` with `ADDRESS`, `PORT`, `USERNAME`, `PASSWORD`, `BROWSERS` and `PLAYWRIGHT_DIRS` set (the header of the file says how). It signs in, checks the unencrypted-connection notice, plays a track in the media-element mode for ten seconds and downloads an album, in Chromium and Firefox.
 
-Two more opt-in browser checks start a gateway on loopback themselves and need only a built gateway, a built web app and Playwright: `web/app/tests/e2e/pwa-update.mjs` (how the installed app survives an update, with a previous release's web build as `OLD_WEB`) and `web/app/tests/e2e/history.mjs` (Back, Forward and a route typed into the address bar, against the demo LMS of `tools/demo`, so it also needs python3 with Pillow). Each file's header says which variables to set. Run them after touching the service worker or `lib/nav.ts`: SvelteKit's router does not run under jsdom, so the unit tests cannot see what they check.
+Three more browser checks start a gateway on loopback themselves and need only a built gateway, a built web app and Playwright. Playwright is pinned in `web/e2e` (its own lock file, outside `web/app`, so the release build installs nothing it does not ship): `npm ci --prefix web/e2e`, then `web/e2e/node_modules/.bin/playwright install chromium`, and pass `PLAYWRIGHT_DIR=web/e2e/node_modules/playwright`. Each file's header says which other variables to set.
+
+- `web/app/tests/e2e/two-step.mjs` (in CI): turns two-step verification on in Settings › Account, signs in with a code, changes the password with one and turns it off again, typing into every code field and clicking every button. jsdom applies no `pattern` before a submit, so only a browser shows a field that refuses what it should take. About a minute and a half, since codes are single use. Needs python3 with Pillow for the demo LMS of `tools/demo`.
+- `web/app/tests/e2e/history.mjs` (in CI): Back, Forward and a route typed into the address bar, against the same demo LMS. SvelteKit's router does not run under jsdom.
+- `web/app/tests/e2e/pwa-update.mjs` (opt-in): how the installed app survives an update, with a previous release's web build as `OLD_WEB`. Run it after touching the service worker.
+
+A form whose browser checks matter (a `pattern`, `required`, `minlength`) gets a browser check that types into it and clicks its button; a component test that dispatches `submit` itself proves nothing about them.
 
 ## Contributing
 

@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // Opt-in end-to-end check of history in the web app (SvelteKit's hash router), in a real
-// browser through Playwright. Never run in CI: it needs a built gateway, a built web app,
+// browser through Playwright. CI runs it (the `web` job). It needs a built gateway, a built web app,
 // python3 with Pillow (for tools/demo/fake_lms.py, the invented library it signs in to) and
 // Playwright with its browsers installed. It starts the demo LMS and the gateway itself, on
 // loopback, with a throwaway data directory and user.
 //
 //   GATEWAY=target/debug/anywhere-gateway WEB=web/app/build \
-//     PLAYWRIGHT_DIR=/path/to/node_modules/playwright node web/app/tests/e2e/history.mjs
+//     PLAYWRIGHT_DIR=web/e2e/node_modules/playwright node web/app/tests/e2e/history.mjs
 //
 // It signs in, follows two in-app links, and checks that the browser's Back and Forward show
 // the right page at the right address without a reload; that a route assigned to

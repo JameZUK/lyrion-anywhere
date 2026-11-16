@@ -2,9 +2,10 @@
 
 Dated entries, newest first.
 
-## 2026-11-16: web sign-in refused every two-step code
+## 2026-11-16: web sign-in refused every two-step code; browser checks in CI
 
-- **Web: "Match the requested format" on the authenticator code** at sign-in and in Change password. The fields' `pattern` was written in the markup as `[0-9]{6}`; in Svelte `{6}` is an expression, so the browser was given `[0-9]6` and refused every six-digit code before anything was sent. The patterns now live in one module (`code-pattern.ts`) and are passed by name; the two fields in Settings › Account that had escaped the braces by hand use it too. Tests: the patterns as a browser applies them (codes pass, everything else is refused), and a source check that no `pattern` is written as a literal in Svelte markup.
+- **Web: "Match the requested format" on the authenticator code at sign-in.** The field's `pattern` was written in the markup as `[0-9]{6}`; in Svelte `{6}` is an expression, so the browser was given `[0-9]6` and refused every six-digit code before anything was sent. It had been so since the first web release. (Change password carried the same pattern, harmlessly: that form does its own checks.) The patterns now live in one module (`code-pattern.ts`) and are passed by name; the two fields in Settings › Account that had escaped the braces by hand use it too, and now take the code with or without its middle space and nothing else.
+- **Why no test saw it, and what does now.** The component tests dispatch `submit` themselves, and jsdom applies no `pattern` before it. New: `tests/e2e/two-step.mjs` drives a real browser against a gateway and the demo LMS: two-step verification on, a malformed code stopped by the field, a wrong one refused by the server, the right one signing in, a password change with a code, two-step off. It fails on the 0.8.0 build. It and `history.mjs` (Back, Forward, typed routes; opt-in until now) run in CI's `web` job, with Playwright pinned by a lock file of its own in `web/e2e`, kept current by Dependabot. Also a unit test of the patterns as a browser applies them, and a source check that no `pattern` is written as a literal in Svelte markup.
 
 ## 2026-11-12: full review for security, stability and reliability, and its fixes; plugin 0.8.0, Android 1.18.0
 

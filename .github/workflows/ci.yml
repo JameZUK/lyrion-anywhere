@@ -69,7 +69,7 @@ jobs:
 
   web:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -99,6 +99,30 @@ jobs:
       - name: Web app tests (Vitest + Node)
         working-directory: web/app
         run: npm test
+      # The browser check: jsdom applies no `pattern` before a submit and cannot run the router,
+      # so the forms are also driven in a real browser. Playwright is pinned by web/e2e's lock
+      # file, outside web/app, so the release build installs nothing it does not ship.
+      - name: Gateway for the browser check (debug build)
+        run: cargo build --locked -p anywhere-gateway
+      - name: Playwright with Chromium (pinned), Pillow for the demo LMS
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends python3-pil
+          npm audit --audit-level=high --prefix web/e2e
+          npm ci --no-audit --no-fund --prefix web/e2e
+          web/e2e/node_modules/.bin/playwright install --with-deps chromium
+      - name: Two-step verification in a real browser (turn on, sign in with a code, change password, turn off)
+        env:
+          GATEWAY: target/debug/anywhere-gateway
+          WEB: web/app/build
+          PLAYWRIGHT_DIR: web/e2e/node_modules/playwright
+        run: node web/app/tests/e2e/two-step.mjs
+      - name: Back, Forward and typed routes in a real browser
+        env:
+          GATEWAY: target/debug/anywhere-gateway
+          WEB: web/app/build
+          PLAYWRIGHT_DIR: web/e2e/node_modules/playwright
+        run: node web/app/tests/e2e/history.mjs
 
   android:
     runs-on: ubuntu-latest

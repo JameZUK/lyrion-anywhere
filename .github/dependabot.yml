@@ -1,4 +1,4 @@
-# Keeps the pinned CI actions, Docker base images and the three package trees current.
+# Keeps the pinned CI actions, Docker base images and the package trees current.
 # Actions and images are pinned to full commit SHAs and digests; Dependabot updates the pin
 # and its version comment. Minor and patch updates come grouped, one pull request per tree
 # a week; major updates come one at a time, since they may need code changes. Security
@@ -31,6 +31,12 @@ updates:
     groups:
       web-minor-and-patch:
         update-types: [minor, patch]
+
+  # Playwright for the browser checks (web/app/tests/e2e), pinned by its own lock file.
+  - package-ecosystem: npm
+    directory: /web/e2e
+    schedule:
+      interval: weekly
 
   # The Rust workspace (core, cli, gateway, wasm, mobile): Cargo.lock at the root.
   - package-ecosystem: cargo
