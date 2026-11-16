@@ -20,6 +20,9 @@ appear=${CI_WAIT_APPEAR:-600}
 mode=${1:-}
 what=${2:-}
 commit=${3:-}
+# Only this workflow's runs count: Dependabot's own "Dependabot Updates" runs are on the
+# branch too, and one of those finishing is not CI passing (it was once taken for it).
+workflow=${CI_WORKFLOW:-ci.yml}
 if [ -z "$mode" ] || [ -z "$what" ]; then
 	sed -n '2,8p' "$0" >&2
 	exit 2
@@ -32,14 +35,14 @@ find_run() {
 		if [ -n "$commit" ]; then
 			local full
 			full=$(git rev-parse --verify "${commit}^{commit}" 2>/dev/null || echo "$commit")
-			gh run list --branch "$what" --limit 40 --json databaseId,headSha,createdAt \
+			gh run list --workflow "$workflow" --branch "$what" --limit 40 --json databaseId,headSha,createdAt \
 				--jq "[.[] | select(.headSha == \"$full\")] | sort_by(.createdAt) | last | .databaseId // empty"
 		else
-			gh run list --branch "$what" --limit 1 --json databaseId --jq '.[0].databaseId // empty'
+			gh run list --workflow "$workflow" --branch "$what" --limit 1 --json databaseId --jq '.[0].databaseId // empty'
 		fi
 		;;
 	tag)
-		gh run list --limit 80 --json databaseId,headBranch,createdAt \
+		gh run list --workflow "$workflow" --limit 80 --json databaseId,headBranch,createdAt \
 			--jq "[.[] | select(.headBranch == \"$what\")] | sort_by(.createdAt) | last | .databaseId // empty"
 		;;
 	*)
